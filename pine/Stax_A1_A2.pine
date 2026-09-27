@@ -1,0 +1,277 @@
+//@version=6
+indicator("Stax A1+A2", shorttitle="Stax A1+A2", overlay=true, max_lines_count=80, max_labels_count=80, max_boxes_count=30, max_bars_back=600)
+// Canonical definitions: playbook v1.9. Checkpoint A1+A2 only; no candidate/webhook/trade engine.
+string ET = "America/New_York"
+string gSession = "A1 - ET range catalog (OWNER VERIFY boundaries)"
+string asia = input.session("1900-0200", "Asia ET", group=gSession)
+string london = input.session("0300-0700", "London ET", group=gSession)
+string nyIndex = input.session("0930-1600", "MNQ/MES NY ET", group=gSession)
+string nyGold = input.session("0820-1130", "MGC NY ET", group=gSession)
+string onIndex = input.session("1800-0930", "MNQ/MES overnight ET", group=gSession)
+string onGold = input.session("1800-0820", "MGC overnight ET", group=gSession)
+int orMinutes = input.int(30, "Equity opening range minutes", minval=5, maxval=120, step=5, group=gSession)
+int eqTicks = input.int(2, "Equal H/L tolerance ticks - OWNER TUNE", minval=0, maxval=20, group="A1 - Equal liquidity")
+int pivotBars = input.int(2, "Confirmed pivot left/right bars - OWNER TUNE", minval=1, maxval=10, group="A1 - Equal liquidity")
+int pairLookback = input.int(150, "Maximum equal-pivot separation bars", minval=5, maxval=500, group="A1 - Equal liquidity")
+int equalCap = input.int(8, "Maximum equal levels retained", minval=2, maxval=12, group="A1 - Equal liquidity")
+float strongMult = input.float(1.5, "STRONG body / ATR - OWNER TUNE", minval=0.1, step=0.1, group="A2 - Structure")
+float fvgMult = input.float(0.1, "Minimum FVG / ATR - OWNER TUNE", minval=0.0, step=0.05, group="A2 - Structure")
+bool drawLevels = input.bool(true, "Draw catalog levels", group="Display")
+bool drawGaps = input.bool(true, "Draw live FVGs", group="Display")
+bool showStructure = input.bool(true, "Plot confirmed structure", group="Display")
+
+bool gold = syminfo.root == "MGC"
+bool equity = syminfo.root == "MNQ" or syminfo.root == "MES"
+if barstate.isfirst and (not (gold or equity) or not chart.is_standard or timeframe.in_seconds() != 300)
+    runtime.error("A1+A2 review build requires MGC, MNQ or MES on standard 5-minute candles with ETH data.")
+
+type CatalogLevel
+    float price
+    string kind
+    int side
+    bool major
+    bool live
+    bool covered
+    bool swept
+    bool flipped
+    int born
+    line drawing
+    label tag
+
+type SessionRange
+    float hi = na
+    float lo = na
+    bool active = false
+    bool covered = false
+    int key = na
+
+type Gap
+    float top
+    float bottom
+    int side
+    int born
+    box drawing
+
+var array<CatalogLevel> catalog = array.new<CatalogLevel>()
+var array<Gap> gaps = array.new<Gap>()
+var SessionRange globe = SessionRange.new()
+var SessionRange overnight = SessionRange.new()
+var SessionRange asiaRange = SessionRange.new()
+var SessionRange londonRange = SessionRange.new()
+var SessionRange nyRange = SessionRange.new()
+var SessionRange opening = SessionRange.new()
+if barstate.isfirst
+    for i = 0 to 11
+        array.push(catalog, CatalogLevel.new(na, "", 0, true, false, false, false, false, 0, na, na))
+
+f_put(int slot, float price, string kind, int side, bool major, bool live, bool covered, bool fresh) =>
+    CatalogLevel lv = array.get(catalog, slot)
+    lv.price := price
+    lv.kind := kind
+    lv.side := side
+    lv.major := major
+    lv.live := live
+    lv.covered := covered
+    if fresh
+        lv.swept := false
+        lv.flipped := false
+        lv.born := bar_index
+        if not na(lv.drawing)
+            line.delete(lv.drawing)
+            lv.drawing := na
+        if not na(lv.tag)
+            label.delete(lv.tag)
+            lv.tag := na
+
+f_range(SessionRange r, bool inside, int dayKey, bool atStart, int slot, string prefix, bool major) =>
+    bool fresh = inside and (not r.active or na(r.key) or r.key != dayKey)
+    if fresh
+        r.hi := high
+        r.lo := low
+        r.covered := atStart
+        r.key := dayKey
+    else if inside
+        r.hi := math.max(r.hi, high)
+        r.lo := math.min(r.lo, low)
+    if slot >= 0 and (inside or r.active)
+        f_put(slot, r.hi, prefix + "H", 1, major, inside, r.covered, fresh)
+        f_put(slot + 1, r.lo, prefix + "L", -1, major, inside, r.covered, fresh)
+    r.active := inside
+
+f_start(string window) =>
+    int hh = int(str.tonumber(str.substring(window, 0, 2)))
+    int mm = int(str.tonumber(str.substring(window, 2, 4)))
+    hour(time, ET) == hh and minute(time, ET) == mm
+
+f_in(string window) => not na(time(timeframe.period, window + ":1234567", ET))
+
+f_equal(float current, float prior, int priorBar, int side) =>
+    bool valid = not na(current) and not na(prior) and not na(priorBar) and math.abs(current - prior) <= eqTicks * syminfo.mintick and bar_index - pivotBars - priorBar <= pairLookback
+    float level = side == 1 ? math.max(current, prior) : math.min(current, prior)
+    if valid
+        // Availability is now, not the pivot candle. Reject liquidity already traded through between pivots and confirmation.
+        int age = math.min(bar_index - priorBar, 500)
+        for j = 0 to age
+            if (side == 1 and high[j] > level) or (side == -1 and low[j] < level)
+                valid := false
+        if array.size(catalog) > 12
+            for j = 12 to array.size(catalog) - 1
+                CatalogLevel existing = array.get(catalog, j)
+                if not existing.swept and existing.side == side and math.abs(existing.price - level) <= eqTicks * syminfo.mintick
+                    valid := false
+    if valid
+        array.push(catalog, CatalogLevel.new(level, side == 1 ? "EQH" : "EQL", side, true, false, true, false, false, bar_index, na, na))
+        if array.size(catalog) > 12 + equalCap
+            CatalogLevel removed = array.remove(catalog, 12)
+            if not na(removed.drawing)
+                line.delete(removed.drawing)
+            if not na(removed.tag)
+                label.delete(removed.tag)
+
+float atr = ta.atr(14)
+float ph = ta.pivothigh(high, pivotBars, pivotBars)
+float pl = ta.pivotlow(low, pivotBars, pivotBars)
+var float lastPH = na
+var float lastPL = na
+var int lastPHBar = na
+var int lastPLBar = na
+var float structureHigh = na
+var float structureLow = na
+var bool highBroken = false
+var bool lowBroken = false
+var string displacement = "WAIT"
+var string structureStatus = "WAIT"
+var string sweepStatus = "NONE"
+var float confirmedATR = na
+var int lastCut = na
+int hhET = hour(time, ET)
+int dayKey = timestamp(ET, year(time, ET), month(time, ET), dayofmonth(time, ET) + (hhET >= 18 ? 1 : 0), 0, 0)
+string nyWindow = gold ? nyGold : nyIndex
+string onWindow = gold ? onGold : onIndex
+int minutesET = hhET * 60 + minute(time, ET)
+bool inOR = equity and minutesET >= 570 and minutesET < 570 + orMinutes
+
+if barstate.isconfirmed
+    lastCut := time_close
+    confirmedATR := atr
+    bool newDay = not na(globe.key) and dayKey != globe.key
+    if newDay
+        f_put(0, globe.hi, "PDH", 1, true, false, globe.covered, true)
+        f_put(1, globe.lo, "PDL", -1, true, false, globe.covered, true)
+    // 17:00-16:00 CT is 18:00-17:00 ET, including DST via IANA timezone.
+    f_range(globe, f_in("1800-1700"), dayKey, f_start("1800-1700"), -1, "", true)
+    f_range(overnight, f_in(onWindow), dayKey, f_start(onWindow), 2, "ON", true)
+    f_range(asiaRange, f_in(asia), dayKey, f_start(asia), 4, "ASIA ", true)
+    f_range(londonRange, f_in(london), dayKey, f_start(london), 6, "LONDON ", true)
+    f_range(nyRange, f_in(nyWindow), dayKey, f_start(nyWindow), 8, "NY ", true)
+    // OR is catalogued but minor for first-obstacle purposes: not listed among §1.9 major blockers.
+    f_range(opening, inOR, dayKey, minutesET == 570, 10, "OR", false)
+    sweepStatus := "NONE"
+    for i = 0 to array.size(catalog) - 1
+        CatalogLevel lv = array.get(catalog, i)
+        if not na(lv.price) and not lv.live and lv.covered and not lv.swept
+            bool sweptNow = (lv.side == 1 and high > lv.price and close < lv.price) or (lv.side == -1 and low < lv.price and close > lv.price)
+            if sweptNow
+                lv.swept := true
+                lv.major := false
+                sweepStatus := lv.kind + " @ " + str.tostring(lv.price, format.mintick)
+            else if (lv.side == 1 and close > lv.price) or (lv.side == -1 and close < lv.price)
+                lv.side := -lv.side
+                lv.flipped := true
+    bool breakUp = not na(structureHigh) and not highBroken and close > structureHigh
+    bool breakDown = not na(structureLow) and not lowBroken and close < structureLow
+    structureStatus := breakUp ? "BOS UP" : breakDown ? "BOS DOWN" : "NO NEW BOS"
+    if breakUp
+        highBroken := true
+    if breakDown
+        lowBroken := true
+    bool bullFVG = bar_index >= 2 and low > high[2] and low - high[2] >= atr * fvgMult
+    bool bearFVG = bar_index >= 2 and high < low[2] and low[2] - high >= atr * fvgMult
+    float body = math.abs(close - open)
+    float span = high - low
+    bool outerClose = span > 0 and ((close > open and close >= high - span * 0.25) or (close < open and close <= low + span * 0.25))
+    bool alignedTwo = bar_index >= 1 and ((close > open and close[1] > open[1]) or (close < open and close[1] < open[1])) and math.abs(close - open[1]) >= strongMult * atr
+    bool alignedThree = bar_index >= 2 and ((close > open and close[1] > open[1] and close[2] > open[2]) or (close < open and close[1] < open[1] and close[2] < open[2])) and math.abs(close - open[2]) >= strongMult * atr
+    bool alignedRun = alignedTwo or alignedThree
+    bool strong = (body >= strongMult * atr or alignedRun) and outerClose and ((breakUp and bullFVG) or (breakDown and bearFVG))
+    bool adequate = ((breakUp and close > open) or (breakDown and close < open))
+    displacement := na(atr) ? "WAIT ATR" : strong ? "STRONG" : adequate ? "ADEQUATE" : "WEAK"
+    if array.size(gaps) > 0
+        for i = array.size(gaps) - 1 to 0
+            Gap gap = array.get(gaps, i)
+            bool filled = (gap.side == 1 and low <= gap.bottom) or (gap.side == -1 and high >= gap.top)
+            if bar_index > gap.born and filled
+                if not na(gap.drawing)
+                    box.delete(gap.drawing)
+                array.remove(gaps, i)
+    if bullFVG or bearFVG
+        float top = bullFVG ? low : low[2]
+        float bottom = bullFVG ? high[2] : high
+        int side = bullFVG ? 1 : -1
+        box drawing = drawGaps ? box.new(bar_index, top, bar_index + 1, bottom, bgcolor=color.new(side == 1 ? color.teal : color.orange, 88), border_color=color.new(color.gray, 50), extend=extend.right) : na
+        array.push(gaps, Gap.new(top, bottom, side, bar_index, drawing))
+        if array.size(gaps) > 20
+            Gap removed = array.shift(gaps)
+            if not na(removed.drawing)
+                box.delete(removed.drawing)
+    // A pivot discovered on this bar cannot cause a retroactive structure break.
+    if not na(ph)
+        f_equal(ph, lastPH, lastPHBar, 1)
+        lastPH := ph
+        lastPHBar := bar_index - pivotBars
+        structureHigh := ph
+        highBroken := false
+    if not na(pl)
+        f_equal(pl, lastPL, lastPLBar, -1)
+        lastPL := pl
+        lastPLBar := bar_index - pivotBars
+        structureLow := pl
+        lowBroken := false
+
+plot(showStructure ? structureHigh : na, "Confirmed swing high", color=color.new(color.red, 60), style=plot.style_stepline, display=display.pane)
+plot(showStructure ? structureLow : na, "Confirmed swing low", color=color.new(color.green, 60), style=plot.style_stepline, display=display.pane)
+var table panel = table.new(position.top_right, 4, 32, bgcolor=color.new(color.black, 18), border_width=1)
+if barstate.islast
+    table.clear(panel, 0, 0, 3, 31)
+    table.cell(panel, 0, 0, "STAX A1+A2", text_color=color.white, text_size=size.small)
+    table.cell(panel, 1, 0, "v1.9 / ET", text_color=color.white, text_size=size.small)
+    table.cell(panel, 2, 0, "5m / CLOSED", text_color=color.white, text_size=size.small)
+    table.cell(panel, 3, 0, na(lastCut) ? "WAIT" : str.format_time(lastCut, "MM-dd HH:mm", ET), text_color=color.white, text_size=size.small)
+    table.cell(panel, 0, 1, "LEVEL", text_color=color.white, text_size=size.tiny)
+    table.cell(panel, 1, 1, "PRICE", text_color=color.white, text_size=size.tiny)
+    table.cell(panel, 2, 1, "CLASS", text_color=color.white, text_size=size.tiny)
+    table.cell(panel, 3, 1, "STATUS", text_color=color.white, text_size=size.tiny)
+    int row = 2
+    for i = 0 to array.size(catalog) - 1
+        CatalogLevel lv = array.get(catalog, i)
+        if not na(lv.price)
+            color ink = lv.swept ? color.gray : lv.major ? color.aqua : color.silver
+            string state = not lv.covered ? "PARTIAL" : lv.live ? "DEVELOPING" : lv.swept ? "SWEPT" : lv.flipped ? "UNSWEPT / FLIP" : "UNSWEPT"
+            table.cell(panel, 0, row, lv.kind, text_color=ink, text_size=size.tiny)
+            table.cell(panel, 1, row, str.tostring(lv.price, format.mintick), text_color=ink, text_size=size.tiny)
+            table.cell(panel, 2, row, lv.major ? "MAJOR" : "MINOR", text_color=ink, text_size=size.tiny)
+            table.cell(panel, 3, row, state, text_color=ink, text_size=size.tiny)
+            row += 1
+            if drawLevels
+                if na(lv.drawing)
+                    lv.drawing := line.new(bar_index, lv.price, bar_index + 1, lv.price, extend=extend.right, color=ink)
+                    lv.tag := label.new(bar_index + 2, lv.price, lv.kind, style=label.style_label_left, color=color.new(color.black, 85), textcolor=ink, size=size.tiny)
+                line.set_y1(lv.drawing, lv.price)
+                line.set_y2(lv.drawing, lv.price)
+                line.set_color(lv.drawing, ink)
+                line.set_style(lv.drawing, lv.live ? line.style_dotted : line.style_dashed)
+                label.set_xy(lv.tag, bar_index + 2, lv.price)
+                label.set_text(lv.tag, lv.kind + " " + str.tostring(lv.price, format.mintick) + (lv.swept ? " SWEPT" : ""))
+                label.set_textcolor(lv.tag, ink)
+    table.cell(panel, 0, 27, "ATR(14)", text_color=color.white, text_size=size.tiny)
+    table.cell(panel, 1, 27, str.tostring(confirmedATR, format.mintick), text_color=color.white, text_size=size.tiny)
+    table.cell(panel, 2, 27, "DISPLACE", text_color=color.white, text_size=size.tiny)
+    table.cell(panel, 3, 27, displacement, text_color=color.white, text_size=size.tiny)
+    table.cell(panel, 0, 28, "STRUCTURE", text_color=color.white, text_size=size.tiny)
+    table.cell(panel, 1, 28, structureStatus, text_color=color.white, text_size=size.tiny)
+    table.cell(panel, 2, 28, "LIVE FVGs", text_color=color.white, text_size=size.tiny)
+    table.cell(panel, 3, 28, str.tostring(array.size(gaps)), text_color=color.white, text_size=size.tiny)
+    table.cell(panel, 0, 29, "LAST BAR SWEEP", text_color=color.white, text_size=size.tiny)
+    table.cell(panel, 1, 29, sweepStatus, text_color=color.white, text_size=size.tiny)
+    table.cell(panel, 0, 30, "A1+A2 ONLY", text_color=color.yellow, text_size=size.tiny)
+    table.cell(panel, 1, 30, "VERIFY SESSION INPUTS", text_color=color.yellow, text_size=size.tiny)
