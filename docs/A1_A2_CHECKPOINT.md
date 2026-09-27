@@ -11,6 +11,7 @@ This is a review draft, not approval of the trading method or a completed produc
 - Internal level catalog with effective major/minor classification, developing/partial/swept/flipped status. Owner requested removal of the on-chart table; chart levels, structure and FVG indications remain. Discord transport is deferred to the integration checkpoint.
 - Confirmed ATR(14), directional structure breaks, displacement classifications, bullish/bearish FVGs with bounded drawings.
 - Swept levels become minor; closes through otherwise unswept levels retain flipped major status.
+- Chart display: full-name, normal-size high-contrast annotations; session-specific colors; two-pixel level lines from availability to annotation; solid established and dotted developing lines. Swept levels are hidden by default (Display input restores them) without removing catalog facts. Nearby labels share a multiline block with each exact price retained and separate horizontal price lines.
 
 ## Verification completed on 2026-09-27
 

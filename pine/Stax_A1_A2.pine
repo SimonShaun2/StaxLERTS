@@ -17,6 +17,8 @@ int equalCap = input.int(8, "Maximum equal levels retained", minval=2, maxval=12
 float strongMult = input.float(1.5, "STRONG body / ATR - OWNER TUNE", minval=0.1, step=0.1, group="A2 - Structure")
 float fvgMult = input.float(0.1, "Minimum FVG / ATR - OWNER TUNE", minval=0.0, step=0.05, group="A2 - Structure")
 bool drawLevels = input.bool(true, "Draw catalog levels", group="Display")
+bool showSwept = input.bool(false, "Show swept levels (historical context)", group="Display")
+int labelOffset = input.int(6, "Level label offset bars", minval=2, maxval=30, group="Display")
 bool drawGaps = input.bool(true, "Draw live FVGs", group="Display")
 bool showStructure = input.bool(true, "Plot confirmed structure", group="Display")
 
@@ -231,19 +233,79 @@ if barstate.isconfirmed
 plot(showStructure ? structureHigh : na, "Confirmed swing high", color=color.new(color.red, 60), style=plot.style_stepline, display=display.pane)
 plot(showStructure ? structureLow : na, "Confirmed swing low", color=color.new(color.green, 60), style=plot.style_stepline, display=display.pane)
 // Keep catalog facts internal for the future Discord payload; TradingView displays only chart indications.
+f_name(string kind) =>
+    switch kind
+        "PDH" => "Prior Day High"
+        "PDL" => "Prior Day Low"
+        "ONH" => "Overnight High"
+        "ONL" => "Overnight Low"
+        "ASIA H" => "Asia High"
+        "ASIA L" => "Asia Low"
+        "LONDON H" => "London High"
+        "LONDON L" => "London Low"
+        "NY H" => "New York High"
+        "NY L" => "New York Low"
+        "ORH" => "Opening Range High"
+        "ORL" => "Opening Range Low"
+        "EQH" => "Equal Highs"
+        "EQL" => "Equal Lows"
+        => kind
+
+f_color(string kind) =>
+    str.startswith(kind, "PD") ? color.orange : str.startswith(kind, "ON") ? color.aqua : str.startswith(kind, "ASIA") ? color.fuchsia : str.startswith(kind, "LONDON") ? color.rgb(100, 170, 255) : str.startswith(kind, "NY") ? color.lime : str.startswith(kind, "OR") ? color.yellow : color.rgb(255, 140, 185)
+
+f_text(CatalogLevel lv) =>
+    f_name(lv.kind) + "  " + str.tostring(lv.price, format.mintick) + (lv.swept ? "  SWEPT" : not lv.covered ? "  PARTIAL" : lv.live ? "  LIVE" : lv.flipped ? "  FLIPPED" : "")
+
 if barstate.islast
+    array<int> anchors = array.new_int(array.size(catalog), -1)
+    float spacing = nz(confirmedATR, syminfo.mintick * 8) * 0.65
+    // Group nearby annotations, never their price lines. Each row retains its exact price.
+    for i = 0 to array.size(catalog) - 1
+        CatalogLevel current = array.get(catalog, i)
+        if drawLevels and not na(current.price) and (showSwept or not current.swept)
+            int anchor = i
+            if i > 0
+                for j = 0 to i - 1
+                    CatalogLevel earlier = array.get(catalog, j)
+                    if anchor == i and array.get(anchors, j) == j and math.abs(earlier.price - current.price) <= spacing
+                        anchor := j
+            array.set(anchors, i, anchor)
     for i = 0 to array.size(catalog) - 1
         CatalogLevel lv = array.get(catalog, i)
-        if not na(lv.price)
-            color ink = lv.swept ? color.gray : lv.major ? color.aqua : color.silver
+        bool visible = drawLevels and not na(lv.price) and (showSwept or not lv.swept)
+        if visible
+            color ink = lv.swept ? color.gray : f_color(lv.kind)
+            int labelX = bar_index + labelOffset
             if drawLevels
                 if na(lv.drawing)
                     lv.drawing := line.new(bar_index, lv.price, bar_index + 1, lv.price, extend=extend.right, color=ink)
-                    lv.tag := label.new(bar_index + 2, lv.price, lv.kind, style=label.style_label_left, color=color.new(color.black, 85), textcolor=ink, size=size.tiny)
+                line.set_x1(lv.drawing, math.max(lv.born, bar_index - 9999))
+                line.set_x2(lv.drawing, labelX)
+                line.set_extend(lv.drawing, extend.none)
                 line.set_y1(lv.drawing, lv.price)
                 line.set_y2(lv.drawing, lv.price)
                 line.set_color(lv.drawing, ink)
-                line.set_style(lv.drawing, lv.live ? line.style_dotted : line.style_dashed)
-                label.set_xy(lv.tag, bar_index + 2, lv.price)
-                label.set_text(lv.tag, lv.kind + " " + str.tostring(lv.price, format.mintick) + (lv.swept ? " SWEPT" : ""))
-                label.set_textcolor(lv.tag, ink)
+                line.set_width(lv.drawing, lv.swept ? 1 : 2)
+                line.set_style(lv.drawing, lv.live ? line.style_dotted : lv.swept ? line.style_dashed : line.style_solid)
+                if array.get(anchors, i) == i
+                    string caption = f_text(lv)
+                    if i < array.size(catalog) - 1
+                        for j = i + 1 to array.size(catalog) - 1
+                            if array.get(anchors, j) == i
+                                caption += "\n" + f_text(array.get(catalog, j))
+                    if na(lv.tag)
+                        lv.tag := label.new(labelX, lv.price, caption, style=label.style_label_left, color=color.new(color.black, 5), textcolor=ink, size=size.normal)
+                    label.set_xy(lv.tag, labelX, lv.price)
+                    label.set_text(lv.tag, caption)
+                    label.set_textcolor(lv.tag, ink)
+                else if not na(lv.tag)
+                    label.delete(lv.tag)
+                    lv.tag := na
+        else
+            if not na(lv.drawing)
+                line.delete(lv.drawing)
+                lv.drawing := na
+            if not na(lv.tag)
+                label.delete(lv.tag)
+                lv.tag := na
