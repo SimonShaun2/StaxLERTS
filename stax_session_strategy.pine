@@ -138,7 +138,7 @@ exitMode   = input.string("Half at T1, BE, rest at T2", "Exit mode", options = [
 stratGrade = input.string("C", "Minimum grade to trade", options = ["A+", "A", "B", "C"], group = G_STR, tooltip = "C trades every confirmed signal that passes the filters, so the results table can compare grades. Commission and slippage are set in Settings > Properties (defaults: $0.62 per contract per side, 1 tick).")
 flatOn     = input.bool(true, "Flatten before the daily close", inline = "fl", group = G_STR)
 flatSess   = input.session("1655-1700", "", inline = "fl", group = G_STR)
-showTable  = input.bool(true, "Show results table", group = G_STR)
+showTable  = input.bool(false, "Show results table", group = G_STR)
 
 // ───── Types ───────────────────────────────────────────────────────────────
 // LDR-style state machine: sweep (1) > displacement (2) > retrace (3) > confirm.

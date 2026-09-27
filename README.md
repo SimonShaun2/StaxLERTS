@@ -86,7 +86,7 @@ The point value comes from `syminfo.pointvalue` automatically. Use *Point value 
    - *Flatten before the daily close*: on by default.
 4. **Commission and slippage** are set in **Settings → Properties**. The defaults are $0.62 per contract per side and 1 tick of slippage. Pine can't bind these to regular inputs, so edit them there to match your broker.
 5. Each trade's entry ID and comment record its setup, session, grade, side and trade number, e.g. `LDR|NY|A+|L|12` or `SEQ-R|NY|A|S|31`. You can see these in the *List of Trades* tab.
-6. The on-chart results table breaks trades down by setup (LDR, ORB, SEQ-C, SEQ-R), session (ASIA, LONDON, NY), grade (A+, A, B, C) and ALL. For each row it shows trade count, win %, average R, profit factor and max drawdown in dollars. A split exit (T1 plus runner) counts as one trade.
+6. An optional on-chart results table (off by default; tick *Show results table* in the Strategy group) breaks trades down by setup (LDR, ORB, SEQ-C, SEQ-R), session (ASIA, LONDON, NY), grade (A+, A, B, C) and ALL. For each row it shows trade count, win %, average R, profit factor and max drawdown in dollars. A split exit (T1 plus runner) counts as one trade.
 
 The strategy holds one position at a time. A signal that fires while a position is open is skipped. Orders fill at the next bar's open.
 
