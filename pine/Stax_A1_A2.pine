@@ -10,7 +10,7 @@ string nyGold = input.session("0820-1130", "MGC NY ET", group=gSession)
 string onIndex = input.session("1800-0930", "MNQ/MES overnight ET", group=gSession)
 string onGold = input.session("1800-0820", "MGC overnight ET", group=gSession)
 int orMinutes = input.int(30, "Equity opening range minutes", minval=5, maxval=120, step=5, group=gSession)
-int eqTicks = input.int(2, "Equal H/L tolerance ticks - OWNER TUNE", minval=0, maxval=20, group="A1 - Equal liquidity")
+float eqATRMult = input.float(0.1, "Equal H/L tolerance / ATR(14) - OWNER TUNE", minval=0.0, step=0.01, group="A1 - Equal liquidity")
 int pivotBars = input.int(2, "Confirmed pivot left/right bars - OWNER TUNE", minval=1, maxval=10, group="A1 - Equal liquidity")
 int pairLookback = input.int(150, "Maximum equal-pivot separation bars", minval=5, maxval=500, group="A1 - Equal liquidity")
 int equalCap = input.int(8, "Maximum equal levels retained", minval=2, maxval=12, group="A1 - Equal liquidity")
@@ -21,6 +21,8 @@ bool showSwept = input.bool(false, "Show swept levels (historical context)", gro
 int labelOffset = input.int(6, "Level label offset bars", minval=2, maxval=30, group="Display")
 bool drawGaps = input.bool(true, "Draw live FVGs", group="Display")
 bool showStructure = input.bool(true, "Plot confirmed structure", group="Display")
+bool debugCatalog = input.bool(false, "Full level catalog table", group="Debug - Replay only")
+bool debugDisplacement = input.bool(false, "Displacement grade on each confirmed bar", group="Debug - Replay only")
 
 bool gold = syminfo.root == "MGC"
 bool equity = syminfo.root == "MNQ" or syminfo.root == "MES"
@@ -107,8 +109,10 @@ f_start(string window) =>
 
 f_in(string window) => not na(time(timeframe.period, window + ":1234567", ET))
 
-f_equal(float current, float prior, int priorBar, int side) =>
-    bool valid = not na(current) and not na(prior) and not na(priorBar) and math.abs(current - prior) <= eqTicks * syminfo.mintick and bar_index - pivotBars - priorBar <= pairLookback
+f_equal(float current, float prior, int priorBar, int side, float confirmedBarATR) =>
+    // Tolerance uses ATR available on this confirmation bar, never future/pivot-backdated ATR.
+    float tolerance = eqATRMult * confirmedBarATR
+    bool valid = not na(confirmedBarATR) and confirmedBarATR > 0 and not na(current) and not na(prior) and not na(priorBar) and math.abs(current - prior) <= tolerance and bar_index - pivotBars - priorBar <= pairLookback
     float level = side == 1 ? math.max(current, prior) : math.min(current, prior)
     if valid
         // Availability is now, not the pivot candle. Reject liquidity already traded through between pivots and confirmation.
@@ -119,7 +123,7 @@ f_equal(float current, float prior, int priorBar, int side) =>
         if array.size(catalog) > 12
             for j = 12 to array.size(catalog) - 1
                 CatalogLevel existing = array.get(catalog, j)
-                if not existing.swept and existing.side == side and math.abs(existing.price - level) <= eqTicks * syminfo.mintick
+                if not existing.swept and existing.side == side and math.abs(existing.price - level) <= tolerance
                     valid := false
     if valid
         array.push(catalog, CatalogLevel.new(level, side == 1 ? "EQH" : "EQL", side, true, false, true, false, false, bar_index, na, na))
@@ -218,13 +222,13 @@ if barstate.isconfirmed
                 box.delete(removed.drawing)
     // A pivot discovered on this bar cannot cause a retroactive structure break.
     if not na(ph)
-        f_equal(ph, lastPH, lastPHBar, 1)
+        f_equal(ph, lastPH, lastPHBar, 1, atr)
         lastPH := ph
         lastPHBar := bar_index - pivotBars
         structureHigh := ph
         highBroken := false
     if not na(pl)
-        f_equal(pl, lastPL, lastPLBar, -1)
+        f_equal(pl, lastPL, lastPLBar, -1, atr)
         lastPL := pl
         lastPLBar := bar_index - pivotBars
         structureLow := pl
@@ -232,6 +236,9 @@ if barstate.isconfirmed
 
 plot(showStructure ? structureHigh : na, "Confirmed swing high", color=color.new(color.red, 60), style=plot.style_stepline, display=display.pane)
 plot(showStructure ? structureLow : na, "Confirmed swing low", color=color.new(color.green, 60), style=plot.style_stepline, display=display.pane)
+plotshape(debugDisplacement and barstate.isconfirmed and displacement == "STRONG", title="Debug STRONG displacement", style=shape.labeldown, location=location.abovebar, color=color.green, text="STRONG", textcolor=color.white, size=size.tiny, display=display.pane)
+plotshape(debugDisplacement and barstate.isconfirmed and displacement == "ADEQUATE", title="Debug ADEQUATE displacement", style=shape.labeldown, location=location.abovebar, color=color.orange, text="ADEQUATE", textcolor=color.black, size=size.tiny, display=display.pane)
+plotshape(debugDisplacement and barstate.isconfirmed and displacement == "WEAK", title="Debug WEAK displacement", style=shape.labeldown, location=location.abovebar, color=color.gray, text="WEAK", textcolor=color.white, size=size.tiny, display=display.pane)
 // Keep catalog facts internal for the future Discord payload; TradingView displays only chart indications.
 f_name(string kind) =>
     switch kind
@@ -256,6 +263,35 @@ f_color(string kind) =>
 
 f_text(CatalogLevel lv) =>
     f_name(lv.kind) + "  " + str.tostring(lv.price, format.mintick) + (lv.swept ? "  SWEPT" : not lv.covered ? "  PARTIAL" : lv.live ? "  LIVE" : lv.flipped ? "  FLIPPED" : "")
+
+// Optional inspection only: includes swept entries even when chart drawings hide them.
+var table debugPanel = debugCatalog ? table.new(position.top_right, 6, 29, bgcolor=color.new(color.black, 5), border_width=1) : na
+if barstate.islast and debugCatalog
+    table.clear(debugPanel, 0, 0, 5, 28)
+    table.cell(debugPanel, 0, 0, "CONFIRMED CUT / ET", text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 1, 0, na(lastCut) ? "WAIT" : str.format_time(lastCut, "MM-dd HH:mm", ET), text_color=color.white, text_size=size.small)
+    array<string> headings = array.from("LEVEL", "PRICE", "CLASS", "LIQUIDITY", "EQUAL", "COVERAGE")
+    for col = 0 to 5
+        table.cell(debugPanel, col, 1, array.get(headings, col), text_color=color.white, text_size=size.small)
+    int row = 2
+    for i = 0 to array.size(catalog) - 1
+        CatalogLevel lv = array.get(catalog, i)
+        if not na(lv.price)
+            bool equalLevel = lv.kind == "EQH" or lv.kind == "EQL"
+            color ink = lv.swept ? color.silver : f_color(lv.kind)
+            table.cell(debugPanel, 0, row, f_name(lv.kind), text_color=ink, text_size=size.small)
+            table.cell(debugPanel, 1, row, str.tostring(lv.price, format.mintick), text_color=ink, text_size=size.small)
+            table.cell(debugPanel, 2, row, lv.major ? "MAJOR" : "MINOR", text_color=ink, text_size=size.small)
+            table.cell(debugPanel, 3, row, lv.swept ? "SWEPT" : lv.flipped ? "UNSWEPT / FLIP" : "UNSWEPT", text_color=ink, text_size=size.small)
+            table.cell(debugPanel, 4, row, equalLevel ? "YES" : "NO", text_color=ink, text_size=size.small)
+            table.cell(debugPanel, 5, row, not lv.covered ? "PARTIAL" : lv.live ? "DEVELOPING" : "COMPLETE", text_color=ink, text_size=size.small)
+            row += 1
+    table.cell(debugPanel, 0, 27, "ATR(14)", text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 1, 27, str.tostring(confirmedATR, format.mintick), text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 2, 27, "EQ TOL POINTS", text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 3, 27, str.tostring(eqATRMult * confirmedATR, "#.#####"), text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 0, 28, "CATALOG CAP", text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 1, 28, "12 base + " + str.tostring(equalCap) + " equals", text_color=color.white, text_size=size.small)
 
 if barstate.islast
     array<int> anchors = array.new_int(array.size(catalog), -1)

@@ -2,7 +2,7 @@
 
 Canonical definitions: [playbook v1.9](../eval/playbook/stax-grokbot-playbook-v1.9.md). Indicator: [Stax_A1_A2.pine](../pine/Stax_A1_A2.pine).
 
-This is a review draft, not approval of the trading method or a completed production engine. It has no alerts, orders, candidate emission, server code, or A3–A6 logic.
+This is a review draft, not approval of the trading method or a completed production engine. It has no alerts, orders, candidate emission, server code, or A3–A6 logic. Owner accepted the current MNQ PDH 30,998.50, PDL 30,680 and NY H/L 30,952.50 / 30,684; historical drill verification remains pending.
 
 ## Delivered
 
@@ -12,6 +12,8 @@ This is a review draft, not approval of the trading method or a completed produc
 - Confirmed ATR(14), directional structure breaks, displacement classifications, bullish/bearish FVGs with bounded drawings.
 - Swept levels become minor; closes through otherwise unswept levels retain flipped major status.
 - Chart display: full-name, normal-size high-contrast annotations; session-specific colors; two-pixel level lines from availability to annotation; solid established and dotted developing lines. Swept levels are hidden by default (Display input restores them) without removing catalog facts. Nearby labels share a multiline block with each exact price retained and separate horizontal price lines.
+- Equal H/L tolerance is now 0.1 × confirmed ATR(14), OWNER TUNE. Matching and deduplication use ATR on the detection/confirmation bar, with no tick-based fallback or future-bar ATR. Equality is inclusive at the boundary; missing/zero ATR cannot establish an equal level. Equal level price remains the outer extreme of the two pivots; already-cleared liquidity is still excluded.
+- Optional **Debug - Replay only** inputs: full catalog table and per-confirmed-bar STRONG/ADEQUATE/WEAK annotations. Both default off. Table includes every retained nonempty catalog entry (including swept/hidden entries), with name, exact price, effective class, sweep status, equal-record flag and coverage. Equal liquidity is represented by separate EQH/EQL entries; a matching session boundary does not automatically change the session row's equal-record flag. Catalog remains bounded to 12 base slots plus the configured 2–12 equal entries; this is not an unlimited historical archive.
 
 ## Verification completed on 2026-09-27
 
@@ -31,3 +33,13 @@ These checks are compilation/runtime smoke tests, **not** a replay proof or veri
 6. Check ETH coverage. PARTIAL only detects a missing range start; arbitrary mid-session feed gaps are not certified by this checkpoint.
 
 Stop here. A3 starts only after the owner accepts this checkpoint.
+
+## Revised owner Replay checklist
+
+Friday MNQ **08:00 CT / 09:00 ET**, using the drill's exact date and contract: PDH ~30,828; PDL ~30,375; ONH ~31,000; ONL ~30,680 with unswept equal liquidity; London high/low ~30,965 / ~30,838; Asia equal highs ~30,905. These are owner-supplied answer-key expectations, not verified values or code constants. Compare catalog cut time, coverage, equal records and sweep status, not just drawings. The precise Friday date is not inferred from these prices.
+
+Also inspect MNQ ~30,680/30,683 and MGC ~4,331 repeated highs, ~4,313/4,314 lows. At 0.1 ATR, a 3-point separation needs ATR ≥30 and a 1-point separation needs ATR ≥10. If the detection bar has smaller ATR, these pairs legitimately fail the requested default; tune the multiplier based on the drills rather than hardcoding their prices. Triple tops deduplicate to a retained equal-high level.
+
+After owner Replay acceptance, the next authorized build checkpoint is **A3+A4**, not yet started.
+
+Revision verification: the ATR/debug revision compiled and was saved in TradingView as version 7. Both optional debug inputs were enabled for a MNQ 5m runtime smoke check: table showed retained swept/unswept entries and equal flags, and confirmed-bar grade annotations rendered. Current-cut equal lows at 30,680 were visible; this is not acceptance of the Friday answer key. Six arithmetic checks covered MNQ/MGC boundary/outside-tolerance cases, exact equality and invalid ATR (policy checks, not a Pine interpreter test). Debug inputs were returned to off. The former version-5 chart instance was hidden, not deleted, when the latest saved revision was loaded.
