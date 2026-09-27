@@ -230,28 +230,12 @@ if barstate.isconfirmed
 
 plot(showStructure ? structureHigh : na, "Confirmed swing high", color=color.new(color.red, 60), style=plot.style_stepline, display=display.pane)
 plot(showStructure ? structureLow : na, "Confirmed swing low", color=color.new(color.green, 60), style=plot.style_stepline, display=display.pane)
-var table panel = table.new(position.top_right, 4, 32, bgcolor=color.new(color.black, 18), border_width=1)
+// Keep catalog facts internal for the future Discord payload; TradingView displays only chart indications.
 if barstate.islast
-    table.clear(panel, 0, 0, 3, 31)
-    table.cell(panel, 0, 0, "STAX A1+A2", text_color=color.white, text_size=size.small)
-    table.cell(panel, 1, 0, "v1.9 / ET", text_color=color.white, text_size=size.small)
-    table.cell(panel, 2, 0, "5m / CLOSED", text_color=color.white, text_size=size.small)
-    table.cell(panel, 3, 0, na(lastCut) ? "WAIT" : str.format_time(lastCut, "MM-dd HH:mm", ET), text_color=color.white, text_size=size.small)
-    table.cell(panel, 0, 1, "LEVEL", text_color=color.white, text_size=size.tiny)
-    table.cell(panel, 1, 1, "PRICE", text_color=color.white, text_size=size.tiny)
-    table.cell(panel, 2, 1, "CLASS", text_color=color.white, text_size=size.tiny)
-    table.cell(panel, 3, 1, "STATUS", text_color=color.white, text_size=size.tiny)
-    int row = 2
     for i = 0 to array.size(catalog) - 1
         CatalogLevel lv = array.get(catalog, i)
         if not na(lv.price)
             color ink = lv.swept ? color.gray : lv.major ? color.aqua : color.silver
-            string state = not lv.covered ? "PARTIAL" : lv.live ? "DEVELOPING" : lv.swept ? "SWEPT" : lv.flipped ? "UNSWEPT / FLIP" : "UNSWEPT"
-            table.cell(panel, 0, row, lv.kind, text_color=ink, text_size=size.tiny)
-            table.cell(panel, 1, row, str.tostring(lv.price, format.mintick), text_color=ink, text_size=size.tiny)
-            table.cell(panel, 2, row, lv.major ? "MAJOR" : "MINOR", text_color=ink, text_size=size.tiny)
-            table.cell(panel, 3, row, state, text_color=ink, text_size=size.tiny)
-            row += 1
             if drawLevels
                 if na(lv.drawing)
                     lv.drawing := line.new(bar_index, lv.price, bar_index + 1, lv.price, extend=extend.right, color=ink)
@@ -263,15 +247,3 @@ if barstate.islast
                 label.set_xy(lv.tag, bar_index + 2, lv.price)
                 label.set_text(lv.tag, lv.kind + " " + str.tostring(lv.price, format.mintick) + (lv.swept ? " SWEPT" : ""))
                 label.set_textcolor(lv.tag, ink)
-    table.cell(panel, 0, 27, "ATR(14)", text_color=color.white, text_size=size.tiny)
-    table.cell(panel, 1, 27, str.tostring(confirmedATR, format.mintick), text_color=color.white, text_size=size.tiny)
-    table.cell(panel, 2, 27, "DISPLACE", text_color=color.white, text_size=size.tiny)
-    table.cell(panel, 3, 27, displacement, text_color=color.white, text_size=size.tiny)
-    table.cell(panel, 0, 28, "STRUCTURE", text_color=color.white, text_size=size.tiny)
-    table.cell(panel, 1, 28, structureStatus, text_color=color.white, text_size=size.tiny)
-    table.cell(panel, 2, 28, "LIVE FVGs", text_color=color.white, text_size=size.tiny)
-    table.cell(panel, 3, 28, str.tostring(array.size(gaps)), text_color=color.white, text_size=size.tiny)
-    table.cell(panel, 0, 29, "LAST BAR SWEEP", text_color=color.white, text_size=size.tiny)
-    table.cell(panel, 1, 29, sweepStatus, text_color=color.white, text_size=size.tiny)
-    table.cell(panel, 0, 30, "A1+A2 ONLY", text_color=color.yellow, text_size=size.tiny)
-    table.cell(panel, 1, 30, "VERIFY SESSION INPUTS", text_color=color.yellow, text_size=size.tiny)

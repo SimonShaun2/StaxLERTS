@@ -8,7 +8,7 @@ This is a review draft, not approval of the trading method or a completed produc
 
 - Pine v6, standard 5-minute MGC/MNQ/MES candles.
 - Globex prior high/low (18:00–17:00 ET = 17:00–16:00 CT), overnight, Asia, London, NY, equity-only opening range, and confirmed equal-pivot liquidity.
-- Level catalog with effective major/minor classification, developing/partial/swept/flipped status.
+- Internal level catalog with effective major/minor classification, developing/partial/swept/flipped status. Owner requested removal of the on-chart table; chart levels, structure and FVG indications remain. Discord transport is deferred to the integration checkpoint.
 - Confirmed ATR(14), directional structure breaks, displacement classifications, bullish/bearish FVGs with bounded drawings.
 - Swept levels become minor; closes through otherwise unswept levels retain flipped major status.
 
