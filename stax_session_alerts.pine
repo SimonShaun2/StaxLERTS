@@ -1,5 +1,5 @@
 //@version=6
-indicator("Stax Session Alerts", shorttitle = "Stax Sessions", overlay = true, max_labels_count = 500, max_lines_count = 500)
+indicator("Stax Session Alerts", shorttitle = "Stax Sessions", overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Stax Session Alerts
@@ -127,10 +127,19 @@ alOrbFail = input.bool(true, "ORB FAILED", inline = "a2", group = G_OUT)
 alOrbSkip = input.bool(true, "ORB SKIPPED", inline = "a2", group = G_OUT)
 alSeqMap  = input.bool(true, "SEQ MAP", inline = "a3", group = G_OUT)
 alSeqArm  = input.bool(true, "SEQ REVERSAL ARMED", inline = "a3", group = G_OUT)
-showLbl   = input.bool(true, "Label confirmed signals", group = G_OUT)
-showLines = input.bool(true, "Draw stop/T1/T2 lines", inline = "ln", group = G_OUT)
-lineBars  = input.int(20, "bars", minval = 1, maxval = 400, inline = "ln", group = G_OUT)
-showLvlNm = input.bool(true, "Level name tags", group = G_OUT)
+alTrade   = input.bool(true, "Trade updates (T1 hit / T2 hit / stopped / breakeven)", group = G_OUT, tooltip = "Follows every alerted signal after entry and pushes an update when it reaches T1, T2, its stop, breakeven, or expires.")
+
+// ───── Inputs: Display ─────────────────────────────────────────────────────
+G_DSP = "Display"
+showPanel  = input.bool(true, "Trade panel", inline = "pn", group = G_DSP)
+panelPos   = input.string("Top right", "", options = ["Top right", "Top left", "Middle right", "Bottom right", "Bottom left"], inline = "pn", group = G_DSP)
+panelSize  = input.string("Small", "Panel text", options = ["Tiny", "Small", "Normal"], group = G_DSP)
+showBoxes  = input.bool(true, "Position boxes (risk / reward)", group = G_DSP)
+showSigLbl = input.bool(true, "Signal labels", group = G_DSP)
+showOutLbl = input.bool(true, "Outcome labels (T1, T2, SL, BE)", group = G_DSP)
+beAfterT1  = input.bool(true, "Move stop to breakeven after T1", group = G_DSP, tooltip = "Applies to trade tracking, the panel and trade-update alerts.")
+trkBars    = input.int(78, "Stop tracking a trade after (bars)", minval = 5, maxval = 400, group = G_DSP, tooltip = "An open trade that hits neither a target nor its stop is marked EXPIRED after this many bars (78 = one NY session on 5m).")
+showLvlNm  = input.bool(true, "Level name tags", group = G_DSP)
 
 // ───── Types ───────────────────────────────────────────────────────────────
 // LDR-style state machine: sweep (1) > displacement (2) > retrace (3) > confirm.
@@ -179,6 +188,7 @@ type Sig
     string factors = ""
     string extra = ""
     bool alertOk = false
+    bool isUpd = false
 
 // ───── Time and sessions ───────────────────────────────────────────────────
 inSess(string s) =>
@@ -401,7 +411,7 @@ msgText(Sig s) =>
     string t = "[" + s.sess + "] " + s.setup + (d != "" ? " " + d : "") + " " + s.stage + " | " + symTxt + " " + tfTxt
     if s.lvl != ""
         t += " | Level " + s.lvl + (na(s.entry) and not na(s.lvlPx) ? " " + fPx(s.lvlPx) : "")
-    if not na(s.entry)
+    if not na(s.entry) and not s.isUpd
         t += " | Entry " + fPx(s.entry) + " | Stop " + fPx(s.stop) + " | T1 " + fPx(s.t1) + " | T2 " + fPx(s.t2)
         t += " | Size " + str.tostring(s.qty) + " | Risk $" + str.tostring(math.round(s.risk))
         t += " | R to next level " + (na(s.rr) ? "open" : str.tostring(s.rr, "0.00"))
@@ -787,15 +797,125 @@ for s in sigs
     if s.alertOk
         send(s)
 
-    if showLbl
-        color lc = s.setup == "LDR" ? (s.dir == 1 ? color.green : color.red) : s.setup == "ORB" ? (s.dir == 1 ? color.blue : color.orange) : color.purple
-        string ltxt = s.setup + (s.sub != "" ? "-" + s.sub : "") + " " + (s.dir == 1 ? "L" : "S") + "\n" + s.lvl + "\n" + s.sess + " " + s.grade
-        string tip = "Entry " + fPx(s.entry) + "\nStop " + fPx(s.stop) + "\nT1 " + fPx(s.t1) + "\nT2 " + fPx(s.t2) + "\nSize " + str.tostring(s.qty) + "\nRisk $" + str.tostring(math.round(s.risk)) + "\nR to next level " + (na(s.rr) ? "open" : str.tostring(s.rr, "0.00")) + "\nScore " + str.tostring(sc) + "/" + str.tostring(maxScore) + ": " + (f == "" ? "none" : f) + (s.alertOk ? "" : "\nBelow minimum grade: no alert")
-        label.new(bar_index, s.dir == 1 ? low : high, ltxt, yloc = s.dir == 1 ? yloc.belowbar : yloc.abovebar, style = s.dir == 1 ? label.style_label_up : label.style_label_down, color = lc, textcolor = color.white, size = size.small, tooltip = tip)
-    if showLines
-        line.new(bar_index, s.stop, bar_index + lineBars, s.stop, color = color.red, width = 1)
-        line.new(bar_index, s.t1, bar_index + lineBars, s.t1, color = color.green, style = line.style_dashed, width = 1)
-        line.new(bar_index, s.t2, bar_index + lineBars, s.t2, color = color.green, width = 1)
+// ═══════════════════════════════════════════════════════════════════════════
+// Trade tracking: position boxes, outcome labels and trade-update alerts
+// ═══════════════════════════════════════════════════════════════════════════
+C_UP    = #26a69a
+C_DN    = #ef5350
+C_WARN  = #ffb74d
+C_TXT   = #d1d4dc
+C_MUTED = #787b86
+C_BG    = #131722
+C_EDGE  = #2a2e39
+
+// state: 0 open, 1 T2 hit, 2 stopped, 3 breakeven after T1, 4 expired
+type Trade
+    Sig sig
+    int startBar
+    float stopNow
+    bool t1Hit = false
+    int state = 0
+    box rwd
+    box rsk
+    line t1Ln
+
+setupColor(Sig g) =>
+    g.setup == "LDR" ? (g.dir == 1 ? color.green : color.red) : g.setup == "ORB" ? (g.dir == 1 ? color.blue : color.orange) : color.purple
+
+sigName(Sig g) =>
+    g.setup + (g.sub == "C" ? " CONT" : g.sub == "R" ? " REV" : "") + " " + dirTxt(g.dir)
+
+stateTxt(Trade t) =>
+    t.state == 1 ? "T2 HIT" : t.state == 2 ? "STOPPED" : t.state == 3 ? "BREAKEVEN" : t.state == 4 ? "EXPIRED" : t.t1Hit ? "T1 HIT, running to T2" : "OPEN"
+
+stateColor(Trade t) =>
+    t.state == 1 ? C_UP : t.state == 2 ? C_DN : t.state == 3 or t.state == 4 ? C_MUTED : t.t1Hit ? C_UP : C_WARN
+
+// "+25.00 pts | +1.00R | +$150" for an exit at px (whole position).
+fmtPnl(Trade t, float px) =>
+    Sig g = t.sig
+    float pts = g.dir * (px - g.entry)
+    float r0 = g.dir * (g.entry - g.stop)
+    string sg = pts >= 0 ? "+" : "-"
+    sg + str.tostring(math.abs(pts), format.mintick) + " pts | " + sg + str.tostring(r0 > 0 ? math.abs(pts) / r0 : 0.0, "0.00") + "R | " + sg + "$" + str.tostring(math.round(math.abs(pts) * pv * g.qty))
+
+updSig(Trade t, string stage, float px, string extra) =>
+    Sig g = t.sig
+    Sig u = mkSig(g.setup, stage, g.dir, g.lvl, g.lvlPx, "Entry " + fPx(g.entry) + " | " + extra)
+    u.isUpd := true
+    u.sub := g.sub
+    u.price := px
+    u.entry := g.entry
+    u.stop := t.stopNow
+    u.t1 := g.t1
+    u.t2 := g.t2
+    u.rr := g.rr
+    u.qty := g.qty
+    u.risk := g.risk
+    u.grade := g.grade
+    u.score := g.score
+    u.maxScore := g.maxScore
+    u.factors := g.factors
+    u
+
+outLabel(float px, string txt, color c) =>
+    label.new(bar_index, px, txt, style = label.style_label_left, color = color.new(c, 15), textcolor = color.white, size = size.tiny)
+
+var array<Trade> trades = array.new<Trade>()
+var Trade lastT = na
+
+// 1. Advance open trades (the entry bar itself is never evaluated). Stop is checked first: conservative.
+if barstate.isconfirmed and trades.size() > 0
+    for i = trades.size() - 1 to 0
+        Trade t = trades.get(i)
+        Sig g = t.sig
+        int d = g.dir
+        bool notify = alTrade and g.alertOk
+        if d == 1 ? low <= t.stopNow : high >= t.stopNow
+            t.state := t.t1Hit and beAfterT1 ? 3 : 2
+        else
+            if not t.t1Hit and (d == 1 ? high >= g.t1 : low <= g.t1)
+                t.t1Hit := true
+                if beAfterT1
+                    t.stopNow := g.entry
+                if notify
+                    send(updSig(t, "T1 HIT", g.t1, fmtPnl(t, g.t1) + (beAfterT1 ? " | Stop moved to breakeven" : "")))
+                if showOutLbl
+                    outLabel(g.t1, "T1 ✓", C_UP)
+            if d == 1 ? high >= g.t2 : low <= g.t2
+                t.state := 1
+        if t.state == 0 and bar_index - t.startBar >= trkBars
+            t.state := 4
+        if not na(t.rwd)
+            box.set_right(t.rwd, bar_index)
+            box.set_right(t.rsk, bar_index)
+            line.set_x2(t.t1Ln, bar_index)
+        if t.state != 0
+            float px = t.state == 1 ? g.t2 : t.state == 2 ? t.stopNow : t.state == 3 ? g.entry : close
+            string stg = t.state == 1 ? "T2 HIT" : t.state == 2 ? "STOPPED" : t.state == 3 ? "BREAKEVEN" : "EXPIRED"
+            if notify
+                send(updSig(t, stg, px, fmtPnl(t, px) + " | Trade closed"))
+            if showOutLbl
+                outLabel(px, t.state == 1 ? "T2 ✓" : t.state == 2 ? "SL ✗" : t.state == 3 ? "BE" : "EXIT", t.state == 1 ? C_UP : t.state == 2 ? C_DN : C_MUTED)
+            if not na(t.rwd)
+                box.set_bgcolor(t.rwd, color.new(C_UP, t.state == 1 ? 78 : 90))
+                box.set_bgcolor(t.rsk, color.new(C_DN, t.state == 2 ? 78 : 90))
+            trades.remove(i)
+
+// 2. Open a tracked trade for every new signal.
+for g in okSigs
+    Trade t = Trade.new(g, bar_index, g.stop)
+    if showBoxes
+        t.rwd := box.new(bar_index, math.max(g.entry, g.t2), bar_index + 1, math.min(g.entry, g.t2), border_color = color.new(C_UP, 60), bgcolor = color.new(C_UP, 82))
+        t.rsk := box.new(bar_index, math.max(g.entry, g.stop), bar_index + 1, math.min(g.entry, g.stop), border_color = color.new(C_DN, 60), bgcolor = color.new(C_DN, 82))
+        t.t1Ln := line.new(bar_index, g.t1, bar_index + 1, g.t1, color = color.new(C_UP, 20), style = line.style_dashed, width = 1)
+    if showSigLbl
+        string tip = sigName(g) + " | " + g.lvl + " | " + g.sess + "\nEntry " + fPx(g.entry) + "\nStop " + fPx(g.stop) + "\nT1 " + fPx(g.t1) + "\nT2 " + fPx(g.t2) + "\nSize " + str.tostring(g.qty) + " | Risk $" + str.tostring(math.round(g.risk)) + "\nR to next level " + (na(g.rr) ? "open" : str.tostring(g.rr, "0.00")) + "\nGrade " + g.grade + " (" + str.tostring(g.score) + "/" + str.tostring(g.maxScore) + "): " + (g.factors == "" ? "none" : g.factors) + (g.alertOk ? "" : "\nBelow minimum grade: no alert")
+        label.new(bar_index, g.dir == 1 ? low : high, (g.dir == 1 ? "▲ " : "▼ ") + g.setup + (g.sub != "" ? "-" + g.sub : "") + " " + g.grade, yloc = g.dir == 1 ? yloc.belowbar : yloc.abovebar, style = g.dir == 1 ? label.style_label_up : label.style_label_down, color = color.new(setupColor(g), g.alertOk ? 0 : 55), textcolor = color.white, size = size.small, tooltip = tip)
+    trades.push(t)
+    lastT := t
+    if trades.size() > 40
+        trades.shift()
 
 // ───── Plots ───────────────────────────────────────────────────────────────
 plot(newDay ? na : pdh, "PDH", color = color.new(color.gray, 0), linewidth = 1, style = plot.style_linebr)
@@ -820,3 +940,80 @@ if barstate.islast and showLvlNm
         float p = lvPx.get(i)
         label.set_xy(lb, bar_index + 1, na(p) ? close : p)
         label.set_text(lb, na(p) ? "" : lvNm.get(i))
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Trade panel
+// ═══════════════════════════════════════════════════════════════════════════
+panelPosC = panelPos == "Top left" ? position.top_left : panelPos == "Middle right" ? position.middle_right : panelPos == "Bottom right" ? position.bottom_right : panelPos == "Bottom left" ? position.bottom_left : position.top_right
+var table hud = table.new(panelPosC, 2, 17, bgcolor = color.new(C_BG, 8), frame_color = C_EDGE, frame_width = 1, border_color = C_EDGE, border_width = 1)
+
+hudRow(int r, string k, string v, color vc, string ts, string tip) =>
+    table.cell(hud, 0, r, k, text_color = C_MUTED, text_size = ts, text_halign = text.align_left)
+    table.cell(hud, 1, r, v, text_color = vc, text_size = ts, text_halign = text.align_left, tooltip = tip)
+
+addLine(string a, string b) =>
+    a == "" ? b : a + "\n" + b
+
+if barstate.islast and showPanel
+    string ts = panelSize == "Tiny" ? size.tiny : panelSize == "Normal" ? size.normal : size.small
+
+    // Status
+    string stTxt = newsOn ? "NEWS BLACKOUT" : chopBlock ? "CHOP, alerts paused" : winOk ? "LIVE" : "Outside alert window"
+    color stCol = newsOn or chopBlock ? C_WARN : winOk ? C_UP : C_MUTED
+
+    // SEQ
+    string sqTxt = ""
+    color sqCol = C_TXT
+    if not sqFinal
+        sqTxt := na(sqAH) ? "Building Asia range" : "Asia " + fPx(sqAL) + " - " + fPx(sqAH) + ", London in play"
+        sqCol := C_MUTED
+    else if sqClass == 1 or sqClass == -1
+        bool up = sqArmed ? sqClass == -1 : sqClass == 1
+        sqTxt := "London broke " + (sqClass == 1 ? "HIGH" : "LOW") + (sqArmed ? ", reversal armed " : ", continuation ") + (up ? "▲" : "▼") + (sqDone ? " (traded)" : "")
+        sqCol := up ? C_UP : C_DN
+    else
+        sqTxt := "No clean sequence, SEQ off today"
+        sqCol := C_MUTED
+
+    // Momentum: HTF trend + session VWAP side
+    bool hUp = not na(hClose) and not na(hEma) and hClose > hEma
+    bool hDn = not na(hClose) and not na(hEma) and hClose < hEma
+    bool vUp = not na(sVwap) and close > sVwap
+    bool vDn = not na(sVwap) and close < sVwap
+    string momTxt = hUp and vUp ? "Bullish ▲" : hDn and vDn ? "Bearish ▼" : "Mixed"
+    color momCol = hUp and vUp ? C_UP : hDn and vDn ? C_DN : C_MUTED
+
+    // What the engine is waiting on
+    string w = ""
+    for L in ldrs
+        if L.stage > 0
+            w := addLine(w, "LDR " + dirTxt(L.dir) + ": " + (L.stage == 1 ? "swept " + L.lvlName + ", need displacement" : L.stage == 2 ? "displaced, need retrace to " + fPx(L.origin) : "retraced, need confirmation"))
+    for O in orbs
+        if O.stage == 1 and not O.done and orbMode == "Retest"
+            w := addLine(w, "ORB " + dirTxt(O.dir) + ": broke " + orTag + (O.dir == 1 ? "H" : "L") + ", need retest")
+    if sqArmed and not sqDone
+        w := addLine(w, "SEQ " + dirTxt(sqRev.dir) + ": reversal armed, need displacement")
+
+    hudRow(0, "STAX SESSIONS", symTxt + " " + tfTxt, C_TXT, ts, "")
+    hudRow(1, "Session", sessTag + "  |  " + stTxt, stCol, ts, "")
+    hudRow(2, "Range High", na(orH) ? "-" : fPx(orH) + "  " + orTag, C_UP, ts, "Most recent 15-minute opening range")
+    hudRow(3, "Range Low", na(orL) ? "-" : fPx(orL) + "  " + orTag, C_DN, ts, "")
+    hudRow(4, "Asia H / L", fPx(asH) + " / " + fPx(asL), C_TXT, ts, "")
+    hudRow(5, "London H / L", fPx(lnH) + " / " + fPx(lnL), C_TXT, ts, "")
+    hudRow(6, "Prior Day H / L", fPx(pdh) + " / " + fPx(pdl), C_TXT, ts, "")
+    hudRow(7, "Sequence", sqTxt, sqCol, ts, "")
+    hudRow(8, "Momentum", momTxt, momCol, ts, "HTF close vs HTF EMA, and price vs session VWAP")
+    hudRow(9, "Regime", (adxV >= adxMin ? "Trending" : "Chop") + ", ADX " + str.tostring(adxV, "0"), adxV >= adxMin ? C_UP : C_WARN, ts, "")
+    hudRow(10, "Watching", w == "" ? "Scanning levels" : w, w == "" ? C_MUTED : C_WARN, ts, "")
+    if na(lastT)
+        hudRow(11, "Last Signal", "None yet", C_MUTED, ts, "")
+        for r = 12 to 16
+            hudRow(r, "", "", C_MUTED, ts, "")
+    else
+        Sig g = lastT.sig
+        hudRow(11, "Last Signal", (g.dir == 1 ? "▲ " : "▼ ") + sigName(g) + "  " + g.grade + " (" + str.tostring(g.score) + "/" + str.tostring(g.maxScore) + ")\n" + g.lvl + "  |  " + g.sess, g.dir == 1 ? C_UP : C_DN, ts, g.factors == "" ? "No confluence factors" : g.factors)
+        hudRow(12, "Status", stateTxt(lastT), stateColor(lastT), ts, "")
+        hudRow(13, "Entry Price", fPx(g.entry), C_TXT, ts, "")
+        hudRow(14, "Stop", fPx(lastT.stopNow) + (lastT.t1Hit and beAfterT1 ? "  (BE)" : ""), C_DN, ts, "")
+        hudRow(15, "T1 / T2", fPx(g.t1) + " / " + fPx(g.t2), C_UP, ts, "")
+        hudRow(16, "Size / Risk", str.tostring(g.qty) + " contracts  |  $" + str.tostring(math.round(g.risk)), C_TXT, ts, "")

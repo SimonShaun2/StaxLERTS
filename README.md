@@ -29,6 +29,28 @@ Every CONFIRMED signal gets:
 
 Signals below *Minimum grade to alert* still get a chart label but send no alert.
 
+## What you see on the chart
+
+- **Trade panel** (top right; *Display* group). It shows:
+  - the current session and whether alerts are live, paused for news, or paused for chop
+  - Range High / Range Low (the latest 15-minute opening range)
+  - Asia, London and prior-day highs and lows
+  - the SEQ sequence read, and momentum (HTF trend + VWAP side)
+  - the regime (ADX)
+  - **Watching**: what the engine is waiting on right now, e.g. "LDR LONG: swept PDL, need displacement"
+  - the last signal's grade, status, entry, stop, T1/T2 and size/risk
+- **Position boxes**: each signal draws a green reward box (entry to T2) with a dashed T1 line, and a red risk box (entry to stop). The boxes extend until the trade resolves.
+- **Signal labels**: e.g. `▲ LDR A+`. Hover for entry, stop, targets, size, risk and the confluence factors. Faded labels scored below *Minimum grade to alert*.
+- **Outcome labels**: `T1 ✓`, `T2 ✓`, `SL ✗`, `BE` or `EXIT`, placed where the trade resolved.
+
+### Trade-update alerts
+
+Every alerted signal is followed after entry, and each outcome is pushed through the same alert:
+
+`[NY] LDR LONG T1 HIT | MNQ 5m | Level NY-ORL | Price 21461.00 | Entry 21436.00 | +25.00 pts | +1.00R | +$150 | Stop moved to breakeven`
+
+Stages: `T1 HIT`, `T2 HIT`, `STOPPED`, `BREAKEVEN` and `EXPIRED`. Toggle them with *Trade updates* in *Alert output*. Tracking assumes the stop fills first when a bar touches both the stop and a target. *Move stop to breakeven after T1* is on by default.
+
 ---
 
 ## 1. Add the indicator and create the single alert
