@@ -1,0 +1,1151 @@
+//@version=6
+strategy("Stax Session Strategy", shorttitle = "Stax Strategy", overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500, initial_capital = 25000, default_qty_type = strategy.fixed, default_qty_value = 1, pyramiding = 0, commission_type = strategy.commission.cash_per_contract, commission_value = 0.62, slippage = 1, margin_long = 0, margin_short = 0, process_orders_on_close = false, calc_on_every_tick = false)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Stax Session Strategy (backtest twin of stax_session_alerts.pine)
+// Three futures day-trading setups (LDR, ORB, SEQ) across Asia / London / NY,
+// graded by a confluence score and sent as Discord or JSON webhook alerts.
+// All times ET (America/New_York). Designed for 5-minute charts on micro or
+// mini futures (MNQ, NQ, MES, ES, MGC, GC, ...).
+// One alert on "Any alert() function call" covers every message.
+// ═══════════════════════════════════════════════════════════════════════════
+
+TZ = "America/New_York"
+
+// ───── Inputs: Setups ──────────────────────────────────────────────────────
+G_SET = "Setups"
+enLdr = input.bool(true, "LDR: level sweep reversal", group = G_SET)
+enOrb = input.bool(true, "ORB: 15-minute opening range breakout", group = G_SET)
+enSeq = input.bool(true, "SEQ: session sequence (Asia > London > NY)", group = G_SET)
+
+// ───── Inputs: Sessions ────────────────────────────────────────────────────
+G_SES = "Sessions"
+asiaSess = input.session("1800-0300", "Asia levels session", group = G_SES, tooltip = "Asia high/low are built inside this window and become active only when it ends. They stay active (and extend through NY) until the window starts again.")
+lonSess  = input.session("0300-0930", "London levels session", group = G_SES, tooltip = "London high/low are built inside this window and become active only when it ends. They stay active until the window starts again. SEQ also classifies London inside this window and finalizes when it ends.")
+nySess   = input.session("0930-1600", "NY session (VWAP anchor)", group = G_SES, tooltip = "Session VWAP resets at the start of the Asia levels session, the London levels session and this NY session.")
+asOrSess = input.session("2000-2015", "Asia opening range (AS-OR)", group = G_SES)
+loOrSess = input.session("0300-0315", "London opening range (LO-OR)", group = G_SES)
+nyOrSess = input.session("0930-0945", "NY opening range (NY-OR)", group = G_SES, tooltip = "Only the most recently completed opening range is active. It is cleared at the 18:00 reopen. Use a chart timeframe of 15 minutes or less so each range is built from whole bars.")
+
+// ───── Inputs: Alert windows ───────────────────────────────────────────────
+G_WIN = "Alert windows"
+awAsiaOn = input.bool(true, "Asia", inline = "aw1", group = G_WIN)
+awAsia   = input.session("2000-2359", "", inline = "aw1", group = G_WIN)
+awLonOn  = input.bool(true, "London", inline = "aw2", group = G_WIN)
+awLon    = input.session("0300-0600", "", inline = "aw2", group = G_WIN)
+awNyOn   = input.bool(true, "NY", inline = "aw3", group = G_WIN)
+awNy     = input.session("0930-1130", "", inline = "aw3", group = G_WIN, tooltip = "Alerts fire only inside an enabled window. The NY window time also bounds the SEQ NY logic, even when the NY toggle is off.")
+
+// ───── Inputs: News blackouts ──────────────────────────────────────────────
+G_NEWS = "News blackouts"
+nb1On = input.bool(true, "Blackout 1", inline = "nb1", group = G_NEWS)
+nb1   = input.session("0155-0206", "", inline = "nb1", group = G_NEWS)
+nb2On = input.bool(true, "Blackout 2", inline = "nb2", group = G_NEWS)
+nb2   = input.session("0825-0836", "", inline = "nb2", group = G_NEWS)
+nb3On = input.bool(true, "Blackout 3", inline = "nb3", group = G_NEWS)
+nb3   = input.session("0955-1006", "", inline = "nb3", group = G_NEWS)
+nb4On = input.bool(false, "FOMC", inline = "nb4", group = G_NEWS)
+nb4   = input.session("1355-1406", "", inline = "nb4", group = G_NEWS, tooltip = "A bar is blacked out when it opens inside the window or its close (the moment its alert would fire) falls inside the window. Windows must not cross midnight.")
+showNewsBg = input.bool(true, "Gray background during blackouts", group = G_NEWS)
+
+// ───── Inputs: Model ───────────────────────────────────────────────────────
+G_MOD = "Model"
+atrLen   = input.int(14, "ATR length", minval = 1, group = G_MOD)
+dispK    = input.float(0.8, "Displacement body (x ATR)", minval = 0.0, step = 0.05, group = G_MOD, tooltip = "LDR and SEQ reversal: the displacement candle's body must be at least this many ATRs and it must close beyond the last confirmed swing.")
+pivLen   = input.int(3, "Swing pivot length", minval = 1, group = G_MOD, tooltip = "Bars on each side for ta.pivothigh / ta.pivotlow. A swing is confirmed this many bars after it prints.")
+maxBars  = input.int(12, "Max bars per stage", minval = 1, group = G_MOD, tooltip = "Each LDR stage (sweep > displacement > retrace > confirmation) times out after this many bars. Also bounds the ORB retest wait.")
+watchK   = input.float(0.25, "WATCH distance (x ATR)", minval = 0.0, step = 0.05, group = G_MOD, tooltip = "LDR WATCH fires the first time price comes within this distance of a level.")
+stopBufK = input.float(0.1, "Stop buffer (x ATR)", minval = 0.0, step = 0.05, group = G_MOD, tooltip = "Added beyond every structural stop (sweep extreme, OR edge/midpoint, pullback extreme).")
+
+// ───── Inputs: ORB ─────────────────────────────────────────────────────────
+G_ORB = "ORB"
+orbBodyK    = input.float(0.5, "Breakout body (x ATR)", minval = 0.0, step = 0.05, group = G_ORB)
+orbMode     = input.string("Retest", "Entry mode", options = ["Retest", "Breakout close"], group = G_ORB, tooltip = "Breakout close: enter on the breakout candle's close. Retest: wait for price to pull back near the broken edge without closing back inside, then enter on a candle that closes in the breakout direction.")
+orbRetestK  = input.float(0.25, "Retest distance (x ATR)", minval = 0.0, step = 0.05, group = G_ORB)
+orbStopMode = input.string("OR midpoint", "Stop mode", options = ["Opposite OR edge", "OR midpoint", "Breakout candle extreme"], group = G_ORB)
+orbFailBars = input.int(3, "Failed breakout bars", minval = 1, group = G_ORB, tooltip = "A close back inside the range within this many bars of the breakout sends ORB FAILED.")
+orbMinW     = input.float(0.5, "Min range width (x ATR)", minval = 0.0, step = 0.1, group = G_ORB)
+orbMaxW     = input.float(3.0, "Max range width (x ATR)", minval = 0.0, step = 0.1, group = G_ORB)
+orbVwap     = input.bool(true, "Require VWAP alignment", group = G_ORB, tooltip = "Longs need the entry close above session VWAP, shorts below.")
+orbVol      = input.bool(false, "Require breakout volume", inline = "ov", group = G_ORB)
+orbVolK     = input.float(1.2, "x SMA(20)", minval = 0.0, step = 0.1, inline = "ov", group = G_ORB)
+oeAs        = input.session("2015-2300", "Asia ORB entry window", group = G_ORB)
+oeLo        = input.session("0315-0600", "London ORB entry window", group = G_ORB)
+oeNy        = input.session("0945-1100", "NY ORB entry window", group = G_ORB, tooltip = "No new ORB breakouts or entries outside these windows (cutoffs: Asia 23:00, London 06:00, NY 11:00).")
+
+// ───── Inputs: SEQ ─────────────────────────────────────────────────────────
+G_SEQ = "SEQ"
+seqAsiaSess = input.session("1800-0300", "SEQ Asia range window", group = G_SEQ, tooltip = "The Asia range SEQ uses. Separate from the Asia levels session, e.g. 2000-0000 for a tighter range.")
+seqWick     = input.bool(false, "Count wick breaks (not closes)", group = G_SEQ)
+seqRetestK  = input.float(0.25, "Continuation retest (x ATR)", minval = 0.0, step = 0.05, group = G_SEQ)
+useBias     = input.bool(false, "Filter LDR/ORB by SEQ bias", group = G_SEQ, tooltip = "In NY: London broke high and no reversal armed = longs only. Reversal armed = reversal direction only. No clean sequence = no filtering. Mirror for London broke low.")
+
+// ───── Inputs: Filters ─────────────────────────────────────────────────────
+G_FIL = "Filters"
+useChop      = input.bool(true, "Block alerts in chop (ADX)", group = G_FIL)
+adxLen       = input.int(14, "ADX length", minval = 1, group = G_FIL)
+adxMin       = input.float(18, "ADX minimum", minval = 0, group = G_FIL)
+useBridge    = input.bool(false, "Use SWCF regime bridge", group = G_FIL, tooltip = "Reads a regime value plotted by another indicator (add it to the chart first). Value >= Strong level = Strong regime, value <= Chop level = chop (alerts blocked).")
+bridgeSrc    = input.source(close, "SWCF regime source", group = G_FIL)
+bridgeStrong = input.float(2, "Strong level", group = G_FIL)
+bridgeChop   = input.float(0, "Chop level", group = G_FIL)
+
+// ───── Inputs: Confluence ──────────────────────────────────────────────────
+G_CF = "Confluence"
+cfSeq    = input.bool(true, "1. SEQ bias agrees", group = G_CF)
+cfStack  = input.bool(true, "2. Level stacking", inline = "st", group = G_CF)
+stackK   = input.float(0.25, "within x ATR", minval = 0.0, step = 0.05, inline = "st", group = G_CF)
+cfHtfLvl = input.bool(true, "3. HTF level (PDH/PDL, Asia, London)", group = G_CF)
+cfVwap   = input.bool(true, "4. VWAP side", group = G_CF)
+cfTrend  = input.bool(true, "5. HTF trend", inline = "tr", group = G_CF)
+htfTf    = input.timeframe("60", "TF", inline = "tr", group = G_CF)
+htfEma   = input.int(50, "EMA", minval = 1, inline = "tr", group = G_CF, tooltip = "Last completed HTF close above (long) or below (short) the HTF EMA. Uses the prior HTF bar only, so it cannot repaint.")
+cfRegime = input.bool(true, "6. Regime (ADX >= minimum or bridge Strong)", group = G_CF)
+cfSess   = input.bool(true, "7. Session quality (London or NY)", group = G_CF)
+cfRoom   = input.bool(true, "8. Room", inline = "rm", group = G_CF)
+roomR    = input.float(3.0, "R to next level >=", minval = 0.0, step = 0.5, inline = "rm", group = G_CF)
+
+// ───── Inputs: Targets and sizing ──────────────────────────────────────────
+G_TGT = "Targets and sizing"
+tgtMode    = input.string("Dollar target", "Target mode", options = ["Dollar target", "R-multiple"], group = G_TGT, tooltip = "Dollar target: T1/T2 are whole-position dollar amounts. R-multiple: T1 = 1R, T2 = 2R.")
+contracts  = input.int(3, "Contracts", minval = 1, group = G_TGT)
+t1Usd      = input.float(150, "T1 $ (whole position)", minval = 0, group = G_TGT)
+t2Usd      = input.float(300, "T2 $ (whole position)", minval = 0, group = G_TGT)
+maxRiskUsd = input.float(0, "Max stop risk $ (0 = off)", minval = 0, group = G_TGT, tooltip = "If stop points x point value x contracts exceeds this, size is cut to floor(max / (stop points x point value)) and targets are recalculated. Size below 1 = no signal.")
+pvOverride = input.float(0, "Point value override (0 = auto)", minval = 0, group = G_TGT, tooltip = "0 uses syminfo.pointvalue (MNQ 2, NQ 20, MES 5, ES 50, MGC 10, GC 100).")
+minRR      = input.float(2.0, "Quality gate: min R to next level", minval = 0.0, step = 0.25, group = G_TGT, tooltip = "Room to the next marked level in the trade direction must be at least this many stop distances, and T1 must fall before that level. No level ahead = open space = pass.")
+
+// ───── Inputs: Alert output ────────────────────────────────────────────────
+G_OUT = "Alert output"
+outFmt    = input.string("Discord", "Message format", options = ["Discord", "JSON"], group = G_OUT, tooltip = "Discord wraps one line of plain text in {\"content\":\"...\"}. JSON sends a flat object for bots.")
+minGrade  = input.string("A", "Minimum grade to alert", options = ["A+", "A", "B", "C"], group = G_OUT, tooltip = "CONFIRMED signals below this grade still draw a chart label but send no alert.")
+alWatch   = input.bool(true, "LDR WATCH", inline = "a1", group = G_OUT)
+alSweep   = input.bool(true, "LDR SWEEP", inline = "a1", group = G_OUT)
+alDisp    = input.bool(true, "LDR DISPLACEMENT", inline = "a1", group = G_OUT)
+alOrbBo   = input.bool(true, "ORB BREAKOUT", inline = "a2", group = G_OUT)
+alOrbFail = input.bool(true, "ORB FAILED", inline = "a2", group = G_OUT)
+alOrbSkip = input.bool(true, "ORB SKIPPED", inline = "a2", group = G_OUT)
+alSeqMap  = input.bool(true, "SEQ MAP", inline = "a3", group = G_OUT)
+alSeqArm  = input.bool(true, "SEQ REVERSAL ARMED", inline = "a3", group = G_OUT)
+alTrade   = input.bool(true, "Trade updates (T1 hit / T2 hit / stopped / breakeven)", group = G_OUT, tooltip = "Follows every alerted signal after entry and pushes an update when it reaches T1, T2, its stop, breakeven, or expires.")
+
+// ───── Inputs: Display ─────────────────────────────────────────────────────
+G_DSP = "Display"
+showPanel  = input.bool(true, "Trade panel", inline = "pn", group = G_DSP)
+panelPos   = input.string("Top right", "", options = ["Top right", "Top left", "Middle right", "Bottom right", "Bottom left"], inline = "pn", group = G_DSP)
+panelSize  = input.string("Small", "Panel text", options = ["Tiny", "Small", "Normal"], group = G_DSP)
+showBoxes  = input.bool(true, "Position boxes (risk / reward)", group = G_DSP)
+showSigLbl = input.bool(true, "Signal labels", group = G_DSP)
+showOutLbl = input.bool(true, "Outcome labels (T1, T2, SL, BE)", group = G_DSP)
+beAfterT1  = input.bool(true, "Move stop to breakeven after T1", group = G_DSP, tooltip = "Applies to trade tracking, the panel and trade-update alerts.")
+trkBars    = input.int(78, "Stop tracking a trade after (bars)", minval = 5, maxval = 400, group = G_DSP, tooltip = "An open trade that hits neither a target nor its stop is marked EXPIRED after this many bars (78 = one NY session on 5m).")
+showLvlNm  = input.bool(true, "Level name tags", group = G_DSP)
+
+// ───── Inputs: Strategy ────────────────────────────────────────────────────
+G_STR = "Strategy"
+exitMode   = input.string("Half at T1, BE, rest at T2", "Exit mode", options = ["Half at T1, BE, rest at T2", "All at T1", "All at T2"], group = G_STR, tooltip = "Half mode: half the contracts exit at T1, the stop on the rest moves to breakeven, the rest exits at T2. With 1 contract the whole position exits at T1.")
+stratGrade = input.string("C", "Minimum grade to trade", options = ["A+", "A", "B", "C"], group = G_STR, tooltip = "C trades every confirmed signal that passes the filters, so the results table can compare grades. Commission and slippage are set in Settings > Properties (defaults: $0.62 per contract per side, 1 tick).")
+flatOn     = input.bool(true, "Flatten before the daily close", inline = "fl", group = G_STR)
+flatSess   = input.session("1655-1700", "", inline = "fl", group = G_STR)
+showTable  = input.bool(false, "Show results table", group = G_STR)
+
+// ───── Types ───────────────────────────────────────────────────────────────
+// LDR-style state machine: sweep (1) > displacement (2) > retrace (3) > confirm.
+type Ldr
+    int dir
+    int stage = 0
+    float lvl = na
+    string lvlName = ""
+    int lvlKind = 3
+    float ext = na
+    float origin = na
+    int stageBar = 0
+
+// ORB state per direction: 0 = waiting for breakout, 1 = broken out.
+type Orb
+    int dir
+    int stage = 0
+    int boBar = 0
+    float boHi = na
+    float boLo = na
+    bool touched = false
+    bool done = false
+
+// One alert payload / confirmed signal.
+type Sig
+    string setup = ""
+    string sub = ""
+    string sess = ""
+    string stage = ""
+    int dir = 0
+    string lvl = ""
+    float lvlPx = na
+    int lvlKind = 3
+    float price = na
+    float entry = na
+    float stop = na
+    float exclPx = na
+    float t1 = na
+    float t2 = na
+    float rr = na
+    int qty = 0
+    float risk = na
+    string grade = ""
+    int score = 0
+    int maxScore = 0
+    string factors = ""
+    string extra = ""
+    bool alertOk = false
+    bool isUpd = false
+
+// ───── Time and sessions ───────────────────────────────────────────────────
+inSess(string s) =>
+    not na(time(timeframe.period, s, TZ))
+
+// Minute of day (ET) for a timestamp, and for the start/end of an "HHMM-HHMM" session string.
+minOfDay(int t) =>
+    hour(t, TZ) * 60 + minute(t, TZ)
+sessMin(string s, int pos) =>
+    str.tonumber(str.substring(s, pos, pos + 2)) * 60 + str.tonumber(str.substring(s, pos + 2, pos + 4))
+
+// Blackout if the bar opens inside the window or its close (alert time) falls inside it.
+inBlackout(string s) =>
+    float st = sessMin(s, 0)
+    float en = sessMin(s, 5)
+    int om = minOfDay(time)
+    int cm = minOfDay(time_close)
+    (om >= st and om < en) or (cm >= st and cm <= en)
+
+inAsia  = inSess(asiaSess)
+inLon   = inSess(lonSess)
+inNy    = inSess(nySess)
+inAsOr  = inSess(asOrSess)
+inLoOr  = inSess(loOrSess)
+inNyOr  = inSess(nyOrSess)
+inSeqAs = inSess(seqAsiaSess)
+inAwAs  = inSess(awAsia)
+inAwLo  = inSess(awLon)
+inAwNy  = inSess(awNy)
+inOeAs  = inSess(oeAs)
+inOeLo  = inSess(oeLo)
+inOeNy  = inSess(oeNy)
+
+newDay     = timeframe.change("D")   // CME futures daily bar opens at 18:00 ET
+asiaStart  = inAsia and not inAsia[1]
+asiaEnd    = inAsia[1] and not inAsia
+lonStart   = inLon and not inLon[1]
+lonEnd     = inLon[1] and not inLon
+nyStart    = inNy and not inNy[1]
+nyWinStart = inAwNy and not inAwNy[1]
+
+sessTag = inAsia ? "ASIA" : inLon ? "LONDON" : "NY"
+
+// ───── Indicators ──────────────────────────────────────────────────────────
+atr = ta.atr(atrLen)
+[diPlus, diMinus, adxV] = ta.dmi(adxLen, adxLen)
+volSma = ta.sma(volume, 20)
+vwapReset = asiaStart or lonStart or nyStart
+sVwap = ta.vwap(hlc3, vwapReset)
+
+ph = ta.pivothigh(high, pivLen, pivLen)
+pl = ta.pivotlow(low, pivLen, pivLen)
+var float lastSH = na
+var float lastSL = na
+if not na(ph)
+    lastSH := ph
+if not na(pl)
+    lastSL := pl
+
+// Non-repainting HTF data: prior completed bars only.
+[pdh, pdl] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+[hClose, hEma] = request.security(syminfo.tickerid, htfTf, [close[1], ta.ema(close, htfEma)[1]], lookahead = barmerge.lookahead_on)
+
+// ───── Levels: Asia and London ─────────────────────────────────────────────
+var float asRunH = na
+var float asRunL = na
+var float asH = na
+var float asL = na
+if asiaStart
+    asRunH := high
+    asRunL := low
+    asH := na
+    asL := na
+else if inAsia
+    asRunH := math.max(asRunH, high)
+    asRunL := math.min(asRunL, low)
+if asiaEnd
+    asH := asRunH
+    asL := asRunL
+
+var float lnRunH = na
+var float lnRunL = na
+var float lnH = na
+var float lnL = na
+if lonStart
+    lnRunH := high
+    lnRunL := low
+    lnH := na
+    lnL := na
+else if inLon
+    lnRunH := math.max(lnRunH, high)
+    lnRunL := math.min(lnRunL, low)
+if lonEnd
+    lnH := lnRunH
+    lnL := lnRunL
+
+// ───── Levels: session opening ranges (most recent completed only) ─────────
+orWin = inAsOr or inLoOr or inNyOr
+var float orBH = na
+var float orBL = na
+var string orBTag = ""
+var float orH = na
+var float orL = na
+var string orTag = ""
+var string orSes = ""
+bool orCommit = false
+if newDay
+    orH := na
+    orL := na
+    orTag := ""
+    orSes := ""
+if (inAsOr and not inAsOr[1]) or (inLoOr and not inLoOr[1]) or (inNyOr and not inNyOr[1])
+    orBH := high
+    orBL := low
+    orBTag := inAsOr ? "AS-OR" : inLoOr ? "LO-OR" : "NY-OR"
+else if orWin
+    orBH := math.max(orBH, high)
+    orBL := math.min(orBL, low)
+if orWin[1] and not orWin and orBTag != "" and not na(orBH)
+    orH := orBH
+    orL := orBL
+    orTag := orBTag
+    orSes := orBTag == "AS-OR" ? "ASIA" : orBTag == "LO-OR" ? "LONDON" : "NY"
+    orBTag := ""
+    orCommit := true
+
+// ───── Levels: SEQ Asia range ──────────────────────────────────────────────
+var float sqRunH = na
+var float sqRunL = na
+var float sqAH = na
+var float sqAL = na
+if newDay
+    sqAH := na
+    sqAL := na
+if inSeqAs and not inSeqAs[1]
+    sqRunH := high
+    sqRunL := low
+    sqAH := na
+    sqAL := na
+else if inSeqAs
+    sqRunH := math.max(sqRunH, high)
+    sqRunL := math.min(sqRunL, low)
+if inSeqAs[1] and not inSeqAs
+    sqAH := sqRunH
+    sqAL := sqRunL
+
+// Marked levels, in sweep priority order. Kind: 0 = prior day, 1 = Asia, 2 = London, 3 = OR.
+lvPx = array.from(pdh, pdl, asH, asL, lnH, lnL, orH, orL)
+lvNm = array.from("PDH", "PDL", "ASIA-H", "ASIA-L", "LON-H", "LON-L", orTag + "H", orTag + "L")
+lvKd = array.from(0, 0, 1, 1, 2, 2, 3, 3)
+N_LV = 8
+
+// ───── Filters ─────────────────────────────────────────────────────────────
+winOk  = (awAsiaOn and inAwAs) or (awLonOn and inAwLo) or (awNyOn and inAwNy)
+newsOn = (nb1On and inBlackout(nb1)) or (nb2On and inBlackout(nb2)) or (nb3On and inBlackout(nb3)) or (nb4On and inBlackout(nb4))
+timeOk = winOk and not newsOn
+chopBlock = (useChop and adxV < adxMin) or (useBridge and bridgeSrc <= bridgeChop)
+regimeOk  = adxV >= adxMin or (useBridge and bridgeSrc >= bridgeStrong)
+pv = pvOverride > 0 ? pvOverride : syminfo.pointvalue
+
+// ───── Helpers ─────────────────────────────────────────────────────────────
+tfTxt  = timeframe.isminutes ? timeframe.period + "m" : timeframe.period
+symTxt = syminfo.root
+
+fPx(float x) =>
+    na(x) ? "-" : str.tostring(x, format.mintick)
+jNum(float x) =>
+    na(x) ? "null" : str.tostring(x, format.mintick)
+jStr(string x) =>
+    x == "" ? "null" : '"' + x + '"'
+dirTxt(int d) =>
+    d == 1 ? "LONG" : d == -1 ? "SHORT" : ""
+gradeOf(int sc) =>
+    sc >= 6 ? "A+" : sc >= 4 ? "A" : sc >= 2 ? "B" : "C"
+gradeRank(string g) =>
+    g == "A+" ? 3 : g == "A" ? 2 : g == "B" ? 1 : 0
+addF(string f, string x) =>
+    f == "" ? x : f + ", " + x
+
+// SEQ bias gate for LDR/ORB (only in NY, only when enabled).
+biasPass(int d, int bd) =>
+    not useBias or sessTag != "NY" or bd == 0 or d == bd
+stageOk(int d, bool withBias, int bd) =>
+    timeOk and not chopBlock and (not withBias or biasPass(d, bd))
+
+// Nearest marked level strictly ahead of entry in the trade direction (excluding exclPx).
+nextLevel(array<float> pxs, float entry, int d, float exclPx) =>
+    float best = na
+    for i = 0 to pxs.size() - 1
+        float p = pxs.get(i)
+        bool excluded = not na(exclPx) and math.abs(p - exclPx) < syminfo.mintick * 0.5
+        if not na(p) and not excluded and d * (p - entry) > 0
+            if na(best) or d * (p - best) < 0
+                best := p
+    best
+
+// Number of other marked levels within tol of px.
+stackCount(array<float> pxs, array<string> nms, float px, string nm, float tol) =>
+    int n = 0
+    for i = 0 to pxs.size() - 1
+        float p = pxs.get(i)
+        if not na(p) and nms.get(i) != nm and math.abs(p - px) <= tol
+            n := n + 1
+    n
+
+mkSig(string setup, string stage, int d, string lvl, float lvlPx, string extra) =>
+    Sig s = Sig.new()
+    s.setup := setup
+    s.sess := sessTag
+    s.stage := stage
+    s.dir := d
+    s.lvl := lvl
+    s.lvlPx := lvlPx
+    s.price := close
+    s.extra := extra
+    s
+
+msgText(Sig s) =>
+    string d = dirTxt(s.dir)
+    string t = "[" + s.sess + "] " + s.setup + (d != "" ? " " + d : "") + " " + s.stage + " | " + symTxt + " " + tfTxt
+    if s.lvl != ""
+        t += " | Level " + s.lvl + (na(s.entry) and not na(s.lvlPx) ? " " + fPx(s.lvlPx) : "")
+    if not na(s.entry) and not s.isUpd
+        t += " | Entry " + fPx(s.entry) + " | Stop " + fPx(s.stop) + " | T1 " + fPx(s.t1) + " | T2 " + fPx(s.t2)
+        t += " | Size " + str.tostring(s.qty) + " | Risk $" + str.tostring(math.round(s.risk))
+        t += " | R to next level " + (na(s.rr) ? "open" : str.tostring(s.rr, "0.00"))
+        t += " | Grade " + s.grade + " (" + str.tostring(s.score) + "/" + str.tostring(s.maxScore) + ")" + (s.factors != "" ? ": " + s.factors : "")
+    else if not na(s.price) and s.stage != "MAP"
+        t += " | Price " + fPx(s.price)
+    if s.extra != ""
+        t += " | " + s.extra
+    t
+
+msgJson(Sig s) =>
+    bool hasTrade = not na(s.entry)
+    string j = '{"source":"StaxSessionAlerts","setup":' + jStr(s.setup) + ',"session":' + jStr(s.sess)
+    j += ',"stage":' + jStr(str.split(s.stage, ":").get(0)) + ',"dir":' + jStr(dirTxt(s.dir))
+    j += ',"symbol":' + jStr(symTxt) + ',"tf":' + jStr(tfTxt) + ',"level":' + jStr(s.lvl)
+    j += ',"price":' + jNum(s.price) + ',"entry":' + jNum(s.entry) + ',"stop":' + jNum(s.stop)
+    j += ',"t1":' + jNum(s.t1) + ',"t2":' + jNum(s.t2)
+    j += ',"rr_to_obstacle":' + (na(s.rr) ? "null" : str.tostring(s.rr, "0.00"))
+    j += ',"contracts":' + (hasTrade ? str.tostring(s.qty) : "null")
+    j += ',"risk_usd":' + (hasTrade ? str.tostring(s.risk, "0.00") : "null")
+    j += ',"grade":' + jStr(s.grade) + ',"score":' + (hasTrade ? str.tostring(s.score) : "null")
+    j += ',"factors":' + jStr(s.factors) + ',"note":' + jStr(s.extra)
+    j += ',"time":' + jStr(str.format_time(time_close, "yyyy-MM-dd'T'HH:mm:ssZ", TZ)) + '}'
+    j
+
+send(Sig s) =>
+    alert(outFmt == "JSON" ? msgJson(s) : '{"content":"' + msgText(s) + '"}', alert.freq_once_per_bar_close)
+
+// ───── State machine methods ───────────────────────────────────────────────
+method reset(Ldr this) =>
+    this.stage := 0
+    this.ext := na
+    this.origin := na
+    this.stageBar := 0
+
+// Advance a swept (stage >= 1) machine one confirmed bar.
+// Returns 1 = displacement, 2 = retrace, 3 = confirmed, -1 = invalidated, -2 = timed out, 0 = nothing.
+method step(Ldr this, float swingRef) =>
+    int ev = 0
+    if this.dir * (close - this.ext) < 0
+        ev := -1
+    else if bar_index - this.stageBar > maxBars
+        ev := -2
+    else
+        this.ext := this.dir == 1 ? math.min(this.ext, low) : math.max(this.ext, high)
+        if this.stage == 1
+            if this.dir * (close - open) >= dispK * atr and not na(swingRef) and this.dir * (close - swingRef) > 0
+                this.stage := 2
+                this.origin := open
+                this.stageBar := bar_index
+                ev := 1
+        else if this.stage == 2
+            if (this.dir == 1 ? low <= this.origin : high >= this.origin)
+                this.stage := 3
+                this.stageBar := bar_index
+                ev := 2
+        if this.stage == 3 and this.dir * (close - this.origin) > 0 and this.dir * (close - open) > 0
+            ev := 3
+    if ev < 0
+        this.reset()
+    ev
+
+method reset(Orb this) =>
+    this.stage := 0
+    this.boBar := 0
+    this.boHi := na
+    this.boLo := na
+    this.touched := false
+
+// ───── State ───────────────────────────────────────────────────────────────
+var array<Ldr> ldrs = array.new<Ldr>()
+var array<Orb> orbs = array.new<Orb>()
+var Ldr sqRev = Ldr.new(0)
+if barstate.isfirst
+    ldrs.push(Ldr.new(1))
+    ldrs.push(Ldr.new(-1))
+    orbs.push(Orb.new(1))
+    orbs.push(Orb.new(-1))
+
+var bool orSkip = false
+var bool orbTraded = false
+
+var bool sqBrH = false
+var bool sqBrL = false
+var bool sqFinal = false
+var int sqClass = 0          // 1 = broke high, -1 = broke low, 2 = both, 0 = neither
+var bool sqArmed = false
+var bool sqDone = false
+var bool sqTouched = false
+var float sqPull = na
+var bool sqSwept = false
+var float nyHi = na
+var float nyLo = na
+
+var array<bool> wFlag = array.new<bool>(8, false)
+var array<float> wPx = array.new<float>(8, na)
+
+int biasDir = 0
+sigs = array.new<Sig>()
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Confirmed-bar logic. State only changes here, so nothing repaints.
+// ═══════════════════════════════════════════════════════════════════════════
+if barstate.isconfirmed
+    // ── 18:00 reopen: reset every setup
+    if newDay
+        for L in ldrs
+            L.reset()
+        for O in orbs
+            O.reset()
+            O.done := false
+        orSkip := false
+        orbTraded := false
+        sqBrH := false
+        sqBrL := false
+        sqFinal := false
+        sqClass := 0
+        sqArmed := false
+        sqDone := false
+        sqTouched := false
+        sqPull := na
+        sqSwept := false
+        sqRev.reset()
+        for i = 0 to N_LV - 1
+            wFlag.set(i, false)
+
+    // ── New opening range: fresh ORB state and width check
+    if orCommit
+        for O in orbs
+            O.reset()
+            O.done := false
+        orbTraded := false
+        orSkip := false
+        float w = orH - orL
+        if atr > 0 and (w < orbMinW * atr or w > orbMaxW * atr)
+            orSkip := true
+            if enOrb and alOrbSkip and timeOk
+                string why = w < orbMinW * atr ? "narrow" : "wide"
+                send(mkSig("ORB", "SKIPPED: range too " + why, 0, orTag, na, orTag + " " + fPx(orL) + " - " + fPx(orH) + " | Width " + fPx(w) + " = " + str.tostring(w / atr, "0.00") + " ATR (allowed " + str.tostring(orbMinW, "0.00") + " - " + str.tostring(orbMaxW, "0.00") + ") | No ORB this session"))
+
+    // ── SEQ: classify London against the Asia range
+    if inLon and not sqFinal and not na(sqAH)
+        if seqWick ? high > sqAH : close > sqAH
+            sqBrH := true
+        if seqWick ? low < sqAL : close < sqAL
+            sqBrL := true
+    if lonEnd and not sqFinal and not na(sqAH)
+        sqFinal := true
+        sqClass := sqBrH and not sqBrL ? 1 : sqBrL and not sqBrH ? -1 : sqBrH and sqBrL ? 2 : 0
+        if enSeq and alSeqMap and timeOk
+            string mt = sqClass == 1 ? "London broke Asia HIGH (" + fPx(sqAH) + ") | London high " + fPx(lnH) + " | Continuation holds above " + fPx(sqAH) + " | Reversal below " + fPx(sqAH) + " targets Asia low " + fPx(sqAL) : sqClass == -1 ? "London broke Asia LOW (" + fPx(sqAL) + ") | London low " + fPx(lnL) + " | Continuation holds below " + fPx(sqAL) + " | Reversal above " + fPx(sqAL) + " targets Asia high " + fPx(sqAH) : "No clean sequence (London broke " + (sqClass == 2 ? "both" : "neither") + ") | SEQ off today"
+            send(mkSig("SEQ", "MAP", 0, "", na, mt))
+
+    // ── SEQ: NY window extremes
+    if nyWinStart
+        nyHi := high
+        nyLo := low
+    else if inAwNy
+        nyHi := math.max(nyHi, high)
+        nyLo := math.min(nyLo, low)
+
+    // ── SEQ: NY continuation / reversal
+    if enSeq and sqFinal and (sqClass == 1 or sqClass == -1) and not sqDone and inAwNy
+        int c = sqClass
+        float edge = c == 1 ? sqAH : sqAL
+        string edgeNm = c == 1 ? "ASIA-H" : "ASIA-L"
+        string edgeTxt = c == 1 ? "Asia HIGH " + fPx(sqAH) : "Asia LOW " + fPx(sqAL)
+        string tgtTxt = c == 1 ? "Structural target Asia low " + fPx(sqAL) : "Structural target Asia high " + fPx(sqAH)
+        if not sqArmed
+            bool backIn = c * (close - edge) < 0 and (c * (close[1] - edge) >= 0 or nyWinStart)
+            if backIn
+                // Reversal armed: hand off to the LDR confirmation steps.
+                sqArmed := true
+                sqSwept := c == 1 ? nyHi > lnH : nyLo < lnL
+                sqTouched := false
+                sqPull := na
+                sqRev.dir := -c
+                sqRev.stage := 1
+                sqRev.ext := c == 1 ? nyHi : nyLo
+                sqRev.stageBar := bar_index
+                sqRev.lvl := edge
+                sqRev.lvlName := edgeNm
+                sqRev.lvlKind := 1
+                if alSeqArm and stageOk(-c, false, 0)
+                    string sw = sqSwept ? "Swept London " + (c == 1 ? "high " + fPx(lnH) : "low " + fPx(lnL)) : "Failed to make a new London " + (c == 1 ? "high" : "low")
+                    send(mkSig("SEQ", "REVERSAL ARMED", -c, edgeNm, edge, sw + " | Closed back " + (c == 1 ? "below " : "above ") + edgeTxt + " | " + tgtTxt))
+            else if c * (close - edge) < 0
+                sqTouched := false
+                sqPull := na
+            else
+                bool near = c == 1 ? low <= edge + seqRetestK * atr : high >= edge - seqRetestK * atr
+                if near and not sqTouched
+                    sqTouched := true
+                    sqPull := c == 1 ? low : high
+                else if sqTouched
+                    sqPull := c == 1 ? math.min(sqPull, low) : math.max(sqPull, high)
+                if sqTouched and c * (close - open) > 0 and (c == 1 ? close > high[1] : close < low[1])
+                    Sig s = mkSig("SEQ", "CONTINUATION CONFIRMED", c, edgeNm, edge, "Pullback held " + edgeTxt)
+                    s.sub := "C"
+                    s.lvlKind := 1
+                    s.entry := close
+                    s.stop := sqPull - c * stopBufK * atr
+                    sigs.push(s)
+                    sqDone := true
+        else
+            int ev = sqRev.step(sqRev.dir == 1 ? lastSH : lastSL)
+            if ev == 3
+                Sig s = mkSig("SEQ", "REVERSAL CONFIRMED", sqRev.dir, sqRev.lvlName, sqRev.lvl, tgtTxt)
+                s.sub := "R"
+                s.lvlKind := 1
+                s.entry := close
+                s.stop := sqRev.ext - sqRev.dir * stopBufK * atr
+                sigs.push(s)
+                sqDone := true
+                sqRev.reset()
+            else if ev < 0
+                sqArmed := false
+
+    // ── SEQ bias (used by the bias filter and confluence factor 1)
+    biasDir := sqFinal and (sqClass == 1 or sqClass == -1) ? (sqArmed ? -sqClass : sqClass) : 0
+
+    // ── LDR: level sweep reversal
+    if enLdr
+        for L in ldrs
+            if L.stage == 0
+                for i = 0 to N_LV - 1
+                    float p = lvPx.get(i)
+                    bool swept = L.dir == 1 ? low < p : high > p
+                    if not na(p) and L.dir * (close[1] - p) > 0 and swept and L.dir * (close - p) > 0
+                        L.stage := 1
+                        L.lvl := p
+                        L.lvlName := lvNm.get(i)
+                        L.lvlKind := lvKd.get(i)
+                        L.ext := L.dir == 1 ? low : high
+                        L.stageBar := bar_index
+                        if alSweep and stageOk(L.dir, true, biasDir)
+                            send(mkSig("LDR", "SWEEP", L.dir, L.lvlName, p, "Sweep extreme " + fPx(L.ext)))
+                        break
+            else
+                float swing = L.dir == 1 ? lastSH : lastSL
+                int ev = L.step(swing)
+                if ev == 1 and alDisp and stageOk(L.dir, true, biasDir)
+                    send(mkSig("LDR", "DISPLACEMENT", L.dir, L.lvlName, L.lvl, "Broke swing " + (L.dir == 1 ? "high " : "low ") + fPx(swing) + " | Origin " + fPx(L.origin) + " | Sweep extreme " + fPx(L.ext)))
+                else if ev == 3
+                    Sig s = mkSig("LDR", "CONFIRMED", L.dir, L.lvlName, L.lvl, "")
+                    s.lvlKind := L.lvlKind
+                    s.entry := close
+                    s.stop := L.ext - L.dir * stopBufK * atr
+                    sigs.push(s)
+                    L.reset()
+
+    // ── ORB: opening range breakout
+    if enOrb and not na(orH) and not orSkip
+        bool entryWin = orSes == "ASIA" ? inOeAs : orSes == "LONDON" ? inOeLo : inOeNy
+        bool volOk = not orbVol or na(volSma) or volume >= orbVolK * volSma
+        for O in orbs
+            bool vwapOk = not orbVwap or na(sVwap) or O.dir * (close - sVwap) > 0
+            float edge = O.dir == 1 ? orH : orL
+            string edgeNm = orTag + (O.dir == 1 ? "H" : "L")
+            bool confirm = false
+            if O.stage == 0
+                if entryWin and not O.done and not orbTraded and O.dir * (close - edge) > 0 and O.dir * (close - open) >= orbBodyK * atr and volOk
+                    O.stage := 1
+                    O.boBar := bar_index
+                    O.boHi := high
+                    O.boLo := low
+                    O.touched := false
+                    if alOrbBo and stageOk(O.dir, true, biasDir)
+                        send(mkSig("ORB", "BREAKOUT", O.dir, edgeNm, edge, orbMode == "Retest" ? "Waiting for retest within " + str.tostring(orbRetestK) + " ATR of " + fPx(edge) : "Entry on breakout close"))
+                    if orbMode == "Breakout close" and vwapOk
+                        confirm := true
+            else if bar_index > O.boBar
+                int age = bar_index - O.boBar
+                if O.dir * (close - edge) < 0
+                    if age <= orbFailBars and alOrbFail and stageOk(O.dir, false, biasDir)
+                        send(mkSig("ORB", "FAILED", O.dir, edgeNm, edge, "Closed back inside the range " + str.tostring(age) + " bar(s) after breakout, possible LDR reversal forming"))
+                    O.stage := 0
+                else if O.done or orbMode == "Breakout close"
+                    if age > orbFailBars
+                        O.stage := 0
+                else if age > maxBars
+                    O.stage := 0
+                else
+                    if (O.dir == 1 ? low <= edge + orbRetestK * atr : high >= edge - orbRetestK * atr)
+                        O.touched := true
+                    if O.touched and O.dir * (close - open) > 0 and entryWin and vwapOk and not orbTraded
+                        confirm := true
+            if confirm
+                float base = orbStopMode == "Opposite OR edge" ? (O.dir == 1 ? orL : orH) : orbStopMode == "OR midpoint" ? (orH + orL) / 2 : (O.dir == 1 ? O.boLo : O.boHi)
+                Sig s = mkSig("ORB", "CONFIRMED", O.dir, edgeNm, edge, "")
+                s.lvlKind := 3
+                s.exclPx := edge
+                s.entry := close
+                s.stop := base - O.dir * stopBufK * atr
+                sigs.push(s)
+                O.done := true
+                orbTraded := true
+
+    // ── LDR WATCH: first touch of each level
+    if enLdr and alWatch
+        for i = 0 to N_LV - 1
+            float p = lvPx.get(i)
+            if na(p)
+                continue
+            float wp = wPx.get(i)
+            if na(wp) or wp != p
+                wFlag.set(i, false)
+                wPx.set(i, p)
+            float z = watchK * atr
+            bool inZ = low <= p + z and high >= p - z
+            bool prevInZ = low[1] <= p + z and high[1] >= p - z
+            if inZ and not prevInZ and not wFlag.get(i)
+                wFlag.set(i, true)
+                int d = close >= p ? 1 : -1
+                if stageOk(d, true, biasDir)
+                    send(mkSig("LDR", "WATCH", d, lvNm.get(i), p, "Price within " + str.tostring(watchK) + " ATR of level"))
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Confirmed signals: sizing, quality gate, confluence, alert, chart
+// ═══════════════════════════════════════════════════════════════════════════
+minRank = gradeRank(minGrade)
+maxScore = (cfSeq ? 1 : 0) + (cfStack ? 1 : 0) + (cfHtfLvl ? 1 : 0) + (cfVwap ? 1 : 0) + (cfTrend ? 1 : 0) + (cfRegime ? 1 : 0) + (cfSess ? 1 : 0) + (cfRoom ? 1 : 0)
+okSigs = array.new<Sig>()
+
+for s in sigs
+    float stopPts = s.dir * (s.entry - s.stop)
+    if na(stopPts) or stopPts <= 0
+        continue
+    // Max-risk sizing
+    int qty = contracts
+    if maxRiskUsd > 0 and stopPts * pv * qty > maxRiskUsd
+        qty := int(math.floor(maxRiskUsd / (stopPts * pv)))
+    if qty < 1
+        continue
+    float t1Pts = tgtMode == "R-multiple" ? stopPts : t1Usd / (qty * pv)
+    float t2Pts = tgtMode == "R-multiple" ? 2 * stopPts : t2Usd / (qty * pv)
+    s.qty := qty
+    s.t1 := s.entry + s.dir * t1Pts
+    s.t2 := s.entry + s.dir * t2Pts
+    s.risk := stopPts * pv * qty
+    // Quality gate
+    float nxt = nextLevel(lvPx, s.entry, s.dir, s.exclPx)
+    s.rr := na(nxt) ? na : math.abs(nxt - s.entry) / stopPts
+    if not na(nxt) and (s.rr < minRR or s.dir * (nxt - s.t1) <= 0)
+        continue
+    // Filters (block alerts and labels, never state)
+    if not (timeOk and not chopBlock and (s.setup == "SEQ" or biasPass(s.dir, biasDir)))
+        continue
+    // Confluence
+    int sc = 0
+    string f = ""
+    if cfSeq and biasDir != 0 and s.dir == biasDir
+        sc += 1
+        f := addF(f, "SEQ")
+    if cfStack and stackCount(lvPx, lvNm, s.lvlPx, s.lvl, stackK * atr) > 0
+        sc += 1
+        f := addF(f, "stack")
+    if cfHtfLvl and s.lvlKind <= 2
+        sc += 1
+        f := addF(f, "HTF level")
+    if cfVwap and not na(sVwap) and s.dir * (close - sVwap) > 0
+        sc += 1
+        f := addF(f, "VWAP")
+    if cfTrend and not na(hClose) and not na(hEma) and s.dir * (hClose - hEma) > 0
+        sc += 1
+        f := addF(f, "trend")
+    if cfRegime and regimeOk
+        sc += 1
+        f := addF(f, "regime")
+    if cfSess and s.sess != "ASIA"
+        sc += 1
+        f := addF(f, "session")
+    if cfRoom and (na(s.rr) or s.rr >= roomR)
+        sc += 1
+        f := addF(f, "room")
+    s.score := sc
+    s.maxScore := maxScore
+    s.factors := f
+    s.grade := gradeOf(sc)
+    s.alertOk := gradeRank(s.grade) >= minRank
+    okSigs.push(s)
+
+    if s.alertOk
+        send(s)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Trade tracking: position boxes, outcome labels and trade-update alerts
+// ═══════════════════════════════════════════════════════════════════════════
+C_UP    = #26a69a
+C_DN    = #ef5350
+C_WARN  = #ffb74d
+C_TXT   = #d1d4dc
+C_MUTED = #787b86
+C_BG    = #131722
+C_EDGE  = #2a2e39
+
+// state: 0 open, 1 T2 hit, 2 stopped, 3 breakeven after T1, 4 expired
+type Trade
+    Sig sig
+    int startBar
+    float stopNow
+    bool t1Hit = false
+    int state = 0
+    box rwd
+    box rsk
+    line t1Ln
+
+setupColor(Sig g) =>
+    g.setup == "LDR" ? (g.dir == 1 ? color.green : color.red) : g.setup == "ORB" ? (g.dir == 1 ? color.blue : color.orange) : color.purple
+
+sigName(Sig g) =>
+    g.setup + (g.sub == "C" ? " CONT" : g.sub == "R" ? " REV" : "") + " " + dirTxt(g.dir)
+
+stateTxt(Trade t) =>
+    t.state == 1 ? "T2 HIT" : t.state == 2 ? "STOPPED" : t.state == 3 ? "BREAKEVEN" : t.state == 4 ? "EXPIRED" : t.t1Hit ? "T1 HIT, running to T2" : "OPEN"
+
+stateColor(Trade t) =>
+    t.state == 1 ? C_UP : t.state == 2 ? C_DN : t.state == 3 or t.state == 4 ? C_MUTED : t.t1Hit ? C_UP : C_WARN
+
+// "+25.00 pts | +1.00R | +$150" for an exit at px (whole position).
+fmtPnl(Trade t, float px) =>
+    Sig g = t.sig
+    float pts = g.dir * (px - g.entry)
+    float r0 = g.dir * (g.entry - g.stop)
+    string sg = pts >= 0 ? "+" : "-"
+    sg + str.tostring(math.abs(pts), format.mintick) + " pts | " + sg + str.tostring(r0 > 0 ? math.abs(pts) / r0 : 0.0, "0.00") + "R | " + sg + "$" + str.tostring(math.round(math.abs(pts) * pv * g.qty))
+
+updSig(Trade t, string stage, float px, string extra) =>
+    Sig g = t.sig
+    Sig u = mkSig(g.setup, stage, g.dir, g.lvl, g.lvlPx, "Entry " + fPx(g.entry) + " | " + extra)
+    u.isUpd := true
+    u.sub := g.sub
+    u.price := px
+    u.entry := g.entry
+    u.stop := t.stopNow
+    u.t1 := g.t1
+    u.t2 := g.t2
+    u.rr := g.rr
+    u.qty := g.qty
+    u.risk := g.risk
+    u.grade := g.grade
+    u.score := g.score
+    u.maxScore := g.maxScore
+    u.factors := g.factors
+    u
+
+outLabel(float px, string txt, color c) =>
+    label.new(bar_index, px, txt, style = label.style_label_left, color = color.new(c, 15), textcolor = color.white, size = size.tiny)
+
+var array<Trade> trades = array.new<Trade>()
+var Trade lastT = na
+
+// 1. Advance open trades (the entry bar itself is never evaluated). Stop is checked first: conservative.
+if barstate.isconfirmed and trades.size() > 0
+    for i = trades.size() - 1 to 0
+        Trade t = trades.get(i)
+        Sig g = t.sig
+        int d = g.dir
+        bool notify = alTrade and g.alertOk
+        if d == 1 ? low <= t.stopNow : high >= t.stopNow
+            t.state := t.t1Hit and beAfterT1 ? 3 : 2
+        else
+            if not t.t1Hit and (d == 1 ? high >= g.t1 : low <= g.t1)
+                t.t1Hit := true
+                if beAfterT1
+                    t.stopNow := g.entry
+                if notify
+                    send(updSig(t, "T1 HIT", g.t1, fmtPnl(t, g.t1) + (beAfterT1 ? " | Stop moved to breakeven" : "")))
+                if showOutLbl
+                    outLabel(g.t1, "T1 ✓", C_UP)
+            if d == 1 ? high >= g.t2 : low <= g.t2
+                t.state := 1
+        if t.state == 0 and bar_index - t.startBar >= trkBars
+            t.state := 4
+        if not na(t.rwd)
+            box.set_right(t.rwd, bar_index)
+            box.set_right(t.rsk, bar_index)
+            line.set_x2(t.t1Ln, bar_index)
+        if t.state != 0
+            float px = t.state == 1 ? g.t2 : t.state == 2 ? t.stopNow : t.state == 3 ? g.entry : close
+            string stg = t.state == 1 ? "T2 HIT" : t.state == 2 ? "STOPPED" : t.state == 3 ? "BREAKEVEN" : "EXPIRED"
+            if notify
+                send(updSig(t, stg, px, fmtPnl(t, px) + " | Trade closed"))
+            if showOutLbl
+                outLabel(px, t.state == 1 ? "T2 ✓" : t.state == 2 ? "SL ✗" : t.state == 3 ? "BE" : "EXIT", t.state == 1 ? C_UP : t.state == 2 ? C_DN : C_MUTED)
+            if not na(t.rwd)
+                box.set_bgcolor(t.rwd, color.new(C_UP, t.state == 1 ? 78 : 90))
+                box.set_bgcolor(t.rsk, color.new(C_DN, t.state == 2 ? 78 : 90))
+            trades.remove(i)
+
+// 2. Open a tracked trade for every new signal.
+for g in okSigs
+    Trade t = Trade.new(g, bar_index, g.stop)
+    if showBoxes
+        t.rwd := box.new(bar_index, math.max(g.entry, g.t2), bar_index + 1, math.min(g.entry, g.t2), border_color = color.new(C_UP, 60), bgcolor = color.new(C_UP, 82))
+        t.rsk := box.new(bar_index, math.max(g.entry, g.stop), bar_index + 1, math.min(g.entry, g.stop), border_color = color.new(C_DN, 60), bgcolor = color.new(C_DN, 82))
+        t.t1Ln := line.new(bar_index, g.t1, bar_index + 1, g.t1, color = color.new(C_UP, 20), style = line.style_dashed, width = 1)
+    if showSigLbl
+        string tip = sigName(g) + " | " + g.lvl + " | " + g.sess + "\nEntry " + fPx(g.entry) + "\nStop " + fPx(g.stop) + "\nT1 " + fPx(g.t1) + "\nT2 " + fPx(g.t2) + "\nSize " + str.tostring(g.qty) + " | Risk $" + str.tostring(math.round(g.risk)) + "\nR to next level " + (na(g.rr) ? "open" : str.tostring(g.rr, "0.00")) + "\nGrade " + g.grade + " (" + str.tostring(g.score) + "/" + str.tostring(g.maxScore) + "): " + (g.factors == "" ? "none" : g.factors) + (g.alertOk ? "" : "\nBelow minimum grade: no alert")
+        label.new(bar_index, g.dir == 1 ? low : high, (g.dir == 1 ? "▲ " : "▼ ") + g.setup + (g.sub != "" ? "-" + g.sub : "") + " " + g.grade, yloc = g.dir == 1 ? yloc.belowbar : yloc.abovebar, style = g.dir == 1 ? label.style_label_up : label.style_label_down, color = color.new(setupColor(g), g.alertOk ? 0 : 55), textcolor = color.white, size = size.small, tooltip = tip)
+    trades.push(t)
+    lastT := t
+    if trades.size() > 40
+        trades.shift()
+
+// ───── Plots ───────────────────────────────────────────────────────────────
+plot(newDay ? na : pdh, "PDH", color = color.new(color.gray, 0), linewidth = 1, style = plot.style_linebr)
+plot(newDay ? na : pdl, "PDL", color = color.new(color.gray, 0), linewidth = 1, style = plot.style_linebr)
+plot(asH, "Asia High", color = color.new(color.purple, 10), linewidth = 1, style = plot.style_linebr)
+plot(asL, "Asia Low", color = color.new(color.purple, 10), linewidth = 1, style = plot.style_linebr)
+plot(lnH, "London High", color = color.new(color.teal, 10), linewidth = 1, style = plot.style_linebr)
+plot(lnL, "London Low", color = color.new(color.teal, 10), linewidth = 1, style = plot.style_linebr)
+plot(orCommit ? na : orH, "OR High", color = color.new(color.orange, 10), linewidth = 1, style = plot.style_linebr)
+plot(orCommit ? na : orL, "OR Low", color = color.new(color.orange, 10), linewidth = 1, style = plot.style_linebr)
+plot(vwapReset ? na : sVwap, "Session VWAP", color = color.new(color.yellow, 30), linewidth = 1, style = plot.style_linebr)
+bgcolor(showNewsBg and newsOn ? color.new(color.gray, 85) : na, title = "News blackout")
+
+// Level name tags on the last bar (8 labels, reused).
+var array<label> lvLbl = array.new<label>()
+if barstate.islast and showLvlNm
+    if lvLbl.size() == 0
+        for i = 0 to N_LV - 1
+            lvLbl.push(label.new(bar_index, close, "", style = label.style_label_left, color = color.new(color.black, 100), textcolor = color.gray, size = size.small))
+    for i = 0 to N_LV - 1
+        label lb = lvLbl.get(i)
+        float p = lvPx.get(i)
+        label.set_xy(lb, bar_index + 1, na(p) ? close : p)
+        label.set_text(lb, na(p) ? "" : lvNm.get(i))
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Trade panel
+// ═══════════════════════════════════════════════════════════════════════════
+panelPosC = panelPos == "Top left" ? position.top_left : panelPos == "Middle right" ? position.middle_right : panelPos == "Bottom right" ? position.bottom_right : panelPos == "Bottom left" ? position.bottom_left : position.top_right
+var table hud = table.new(panelPosC, 2, 17, bgcolor = color.new(C_BG, 8), frame_color = C_EDGE, frame_width = 1, border_color = C_EDGE, border_width = 1)
+
+hudRow(int r, string k, string v, color vc, string ts, string tip) =>
+    table.cell(hud, 0, r, k, text_color = C_MUTED, text_size = ts, text_halign = text.align_left)
+    table.cell(hud, 1, r, v, text_color = vc, text_size = ts, text_halign = text.align_left, tooltip = tip)
+
+addLine(string a, string b) =>
+    a == "" ? b : a + "\n" + b
+
+if barstate.islast and showPanel
+    string ts = panelSize == "Tiny" ? size.tiny : panelSize == "Normal" ? size.normal : size.small
+
+    // Status
+    string stTxt = newsOn ? "NEWS BLACKOUT" : chopBlock ? "CHOP, alerts paused" : winOk ? "LIVE" : "Outside alert window"
+    color stCol = newsOn or chopBlock ? C_WARN : winOk ? C_UP : C_MUTED
+
+    // SEQ
+    string sqTxt = ""
+    color sqCol = C_TXT
+    if not sqFinal
+        sqTxt := na(sqAH) ? "Building Asia range" : "Asia " + fPx(sqAL) + " - " + fPx(sqAH) + ", London in play"
+        sqCol := C_MUTED
+    else if sqClass == 1 or sqClass == -1
+        bool up = sqArmed ? sqClass == -1 : sqClass == 1
+        sqTxt := "London broke " + (sqClass == 1 ? "HIGH" : "LOW") + (sqArmed ? ", reversal armed " : ", continuation ") + (up ? "▲" : "▼") + (sqDone ? " (traded)" : "")
+        sqCol := up ? C_UP : C_DN
+    else
+        sqTxt := "No clean sequence, SEQ off today"
+        sqCol := C_MUTED
+
+    // Momentum: HTF trend + session VWAP side
+    bool hUp = not na(hClose) and not na(hEma) and hClose > hEma
+    bool hDn = not na(hClose) and not na(hEma) and hClose < hEma
+    bool vUp = not na(sVwap) and close > sVwap
+    bool vDn = not na(sVwap) and close < sVwap
+    string momTxt = hUp and vUp ? "Bullish ▲" : hDn and vDn ? "Bearish ▼" : "Mixed"
+    color momCol = hUp and vUp ? C_UP : hDn and vDn ? C_DN : C_MUTED
+
+    // What the engine is waiting on
+    string w = ""
+    for L in ldrs
+        if L.stage > 0
+            w := addLine(w, "LDR " + dirTxt(L.dir) + ": " + (L.stage == 1 ? "swept " + L.lvlName + ", need displacement" : L.stage == 2 ? "displaced, need retrace to " + fPx(L.origin) : "retraced, need confirmation"))
+    for O in orbs
+        if O.stage == 1 and not O.done and orbMode == "Retest"
+            w := addLine(w, "ORB " + dirTxt(O.dir) + ": broke " + orTag + (O.dir == 1 ? "H" : "L") + ", need retest")
+    if sqArmed and not sqDone
+        w := addLine(w, "SEQ " + dirTxt(sqRev.dir) + ": reversal armed, need displacement")
+
+    hudRow(0, "STAX SESSIONS", symTxt + " " + tfTxt, C_TXT, ts, "")
+    hudRow(1, "Session", sessTag + "  |  " + stTxt, stCol, ts, "")
+    hudRow(2, "Range High", na(orH) ? "-" : fPx(orH) + "  " + orTag, C_UP, ts, "Most recent 15-minute opening range")
+    hudRow(3, "Range Low", na(orL) ? "-" : fPx(orL) + "  " + orTag, C_DN, ts, "")
+    hudRow(4, "Asia H / L", fPx(asH) + " / " + fPx(asL), C_TXT, ts, "")
+    hudRow(5, "London H / L", fPx(lnH) + " / " + fPx(lnL), C_TXT, ts, "")
+    hudRow(6, "Prior Day H / L", fPx(pdh) + " / " + fPx(pdl), C_TXT, ts, "")
+    hudRow(7, "Sequence", sqTxt, sqCol, ts, "")
+    hudRow(8, "Momentum", momTxt, momCol, ts, "HTF close vs HTF EMA, and price vs session VWAP")
+    hudRow(9, "Regime", (adxV >= adxMin ? "Trending" : "Chop") + ", ADX " + str.tostring(adxV, "0"), adxV >= adxMin ? C_UP : C_WARN, ts, "")
+    hudRow(10, "Watching", w == "" ? "Scanning levels" : w, w == "" ? C_MUTED : C_WARN, ts, "")
+    if na(lastT)
+        hudRow(11, "Last Signal", "None yet", C_MUTED, ts, "")
+        for r = 12 to 16
+            hudRow(r, "", "", C_MUTED, ts, "")
+    else
+        Sig g = lastT.sig
+        hudRow(11, "Last Signal", (g.dir == 1 ? "▲ " : "▼ ") + sigName(g) + "  " + g.grade + " (" + str.tostring(g.score) + "/" + str.tostring(g.maxScore) + ")\n" + g.lvl + "  |  " + g.sess, g.dir == 1 ? C_UP : C_DN, ts, g.factors == "" ? "No confluence factors" : g.factors)
+        hudRow(12, "Status", stateTxt(lastT), stateColor(lastT), ts, "")
+        hudRow(13, "Entry Price", fPx(g.entry), C_TXT, ts, "")
+        hudRow(14, "Stop", fPx(lastT.stopNow) + (lastT.t1Hit and beAfterT1 ? "  (BE)" : ""), C_DN, ts, "")
+        hudRow(15, "T1 / T2", fPx(g.t1) + " / " + fPx(g.t2), C_UP, ts, "")
+        hudRow(16, "Size / Risk", str.tostring(g.qty) + " contracts  |  $" + str.tostring(math.round(g.risk)), C_TXT, ts, "")
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Strategy: orders, trade bookkeeping, results table
+// Entry IDs look like "LDR|NY|A+|L|12" (setup | session | grade | side | trade #).
+// ═══════════════════════════════════════════════════════════════════════════
+type Stat
+    int n = 0
+    int wins = 0
+    float sumR = 0.0
+    float gw = 0.0
+    float gl = 0.0
+    float cum = 0.0
+    float peak = 0.0
+    float mdd = 0.0
+
+method add(Stat this, float pnl, float r) =>
+    this.n := this.n + 1
+    if pnl > 0
+        this.wins := this.wins + 1
+        this.gw := this.gw + pnl
+    else
+        this.gl := this.gl - pnl
+    this.sumR := this.sumR + r
+    this.cum := this.cum + pnl
+    this.peak := math.max(this.peak, this.cum)
+    this.mdd := math.max(this.mdd, this.peak - this.cum)
+
+// Rows: 0 LDR, 1 ORB, 2 SEQ-C, 3 SEQ-R, 4 ASIA, 5 LONDON, 6 NY, 7 A+, 8 A, 9 B, 10 C, 11 ALL
+var array<Stat> stats = array.new<Stat>()
+var array<string> statNm = array.from("LDR", "ORB", "SEQ-C", "SEQ-R", "ASIA", "LONDON", "NY", "A+", "A", "B", "C", "ALL")
+if barstate.isfirst
+    for i = 0 to 11
+        stats.push(Stat.new())
+
+var int tNum = 0
+var int curNum = -1
+var string curId = ""
+var int curSetupIx = 0
+var int curSessIx = 4
+var int curGradeIx = 10
+var float curRisk = na
+var float curPnl = 0.0
+var int curClosed = 0
+var int curQty = 0
+var int curHalf = 0
+var float curT2 = na
+var bool curBe = false
+var int processed = 0
+
+// 1. Book newly closed trades (partial exits share the entry ID).
+if strategy.closedtrades > processed
+    for i = processed to strategy.closedtrades - 1
+        if strategy.closedtrades.entry_id(i) == curId
+            curPnl += strategy.closedtrades.profit(i)
+            curClosed += 1
+    processed := strategy.closedtrades
+
+// 2. Position fully closed: record it by setup, session, grade and overall.
+if curNum != -1 and curClosed > 0 and strategy.opentrades == 0
+    float r = curRisk > 0 ? curPnl / curRisk : 0.0
+    stats.get(curSetupIx).add(curPnl, r)
+    stats.get(curSessIx).add(curPnl, r)
+    stats.get(curGradeIx).add(curPnl, r)
+    stats.get(11).add(curPnl, r)
+    curNum := -1
+    curId := ""
+
+// 3. Half mode: after T1 fills, move the runner's stop to breakeven.
+if curNum != -1 and exitMode == "Half at T1, BE, rest at T2" and not curBe and strategy.opentrades > 0 and math.abs(strategy.position_size) < curQty
+    strategy.exit("T2#" + str.tostring(curNum), curId, qty = curQty - curHalf, stop = strategy.position_avg_price, limit = curT2, comment = "T2/BE")
+    curBe := true
+
+// 4. Flatten before the daily close.
+inFlat = flatOn and inSess(flatSess)
+if inFlat and strategy.position_size != 0
+    strategy.close_all(comment = "EOD flat", immediately = true)
+
+// 5. New entry on a confirmed signal (one position at a time).
+if barstate.isconfirmed and curNum == -1 and strategy.position_size == 0 and not inFlat
+    for s in okSigs
+        if gradeRank(s.grade) < gradeRank(stratGrade)
+            continue
+        tNum += 1
+        string setupCode = s.setup == "SEQ" ? "SEQ-" + s.sub : s.setup
+        curNum := tNum
+        curId := setupCode + "|" + s.sess + "|" + s.grade + "|" + (s.dir == 1 ? "L" : "S") + "|" + str.tostring(tNum)
+        curSetupIx := s.setup == "LDR" ? 0 : s.setup == "ORB" ? 1 : s.sub == "C" ? 2 : 3
+        curSessIx := s.sess == "ASIA" ? 4 : s.sess == "LONDON" ? 5 : 6
+        curGradeIx := s.grade == "A+" ? 7 : s.grade == "A" ? 8 : s.grade == "B" ? 9 : 10
+        curRisk := s.risk
+        curPnl := 0.0
+        curClosed := 0
+        curQty := s.qty
+        curHalf := s.qty >= 2 ? int(math.floor(s.qty / 2)) : s.qty
+        curT2 := s.t2
+        curBe := false
+        strategy.entry(curId, s.dir == 1 ? strategy.long : strategy.short, qty = s.qty, comment = curId)
+        string n = str.tostring(tNum)
+        if exitMode == "All at T1"
+            strategy.exit("X#" + n, curId, stop = s.stop, limit = s.t1, comment = "exit")
+        else if exitMode == "All at T2"
+            strategy.exit("X#" + n, curId, stop = s.stop, limit = s.t2, comment = "exit")
+        else
+            strategy.exit("T1#" + n, curId, qty = curHalf, stop = s.stop, limit = s.t1, comment = "T1")
+            if s.qty - curHalf > 0
+                strategy.exit("T2#" + n, curId, qty = s.qty - curHalf, stop = s.stop, limit = s.t2, comment = "T2")
+        break
+
+// 6. Results table.
+var table tbl = table.new(position.bottom_left, 6, 13, bgcolor = color.new(color.black, 25), border_color = color.new(color.gray, 60), border_width = 1)
+if barstate.islast and showTable
+    array<string> hdr = array.from("Group", "Trades", "Win %", "Avg R", "PF", "Max DD $")
+    for c = 0 to 5
+        table.cell(tbl, c, 0, hdr.get(c), text_color = color.white, text_size = size.small)
+    for i = 0 to 11
+        Stat st = stats.get(i)
+        string pf = st.gl > 0 ? str.tostring(st.gw / st.gl, "0.00") : st.gw > 0 ? "inf" : "-"
+        color rowTx = i == 11 ? color.yellow : color.white
+        table.cell(tbl, 0, i + 1, statNm.get(i), text_color = rowTx, text_size = size.small, text_halign = text.align_left)
+        table.cell(tbl, 1, i + 1, str.tostring(st.n), text_color = rowTx, text_size = size.small)
+        table.cell(tbl, 2, i + 1, st.n > 0 ? str.tostring(100.0 * st.wins / st.n, "0.0") : "-", text_color = rowTx, text_size = size.small)
+        table.cell(tbl, 3, i + 1, st.n > 0 ? str.tostring(st.sumR / st.n, "0.00") : "-", text_color = rowTx, text_size = size.small)
+        table.cell(tbl, 4, i + 1, pf, text_color = rowTx, text_size = size.small)
+        table.cell(tbl, 5, i + 1, str.tostring(st.mdd, "0"), text_color = rowTx, text_size = size.small)
