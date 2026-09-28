@@ -1,6 +1,6 @@
 # Stax → GrokBot contract v1.3 — draft
 
-Canonical playbook is now [v2.0](../eval/playbook/stax-grokbot-playbook-v2.0.md). References to v1.9 below describe the prior contract baseline, not current playbook authority. Full v2.0 contract/schema alignment is pending; this adoption does not silently implement the remaining rule changes. See [adoption scope](../eval/playbook/README.md).
+Canonical playbook is now [v2.1](../eval/playbook/stax-grokbot-playbook-v2.1.md). References to v1.9 below describe the prior contract baseline, not current playbook authority. Full v2.1 contract/schema alignment is pending, including deterministic trend-day evidence and flipped-major retest invalidation; this adoption does not silently implement the remaining rule changes. See [adoption scope](../eval/playbook/README.md).
 
 Status: **draft, not frozen**. The owner has fixed grade routing, exact thirds, stop management, and volatility-relative stop-distance policy. Grade score and R:R values still must be calibrated on the labeled evaluation library and written into versioned server policy, not invented here. Three-target response schema remains `grok_decision_v2`, with exit fractions removed; consumers of the earlier response shape require migration.
 

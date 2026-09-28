@@ -1,6 +1,6 @@
 # A1+A2 owner-review checkpoint
 
-Canonical source: [playbook v2.0](../eval/playbook/stax-grokbot-playbook-v2.0.md). Indicator: [Stax_A1_A2.pine](../pine/Stax_A1_A2.pine). This remains a v1.9-based A1+A2 review build, with the owner-approved v2.0 equal-tolerance default adopted; full v2.0 migration is not claimed.
+Canonical source: [playbook v2.1](../eval/playbook/stax-grokbot-playbook-v2.1.md). Indicator: [Stax_A1_A2.pine](../pine/Stax_A1_A2.pine). This remains a v1.9-based A1+A2 review build, with the owner-approved 0.25 ATR equal-tolerance default adopted; full v2.1 migration is not claimed. New trend-day and flipped-major retest requirements are scoped in [A3+A4](A3_A4_V2_1_REQUIREMENTS.md).
 
 This is a review draft, not approval of the trading method or a completed production engine. It has no alerts, orders, candidate emission, server code, or A3–A6 logic. Owner accepted the current MNQ PDH 30,998.50, PDL 30,680 and NY H/L 30,952.50 / 30,684; historical drill verification remains pending.
 

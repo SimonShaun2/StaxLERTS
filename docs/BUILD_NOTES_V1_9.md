@@ -1,6 +1,6 @@
 # v1.9 build notes
 
-Historical notes. Current canonical source is [playbook v2.0](../eval/playbook/stax-grokbot-playbook-v2.0.md); see [adoption scope](../eval/playbook/README.md) for implementation gaps.
+Historical notes. Current canonical source is [playbook v2.1](../eval/playbook/stax-grokbot-playbook-v2.1.md); see [adoption scope](../eval/playbook/README.md) for implementation gaps.
 
 Canonical source: `eval/playbook/stax-grokbot-playbook-v1.9.md`. Read only; do not edit or silently reconcile owner rules. VERSION line: `VERSION: v1.9 · 2026-09-27`.
 
