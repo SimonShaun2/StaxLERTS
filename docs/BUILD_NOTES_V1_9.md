@@ -1,5 +1,7 @@
 # v1.9 build notes
 
+Historical notes. Current canonical source is [playbook v2.0](../eval/playbook/stax-grokbot-playbook-v2.0.md); see [adoption scope](../eval/playbook/README.md) for implementation gaps.
+
 Canonical source: `eval/playbook/stax-grokbot-playbook-v1.9.md`. Read only; do not edit or silently reconcile owner rules. VERSION line: `VERSION: v1.9 · 2026-09-27`.
 
 1. The server assigns grades. Implement the intraday/non-major sweep cap at B and the requirement for a major sweep or failed major reclaim for A and above in server grading policy. Visual adjustment cannot override the cap. This document specifies that requirement; it is not a claim that a server has been built.

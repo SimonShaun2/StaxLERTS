@@ -1,6 +1,6 @@
 //@version=6
 indicator("Stax A1+A2", shorttitle="Stax A1+A2", overlay=true, max_lines_count=80, max_labels_count=80, max_boxes_count=30, max_bars_back=600)
-// Canonical definitions: playbook v1.9. Checkpoint A1+A2 only; no candidate/webhook/trade engine.
+// Canonical playbook: v2.0. A1+A2 remains a v1.9-based review build; only equal tolerance migrated here.
 string ET = "America/New_York"
 string gSession = "A1 - ET range catalog (OWNER VERIFY boundaries)"
 string asia = input.session("1900-0200", "Asia ET", group=gSession)
@@ -10,7 +10,7 @@ string nyGold = input.session("0820-1130", "MGC NY ET", group=gSession)
 string onIndex = input.session("1800-0930", "MNQ/MES overnight ET", group=gSession)
 string onGold = input.session("1800-0820", "MGC overnight ET", group=gSession)
 int orMinutes = input.int(30, "Equity opening range minutes", minval=5, maxval=120, step=5, group=gSession)
-float eqATRMult = input.float(0.1, "Equal H/L tolerance / ATR(14) - OWNER TUNE", minval=0.0, step=0.01, group="A1 - Equal liquidity")
+float eqATRMult = input.float(0.25, "Equal H/L tolerance / ATR(14) - OWNER TUNE", minval=0.0, step=0.01, group="A1 - Equal liquidity")
 int pivotBars = input.int(2, "Confirmed pivot left/right bars - OWNER TUNE", minval=1, maxval=10, group="A1 - Equal liquidity")
 int pairLookback = input.int(150, "Maximum equal-pivot separation bars", minval=5, maxval=500, group="A1 - Equal liquidity")
 int equalCap = input.int(8, "Maximum equal levels retained", minval=2, maxval=12, group="A1 - Equal liquidity")
