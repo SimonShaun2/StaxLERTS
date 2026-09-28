@@ -1,6 +1,6 @@
 //@version=6
 indicator("Stax A1+A2", shorttitle="Stax A1+A2", overlay=true, max_lines_count=80, max_labels_count=80, max_boxes_count=30, max_bars_back=600)
-// Canonical playbook: v2.0. A1+A2 remains a v1.9-based review build; only equal tolerance migrated here.
+// Canonical playbook v2.1. A3/A4 context helpers; merged setup/candidate engine remains pending.
 string ET = "America/New_York"
 string gSession = "A1 - ET range catalog (OWNER VERIFY boundaries)"
 string asia = input.session("1900-0200", "Asia ET", group=gSession)
@@ -23,6 +23,16 @@ bool drawGaps = input.bool(true, "Draw live FVGs", group="Display")
 bool showStructure = input.bool(true, "Plot confirmed structure", group="Display")
 bool debugCatalog = input.bool(false, "Full level catalog table", group="Debug - Replay only")
 bool debugDisplacement = input.bool(false, "Displacement grade on each confirmed bar", group="Debug - Replay only")
+int debugBreakPage = input.int(1, "Broken-level evidence page (10 per page)", minval=1, maxval=7, group="Debug - Replay only")
+int fastEMAPeriod = input.int(100, "Fast EMA period - OWNER TUNE", minval=1, maxval=1000, group="A3 - Trend context")
+int slowEMAPeriod = input.int(200, "Slow EMA period - OWNER TUNE", minval=1, maxval=1000, group="A3 - Trend context")
+int mnqFloorTicks = input.int(8, "MNQ buffer floor ticks - OWNER TUNE", minval=1, group="A3/A4 - Buffers")
+int mesFloorTicks = input.int(4, "MES buffer floor ticks - OWNER TUNE", minval=1, group="A3/A4 - Buffers")
+int mgcFloorTicks = input.int(10, "MGC buffer floor ticks - OWNER TUNE", minval=1, group="A3/A4 - Buffers")
+float bufferATRMult = input.float(0.1, "Buffer / ATR(14) - OWNER TUNE", minval=0.0, step=0.01, group="A3/A4 - Buffers")
+int retestMaxBars = input.int(20, "Rule A break-to-retest bars - OWNER VERIFY", minval=1, maxval=150, group="A3 - Rule A review")
+bool debugTrend = input.bool(false, "Rule A confirmed hold markers", group="Debug - Replay only")
+bool plotTrendEMAs = input.bool(false, "Plot internal trend EMAs (blue / yellow)", group="Display")
 
 bool gold = syminfo.root == "MGC"
 bool equity = syminfo.root == "MNQ" or syminfo.root == "MES"
@@ -41,6 +51,24 @@ type CatalogLevel
     int born
     line drawing
     label tag
+    bool originMajor = true
+    bool sweepConfirmed = false
+
+type MajorBreak
+    string id
+    string kind
+    float price
+    int direction
+    int breakBar
+    int breakTime
+    int sessionKey
+    bool active
+    bool reclaimed
+    bool displacementValid
+    int tests = 0
+    bool inTest = false
+    bool retested = false
+    float stopPrice = na
 
 type SessionRange
     float hi = na
@@ -58,6 +86,8 @@ type Gap
 
 var array<CatalogLevel> catalog = array.new<CatalogLevel>()
 var array<Gap> gaps = array.new<Gap>()
+// Session-bounded evidence catalog, separate from mutable range-slot names and swept status.
+var array<MajorBreak> brokenLevels = array.new<MajorBreak>()
 var SessionRange globe = SessionRange.new()
 var SessionRange overnight = SessionRange.new()
 var SessionRange asiaRange = SessionRange.new()
@@ -73,11 +103,14 @@ f_put(int slot, float price, string kind, int side, bool major, bool live, bool 
     lv.price := price
     lv.kind := kind
     lv.side := side
-    lv.major := major
+    lv.originMajor := major
+    lv.major := major and not lv.swept
     lv.live := live
     lv.covered := covered
     if fresh
+        lv.major := major
         lv.swept := false
+        lv.sweepConfirmed := false
         lv.flipped := false
         lv.born := bar_index
         if not na(lv.drawing)
@@ -135,6 +168,10 @@ f_equal(float current, float prior, int priorBar, int side, float confirmedBarAT
                 label.delete(removed.tag)
 
 float atr = ta.atr(14)
+float fastEMA = ta.ema(close, fastEMAPeriod)
+float slowEMA = ta.ema(close, slowEMAPeriod)
+int floorTicks = gold ? mgcFloorTicks : syminfo.root == "MNQ" ? mnqFloorTicks : mesFloorTicks
+float barBuffer = not na(atr) and atr > 0 ? math.max(floorTicks * syminfo.mintick, bufferATRMult * atr) : na
 float ph = ta.pivothigh(high, pivotBars, pivotBars)
 float pl = ta.pivotlow(low, pivotBars, pivotBars)
 var float lastPH = na
@@ -150,6 +187,21 @@ var string structureStatus = "WAIT"
 var string sweepStatus = "NONE"
 var float confirmedATR = na
 var int lastCut = na
+var float activeBuffer = na
+var float confirmedFastEMA = na
+var float confirmedSlowEMA = na
+var int trendSessionKey = na
+var bool trendSessionCovered = false
+var bool evidenceOverflow = false
+var int upMajorCount = 0
+var int downMajorCount = 0
+var bool trend_day = false
+var int trend_direction = 0
+var bool rule_a = false
+var int rule_a_direction = 0
+var string rule_a_reference = ""
+var float rule_a_invalidation_price = na
+var float rule_a_stop_price = na
 int hhET = hour(time, ET)
 int dayKey = timestamp(ET, year(time, ET), month(time, ET), dayofmonth(time, ET) + (hhET >= 18 ? 1 : 0), 0, 0)
 string nyWindow = gold ? nyGold : nyIndex
@@ -160,6 +212,19 @@ bool inOR = equity and minutesET >= 570 and minutesET < 570 + orMinutes
 if barstate.isconfirmed
     lastCut := time_close
     confirmedATR := atr
+    activeBuffer := barBuffer
+    confirmedFastEMA := fastEMA
+    confirmedSlowEMA := slowEMA
+    rule_a := false
+    rule_a_direction := 0
+    if na(trendSessionKey) or dayKey != trendSessionKey
+        array.clear(brokenLevels)
+        trendSessionKey := dayKey
+        trendSessionCovered := f_start("1800-1700")
+        evidenceOverflow := false
+        rule_a_reference := ""
+        rule_a_invalidation_price := na
+        rule_a_stop_price := na
     bool newDay = not na(globe.key) and dayKey != globe.key
     if newDay
         f_put(0, globe.hi, "PDH", 1, true, false, globe.covered, true)
@@ -175,14 +240,17 @@ if barstate.isconfirmed
     sweepStatus := "NONE"
     for i = 0 to array.size(catalog) - 1
         CatalogLevel lv = array.get(catalog, i)
-        if not na(lv.price) and not lv.live and lv.covered and not lv.swept
-            bool sweptNow = (lv.side == 1 and high > lv.price and close < lv.price) or (lv.side == -1 and low < lv.price and close > lv.price)
-            if sweptNow
+        if not na(lv.price) and not lv.live and lv.covered and lv.born < bar_index
+            // v2.1: any trade-through consumes liquidity; buffered reversal confirmation is separate.
+            bool tradedThrough = (lv.side == 1 and high > lv.price) or (lv.side == -1 and low < lv.price)
+            bool bufferedReversal = not na(activeBuffer) and ((lv.side == 1 and high - lv.price >= activeBuffer and close < lv.price) or (lv.side == -1 and lv.price - low >= activeBuffer and close > lv.price))
+            if tradedThrough and not lv.swept
                 lv.swept := true
                 lv.major := false
+            if bufferedReversal and not lv.sweepConfirmed
+                lv.sweepConfirmed := true
                 sweepStatus := lv.kind + " @ " + str.tostring(lv.price, format.mintick)
-            else if (lv.side == 1 and close > lv.price) or (lv.side == -1 and close < lv.price)
-                lv.side := -lv.side
+            if (lv.side == 1 and close > lv.price) or (lv.side == -1 and close < lv.price)
                 lv.flipped := true
     bool breakUp = not na(structureHigh) and not highBroken and close > structureHigh
     bool breakDown = not na(structureLow) and not lowBroken and close < structureLow
@@ -202,6 +270,70 @@ if barstate.isconfirmed
     bool strong = (body >= strongMult * atr or alignedRun) and outerClose and ((breakUp and bullFVG) or (breakDown and bearFVG))
     bool adequate = ((breakUp and close > open) or (breakDown and close < open))
     displacement := na(atr) ? "WAIT ATR" : strong ? "STRONG" : adequate ? "ADEQUATE" : "WEAK"
+    bool reclaimedUp = false
+    bool reclaimedDown = false
+    bool inGlobex = f_in("1800-1700")
+    if inGlobex and not na(activeBuffer) and array.size(brokenLevels) > 0
+        for i = 0 to array.size(brokenLevels) - 1
+            MajorBreak event = array.get(brokenLevels, i)
+            bool reclaimedNow = not event.reclaimed and ((event.direction == 1 and close < event.price - activeBuffer) or (event.direction == -1 and close > event.price + activeBuffer))
+            if reclaimedNow
+                event.reclaimed := true
+                event.active := false
+                reclaimedUp := reclaimedUp or event.direction == 1
+                reclaimedDown := reclaimedDown or event.direction == -1
+        // Any reclaim resets that direction's entire qualifying sequence, not its audit history.
+        for i = 0 to array.size(brokenLevels) - 1
+            MajorBreak event = array.get(brokenLevels, i)
+            if (event.direction == 1 and reclaimedUp) or (event.direction == -1 and reclaimedDown)
+                event.active := false
+    if inGlobex and not na(activeBuffer) and not evidenceOverflow
+        for i = 0 to array.size(catalog) - 1
+            CatalogLevel lv = array.get(catalog, i)
+            if lv.originMajor and lv.covered and not lv.live and not na(lv.price) and lv.born < bar_index and not na(close[1])
+                int direction = close > lv.price and close[1] <= lv.price ? 1 : close < lv.price and close[1] >= lv.price ? -1 : 0
+                bool eligible = direction != 0 and not (direction == 1 and reclaimedUp) and not (direction == -1 and reclaimedDown)
+                bool duplicate = false
+                if eligible and array.size(brokenLevels) > 0
+                    for j = 0 to array.size(brokenLevels) - 1
+                        MajorBreak prior = array.get(brokenLevels, j)
+                        if prior.active and prior.direction == direction and math.abs(prior.price - lv.price) < syminfo.mintick * 0.5
+                            duplicate := true
+                if eligible and not duplicate
+                    if array.size(brokenLevels) >= 64
+                        evidenceOverflow := true
+                    else
+                        string eventID = syminfo.tickerid + ":" + str.tostring(dayKey) + ":" + lv.kind + ":" + str.tostring(lv.price, format.mintick) + ":" + str.tostring(time_close)
+                        bool alignedDisplacement = (strong or adequate) and ((direction == 1 and breakUp and close > open) or (direction == -1 and breakDown and close < open))
+                        array.push(brokenLevels, MajorBreak.new(eventID, lv.kind, lv.price, direction, bar_index, time_close, dayKey, true, false, alignedDisplacement))
+    upMajorCount := 0
+    downMajorCount := 0
+    if array.size(brokenLevels) > 0
+        for i = 0 to array.size(brokenLevels) - 1
+            MajorBreak event = array.get(brokenLevels, i)
+            if event.active and not event.reclaimed
+                upMajorCount += event.direction == 1 ? 1 : 0
+                downMajorCount += event.direction == -1 ? 1 : 0
+            // Rule A review convention: later buffered touch, directional close away, <=2 tests.
+            if inGlobex and not na(activeBuffer) and not event.reclaimed and not event.retested and event.displacementValid and bar_index > event.breakBar and bar_index - event.breakBar <= retestMaxBars
+                bool touched = low <= event.price + activeBuffer and high >= event.price - activeBuffer
+                if touched and not event.inTest
+                    event.tests += 1
+                event.inTest := touched
+                bool hold = touched and event.tests <= 2 and ((event.direction == 1 and close > event.price + activeBuffer and close > open) or (event.direction == -1 and close < event.price - activeBuffer and close < open))
+                if hold
+                    event.retested := true
+                    event.stopPrice := event.direction == 1 ? math.floor((event.price - activeBuffer) / syminfo.mintick) * syminfo.mintick : math.ceil((event.price + activeBuffer) / syminfo.mintick) * syminfo.mintick
+                    rule_a := true
+                    rule_a_direction := event.direction
+                    rule_a_reference := event.id
+                    rule_a_invalidation_price := event.price
+                    rule_a_stop_price := event.stopPrice
+    bool maReady = not na(confirmedFastEMA) and not na(confirmedSlowEMA)
+    bool upTrend = trendSessionCovered and not evidenceOverflow and inGlobex and maReady and upMajorCount >= 2 and downMajorCount == 0 and close > confirmedFastEMA and close > confirmedSlowEMA
+    bool downTrend = trendSessionCovered and not evidenceOverflow and inGlobex and maReady and downMajorCount >= 2 and upMajorCount == 0 and close < confirmedFastEMA and close < confirmedSlowEMA
+    trend_day := upTrend or downTrend
+    trend_direction := upTrend ? 1 : downTrend ? -1 : 0
     if array.size(gaps) > 0
         for i = array.size(gaps) - 1 to 0
             Gap gap = array.get(gaps, i)
@@ -236,6 +368,10 @@ if barstate.isconfirmed
 
 plot(showStructure ? structureHigh : na, "Confirmed swing high", color=color.new(color.red, 60), style=plot.style_stepline, display=display.pane)
 plot(showStructure ? structureLow : na, "Confirmed swing low", color=color.new(color.green, 60), style=plot.style_stepline, display=display.pane)
+plot(plotTrendEMAs ? confirmedFastEMA : na, "Trend fast EMA", color=color.blue, linewidth=2, display=display.pane)
+plot(plotTrendEMAs ? confirmedSlowEMA : na, "Trend slow EMA", color=color.yellow, linewidth=2, display=display.pane)
+plotshape(debugTrend and barstate.isconfirmed and rule_a and rule_a_direction == 1, title="Rule A long hold", style=shape.labelup, location=location.belowbar, color=color.teal, text="RULE A", textcolor=color.white, size=size.small, display=display.pane)
+plotshape(debugTrend and barstate.isconfirmed and rule_a and rule_a_direction == -1, title="Rule A short hold", style=shape.labeldown, location=location.abovebar, color=color.orange, text="RULE A", textcolor=color.white, size=size.small, display=display.pane)
 plotshape(debugDisplacement and barstate.isconfirmed and displacement == "STRONG", title="Debug STRONG displacement", style=shape.labeldown, location=location.abovebar, color=color.green, text="STRONG", textcolor=color.white, size=size.tiny, display=display.pane)
 plotshape(debugDisplacement and barstate.isconfirmed and displacement == "ADEQUATE", title="Debug ADEQUATE displacement", style=shape.labeldown, location=location.abovebar, color=color.orange, text="ADEQUATE", textcolor=color.black, size=size.tiny, display=display.pane)
 plotshape(debugDisplacement and barstate.isconfirmed and displacement == "WEAK", title="Debug WEAK displacement", style=shape.labeldown, location=location.abovebar, color=color.gray, text="WEAK", textcolor=color.white, size=size.tiny, display=display.pane)
@@ -265,9 +401,10 @@ f_text(CatalogLevel lv) =>
     f_name(lv.kind) + "  " + str.tostring(lv.price, format.mintick) + (lv.swept ? "  SWEPT" : not lv.covered ? "  PARTIAL" : lv.live ? "  LIVE" : lv.flipped ? "  FLIPPED" : "")
 
 // Optional inspection only: includes swept entries even when chart drawings hide them.
-var table debugPanel = debugCatalog ? table.new(position.top_right, 6, 29, bgcolor=color.new(color.black, 5), border_width=1) : na
+var table debugPanel = debugCatalog ? table.new(position.top_right, 6, 34, bgcolor=color.new(color.black, 5), border_width=1) : na
+var table breakPanel = debugCatalog ? table.new(position.bottom_left, 6, 14, bgcolor=color.new(color.black, 5), border_width=1) : na
 if barstate.islast and debugCatalog
-    table.clear(debugPanel, 0, 0, 5, 28)
+    table.clear(debugPanel, 0, 0, 5, 33)
     table.cell(debugPanel, 0, 0, "CONFIRMED CUT / ET", text_color=color.white, text_size=size.small)
     table.cell(debugPanel, 1, 0, na(lastCut) ? "WAIT" : str.format_time(lastCut, "MM-dd HH:mm", ET), text_color=color.white, text_size=size.small)
     array<string> headings = array.from("LEVEL", "PRICE", "CLASS", "LIQUIDITY", "EQUAL", "COVERAGE")
@@ -292,6 +429,51 @@ if barstate.islast and debugCatalog
     table.cell(debugPanel, 3, 27, str.tostring(eqATRMult * confirmedATR, "#.#####"), text_color=color.white, text_size=size.small)
     table.cell(debugPanel, 0, 28, "CATALOG CAP", text_color=color.white, text_size=size.small)
     table.cell(debugPanel, 1, 28, "12 base + " + str.tostring(equalCap) + " equals", text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 0, 29, syminfo.root + " BUFFER", text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 1, 29, str.tostring(activeBuffer, "#.#####") + " pts", text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 2, 29, "FLOOR", text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 3, 29, str.tostring(floorTicks) + " ticks", text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 4, 29, "SWEEP", text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 5, 29, sweepStatus, text_color=color.white, text_size=size.tiny)
+    table.cell(debugPanel, 0, 30, "EMA " + str.tostring(fastEMAPeriod), text_color=color.blue, text_size=size.small)
+    table.cell(debugPanel, 1, 30, str.tostring(confirmedFastEMA, format.mintick), text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 2, 30, "EMA " + str.tostring(slowEMAPeriod), text_color=color.yellow, text_size=size.small)
+    table.cell(debugPanel, 3, 30, str.tostring(confirmedSlowEMA, format.mintick), text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 0, 31, "TREND_DAY", text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 1, 31, trend_day ? "TRUE" : "FALSE", text_color=trend_day ? color.lime : color.silver, text_size=size.small)
+    table.cell(debugPanel, 2, 31, "DIRECTION", text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 3, 31, trend_direction == 1 ? "UP" : trend_direction == -1 ? "DOWN" : "NONE", text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 4, 31, "UP / DOWN", text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 5, 31, str.tostring(upMajorCount) + " / " + str.tostring(downMajorCount), text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 0, 32, "GLOBEX", text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 1, 32, trendSessionCovered ? "START COVERED" : "PARTIAL", text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 2, 32, "EVIDENCE", text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 3, 32, evidenceOverflow ? "OVERFLOW / BLOCKED" : str.tostring(array.size(brokenLevels)), text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 0, 33, "LAST RULE A REF", text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 1, 33, str.tostring(rule_a_invalidation_price, format.mintick), text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 2, 33, "STOP", text_color=color.white, text_size=size.small)
+    table.cell(debugPanel, 3, 33, str.tostring(rule_a_stop_price, format.mintick), text_color=color.white, text_size=size.small)
+    table.clear(breakPanel, 0, 0, 5, 13)
+    table.cell(breakPanel, 0, 0, "BROKEN MAJORS", text_color=color.white, text_size=size.small)
+    table.cell(breakPanel, 1, 0, "PAGE " + str.tostring(debugBreakPage), text_color=color.white, text_size=size.small)
+    array<string> breakHeadings = array.from("LEVEL", "PRICE", "DIR", "BREAK ET", "STATUS", "RULE A STOP")
+    for col = 0 to 5
+        table.cell(breakPanel, col, 1, array.get(breakHeadings, col), text_color=color.white, text_size=size.tiny)
+    int pageStart = (debugBreakPage - 1) * 10
+    if array.size(brokenLevels) > pageStart
+        for i = pageStart to math.min(pageStart + 9, array.size(brokenLevels) - 1)
+            MajorBreak event = array.get(brokenLevels, i)
+            int evidenceRow = i - pageStart + 2
+            table.cell(breakPanel, 0, evidenceRow, f_name(event.kind), text_color=color.white, text_size=size.tiny)
+            table.cell(breakPanel, 1, evidenceRow, str.tostring(event.price, format.mintick), text_color=color.white, text_size=size.tiny)
+            table.cell(breakPanel, 2, evidenceRow, event.direction == 1 ? "UP" : "DOWN", text_color=color.white, text_size=size.tiny)
+            table.cell(breakPanel, 3, evidenceRow, str.format_time(event.breakTime, "HH:mm", ET), text_color=color.white, text_size=size.tiny)
+            table.cell(breakPanel, 4, evidenceRow, event.reclaimed ? "RECLAIMED" : event.active ? "QUALIFYING" : "PRIOR SEQUENCE", text_color=color.white, text_size=size.tiny)
+            table.cell(breakPanel, 5, evidenceRow, event.retested ? str.tostring(event.stopPrice, format.mintick) : "NO HOLD", text_color=color.white, text_size=size.tiny)
+    table.cell(breakPanel, 0, 12, "GLOBEX KEY", text_color=color.white, text_size=size.tiny)
+    table.cell(breakPanel, 1, 12, str.format_time(trendSessionKey, "yyyy-MM-dd", ET), text_color=color.white, text_size=size.tiny)
+    table.cell(breakPanel, 0, 13, "REVIEW HELPERS ONLY", text_color=color.yellow, text_size=size.tiny)
+    table.cell(breakPanel, 1, 13, "A3/A4 ENGINE PENDING", text_color=color.yellow, text_size=size.tiny)
 
 if barstate.islast
     array<int> anchors = array.new_int(array.size(catalog), -1)
