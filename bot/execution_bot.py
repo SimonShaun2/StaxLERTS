@@ -13,7 +13,7 @@ refuse a signal after it leaves the chart.
     python3 bot/execution_bot.py --selftest
 
 Paper fills only. Nothing is sent to a broker unless you set a forward URL
-in the desk. Stax's documented webhook accepts an options ticker, not MNQ.
+in the desk. Stax's documented webhook accepts an options ticker, not a futures root.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from zoneinfo import ZoneInfo
 
 NY = ZoneInfo("America/New_York")
 STATIC = Path(__file__).resolve().parent / "static" / "index.html"
-# Tradeify Select 25K evaluation. The trail updates at 5:00 PM New York
+# Boot book until a session profile is set. The trail rolls at 5:00 PM New York
 # and is enforced the moment equity touches it. One day cannot be more
 # than 40% of total profit, so the day stops at 40% of the $1,500 target.
 SELECT_START = 25_000.0
@@ -107,7 +107,7 @@ def allocate_target_contracts(total_qty: int, targets: list[dict[str, Any]]) -> 
 
 
 def session_date(when: datetime) -> datetime.date:
-    """Tradeify's session ends at 5:00 PM New York. After that, it is the next day."""
+    """The session ends at 5:00 PM New York. After that, it is the next day."""
     if when.tzinfo is None:
         when = when.replace(tzinfo=NY)
     else:
@@ -129,7 +129,7 @@ class Desk:
         self.risk_per_trade = SELECT_MAX_RISK
         self.forward_url = ""
         self.watch_markets = ["MES", "MGC", "MYM"]
-        self.watch = {"symbol": "MES MGC MYM", "price": None, "grade": None, "note": "Select 25K paper. The watch is the settings on this desk."}
+        self.watch = {"symbol": "", "price": None, "grade": None, "note": "Waiting for a TradingView plan."}
         self.day = session_date(now_ny())
         self.day_start_equity = self.equity
         self.trades_today = 0
@@ -159,7 +159,7 @@ class Desk:
             passed = (not self.failed) and profit >= SELECT_TARGET and self.days_traded >= 3 and best <= profit * SELECT_CONSISTENCY + 0.01
             return {
                 "mode": "paper",
-                "account": "Tradeify Select 25K",
+                "account": "Paper",
                 "listening": not self.killed,
                 "equity": round(self.equity, 2),
                 "dailyPnl": round(daily, 2),
@@ -461,8 +461,8 @@ class Desk:
             self._note("REFUSED", f"{root} is not enabled in the desk market allowlist")
             return self._result(False, "Market is not enabled in the desk allowlist")
         if contract_key(root) in {"MNQ", "NQ"}:
-            self._note("REFUSED", "MNQ is off the watch. It is too expensive for this Select account.")
-            return self._result(False, "MNQ is excluded")
+            self._note("REFUSED", "That root is outside the desk allowlist.")
+            return self._result(False, "Root is outside the desk allowlist")
         if (side == "long" and stop >= price) or (side == "short" and stop <= price):
             self._note("REFUSED", "Stop must be beyond entry in the risk direction")
             return self._result(False, "Stop must be beyond entry in the risk direction")
@@ -874,7 +874,7 @@ def main() -> int:
     server.demo_running = False
     from watch import start_watcher
     start_watcher(DESK)
-    print(f"StaxBot paper desk listening on http://127.0.0.1:{args.port}  (Select 25K)")
+    print(f"StaxBot paper desk listening on http://127.0.0.1:{args.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
