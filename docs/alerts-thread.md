@@ -77,11 +77,13 @@ Read docs/alerts-thread.md before you change anything.
 The desk is already running with Sam’s URL and sender key in memory. Do not pull and do not restart it. A restart clears both. Paste this into the alerts chat.
 
 ```
-You are live through the day-session halt at 5:00 PM New York. Do not pull. Do not restart the desk. Do not change Pine. Do not POST a sample trade or a ping.
+You are live across the futures day. Do not pull. Do not restart the desk. Do not change Pine. Do not POST a sample trade or a ping. Do not stop the timer at 5:00 PM New York.
+
+The halt is 3:00 PM to 5:00 PM Central, on the America/Chicago clock. During the halt, keep the one-minute check, say the desk is in the halt, and do not shut down. At 5:00 PM Central, Globex is open. Then Asia, then London, then the NY session. The NY session runs until the next 3:00 PM Central halt.
 
 Real TradingView alerts only, on MNQZ2026, MGCZ2026, MESZ2026, M2KZ2026, and MYMZ2026. Order is alert, then this chat, then Sam.
 
-On each one-minute check, read http://127.0.0.1:8791/api/state. If inbox has an alert, present it here first: market, side, grade, entry, stop, each target with its R, and the contract count. Then POST http://127.0.0.1:8791/api/release with that eventId. If inbox is empty, say the desk is waiting. Arm the next check. At 5:00 PM New York, stop the timer.
+On each one-minute check, read http://127.0.0.1:8791/api/state. If inbox has an alert, present it here first: market, side, grade, entry, stop, each target with its R, and the contract count. Then POST http://127.0.0.1:8791/api/release with that eventId. If inbox is empty outside the halt, say the desk is waiting. Arm the next check either way.
 
 End this turn with the three-line status.
 ```
