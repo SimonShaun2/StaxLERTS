@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Breakaway desk</title>
+<style>
+  :root {
+    --bg: #0c1016;
+    --panel: #141a22;
+    --line: #2a3342;
+    --text: #e8eef6;
+    --muted: #8d98aa;
+    --green: #3dd68c;
+    --red: #ff5d73;
+    --blue: #4c8dff;
+    --amber: #e6b35a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.45 ui-sans-serif, system-ui, sans-serif;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: center;
+    padding: 16px 22px;
+    border-bottom: 1px solid var(--line);
+  }
+  h1 { font-size: 18px; margin: 0; letter-spacing: 0.02em; }
+  .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .pill {
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 6px 12px;
+    font-size: 12px;
+    color: var(--green);
+  }
+  .pill.off { color: var(--red); }
+  main { display: grid; grid-template-columns: 1.4fr 0.8fr; gap: 16px; padding: 16px 22px 28px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  h2 { margin: 0 0 12px; font-size: 13px; color: var(--muted); font-weight: 600; letter-spacing: 0.08em; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+  .stat { background: #0e141c; border-radius: 8px; padding: 10px 12px; }
+  .stat span { display: block; color: var(--muted); font-size: 11px; }
+  .stat strong { font-size: 18px; }
+  .pos { min-height: 132px; border: 1px dashed var(--line); border-radius: 10px; padding: 14px; }
+  .pos.live { border-style: solid; border-color: var(--blue); }
+  .pos h3 { margin: 0 0 6px; font-size: 20px; }
+  .meta { color: var(--muted); }
+  .row { display: flex; gap: 18px; margin-top: 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 4px; }
+  td { padding: 6px 4px; border-top: 1px solid var(--line); }
+  .up { color: var(--green); }
+  .down { color: var(--red); }
+  label { display: block; color: var(--muted); font-size: 12px; margin: 10px 0 4px; }
+  input { width: 100%; background: #0e141c; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  button {
+    background: var(--blue); color: white; border: 0; border-radius: 8px; padding: 8px 12px; cursor: pointer; font-weight: 600;
+  }
+  button.ghost { background: transparent; border: 1px solid var(--line); color: var(--text); }
+  button.danger { background: #3a1d24; color: var(--red); }
+  .feed { list-style: none; margin: 0; padding: 0; max-height: 280px; overflow: auto; }
+  .feed li { padding: 7px 0; border-bottom: 1px solid var(--line); }
+  .kind { display: inline-block; min-width: 64px; font-size: 11px; color: var(--amber); }
+  .kind.TAKEN, .kind.CLOSED { color: var(--green); }
+  .kind.REFUSED, .kind.IGNORED { color: var(--red); }
+  @media (max-width: 860px) {
+    main, .stats { grid-template-columns: 1fr; }
+    header { align-items: flex-start; flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Breakaway desk</h1>
+    <div class="sub">This process takes the trade. The chart only sends the setup.</div>
+  </div>
+  <div class="pill" id="status">Paper · starting</div>
+</header>
+<main>
+  <div>
+    <section>
+      <h2>ACCOUNT</h2>
+      <div class="stats">
+        <div class="stat"><span>Equity</span><strong id="equity">—</strong></div>
+        <div class="stat"><span>Daily P/L</span><strong id="daily">—</strong></div>
+        <div class="stat"><span>Trades today</span><strong id="count">—</strong></div>
+        <div class="stat"><span>Open risk</span><strong id="risk">—</strong></div>
+      </div>
+      <h2>OPEN TRADE</h2>
+      <div class="pos" id="position"><div class="meta">Flat. The next Breakaway entry alert is taken here.</div></div>
+    </section>
+    <section style="margin-top:16px">
+      <h2>FILLS</h2>
+      <table>
+        <thead><tr><th>Contract</th><th>Side</th><th>Qty</th><th>Entry</th><th>Exit</th><th>Result</th></tr></thead>
+        <tbody id="fills"></tbody>
+      </table>
+    </section>
+  </div>
+  <div>
+    <section>
+      <h2>BOT LIMITS</h2>
+      <label>Max trades per day</label>
+      <input id="maxTrades" type="number" min="1" value="5" />
+      <label>Max daily loss ($ , 0 = off)</label>
+      <input id="maxDailyLoss" type="number" min="0" value="300" />
+      <label>Daily profit target ($ , 0 = off)</label>
+      <input id="dailyTarget" type="number" min="0" value="0" />
+      <label>Point value override (0 = MNQ $2)</label>
+      <input id="pointOverride" type="number" min="0" step="0.5" value="0" />
+      <label>Forward entries to this URL (blank = paper only)</label>
+      <input id="forwardUrl" placeholder="https://api.staxinvesting.com/webhook/trade-signal" />
+      <div class="actions">
+        <button id="save" type="button">Save limits</button>
+        <button id="demo" class="ghost" type="button">Take sample trades</button>
+        <button id="flat" class="danger" type="button">Flatten</button>
+      </div>
+    </section>
+    <section style="margin-top:16px">
+      <h2>ACTIVITY</h2>
+      <ul class="feed" id="feed"></ul>
+    </section>
+  </div>
+</main>
+<script>
+const money = (n) => (n < 0 ? "-$" : "$") + Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
+const cls = (n) => n > 0 ? "up" : n < 0 ? "down" : "";
+
+async function refresh() {
+  const state = await (await fetch("/api/state")).json();
+  const status = document.getElementById("status");
+  status.textContent = state.killed ? "Killed · not taking trades" : "Paper · taking trades";
+  status.className = "pill" + (state.killed ? " off" : "");
+  document.getElementById("equity").textContent = money(state.equity);
+  const daily = document.getElementById("daily");
+  daily.textContent = money(state.dailyPnl);
+  daily.className = cls(state.dailyPnl);
+  document.getElementById("count").textContent = state.tradesToday + "/" + state.maxTrades;
+  const pos = state.position;
+  document.getElementById("risk").textContent = pos ? money(pos.openRisk || 0) : "$0";
+  const box = document.getElementById("position");
+  if (!pos) {
+    box.className = "pos";
+    box.innerHTML = "<div class='meta'>Flat. The next Breakaway entry alert is taken here.</div>";
+  } else {
+    box.className = "pos live";
+    const px = pos.entry == null ? "market" : Number(pos.entry).toFixed(2);
+    box.innerHTML = `<h3>${pos.side.toUpperCase()} ${pos.qty} ${pos.ticker}</h3>
+      <div class="meta">Taken ${pos.openedAt}</div>
+      <div class="row"><div>Entry ${px}</div><div>Stop ${pos.stop ?? "—"}</div><div>Target ${pos.target ?? "—"}</div></div>`;
+  }
+  document.getElementById("fills").innerHTML = state.fills.map((f) =>
+    `<tr><td>${f.ticker}</td><td>${f.side}</td><td>${f.qty}</td><td>${Number(f.entry).toFixed(2)}</td><td>${Number(f.exit).toFixed(2)}</td><td class="${cls(f.pnl)}">${money(f.pnl)} ${f.reason}</td></tr>`
+  ).join("") || `<tr><td colspan="6" class="meta">No closed trades yet.</td></tr>`;
+  document.getElementById("feed").innerHTML = state.activity.map((a) =>
+    `<li><span class="kind ${a.kind}">${a.kind}</span> ${a.text} <span class="meta">${a.at}</span></li>`
+  ).join("");
+}
+
+document.getElementById("save").onclick = async () => {
+  await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+    maxTrades: Number(maxTrades.value),
+    maxDailyLoss: Number(maxDailyLoss.value),
+    dailyTarget: Number(dailyTarget.value),
+    pointOverride: Number(pointOverride.value),
+    forwardUrl: forwardUrl.value
+  })});
+  refresh();
+};
+document.getElementById("demo").onclick = async () => {
+  await fetch("/api/demo", { method: "POST" });
+};
+document.getElementById("flat").onclick = async () => {
+  await fetch("/api/flatten", { method: "POST" });
+  refresh();
+};
+refresh();
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>

@@ -18,9 +18,29 @@ original's exact rules are not public, this README says what this version does i
 
 | Path | Purpose |
 | --- | --- |
-| `breakaway_bot_stax.pine` | The strategy. Paste into TradingView's Pine Editor. |
+| `breakaway_bot_stax.pine` | The signal. Paste into TradingView's Pine Editor. Build 1.2 shows **Stax v1.2** in the table. |
+| `bot/execution_bot.py` | The bot that takes the trade. Paper desk at `http://127.0.0.1:8791`. |
 | `docs/strategy-logic.md` | Bar-by-bar description of every rule and setting. |
-| `tools/mock_stax_webhook.py` | Local webhook receiver that validates payloads the way Stax documents them. |
+| `tools/mock_stax_webhook.py` | Payload checker for the Stax options webhook format. |
+
+## What takes the trades
+
+The Pine script does not send an order to a broker. On each closed bar it decides whether a Breakaway setup exists. The execution bot is the process that takes it.
+
+```bash
+python3 bot/execution_bot.py --selftest
+python3 bot/execution_bot.py --port 8791
+```
+
+Open the desk, then in TradingView set **Alert Payload** to **Generic JSON** and create an alert:
+
+- Condition: this strategy, **Order fills only**
+- Message: `{{strategy.order.alert_message}}`
+- Webhook URL: `http://127.0.0.1:8791/webhook/trade-signal` while you are on this machine. TradingView's servers cannot see localhost, so a public HTTPS tunnel is required before a real alert will arrive.
+
+An entry alert opens the paper position at the signal price with the stop and target from the strategy. An exit alert closes it and books P/L using the contract point value (MNQ = $2). The desk refuses a new trade when the daily loss cap, the profit target, or the max-trades count is hit, or when a position is already open.
+
+**Take sample trades** on the desk runs two MNQ round-trips so you can see a fill without waiting for the chart. Leave the forward URL blank for MNQ. Stax's webhook expects an options ticker (`SPY260930C660.0`), not a futures root. Paste that URL only when the chart is the underlying and the payload is **Stax Options Webhook**.
 
 ## How the strategy trades
 

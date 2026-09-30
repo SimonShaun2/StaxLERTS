@@ -1,7 +1,8 @@
 //@version=6
 //@strategy_alert_message {{strategy.order.alert_message}}
 // ============================================================================
-//  Breakaway Bot — Stax Edition  (build 1.1)
+//  Breakaway Bot — Stax Edition  (build 1.2)
+//  The chart finds the setup. bot/execution_bot.py is what takes the trade.
 //
 //  Open re-implementation of the "Breakaway model":
 //     1. A valid market range (last confirmed swing high / swing low)
@@ -89,9 +90,9 @@ emaFastIn        = input.int(9, "EMA Cloud Fast", minval = 1, group = G_BIAS)
 emaSlowIn        = input.int(21, "EMA Cloud Slow", minval = 1, group = G_BIAS)
 biasFilterIn     = input.bool(false, "Only Trade With EMA Bias", group = G_BIAS, tooltip = "Longs need price above a rising cloud, shorts need price below a falling cloud. Off by default (matches the original: bias is informational).")
 
-payloadModeIn    = input.string("Stax Options Webhook", "Alert Payload", group = G_STAX,
+payloadModeIn    = input.string("Generic JSON (Futures / Any Webhook)", "Alert Payload", group = G_STAX,
      options = ["Stax Options Webhook", "Generic JSON (Futures / Any Webhook)"],
-     tooltip = "Stax Options Webhook: {timestamp, unmodifiedTicker} where the ticker is SYMBOL+YYMMDD+C/P+STRIKE (long = call, short = put). Only ENTRIES are sent — Stax manages the exit with its own strategy rules.\nGeneric JSON: full entry / exit / stop-update payloads for any receiver.")
+     tooltip = "Generic JSON is what the execution bot takes: entry, stop, target, and exit for the futures contract on the chart.\nStax Options Webhook sends {timestamp, unmodifiedTicker} and only an entry. Use that only when the chart is the option underlying (SPY, QQQ) and Stax is placing the call or put.")
 alertViaIn       = input.string("Order fills (strategy alert_message)", "Deliver Alerts Via", group = G_STAX,
      options = ["Order fills (strategy alert_message)", "alert() calls at bar close"],
      tooltip = "Order fills: fires the instant the limit fills; create the alert with 'Order fills only' and message {{strategy.order.alert_message}}.\nalert() calls: fires at the close of the fill bar; create the alert with 'alert() function calls only'.")
@@ -635,7 +636,7 @@ if showTableIn
          pending ? (pendDir == 1 ? "L rest @ " : "S rest @ ") + str.tostring(pendEntry, format.mintick) : "---"
     biasTxt = bias == 1 ? "Bull" : bias == -1 ? "Bear" : "Flat"
     biasCol = bias == 1 ? color.lime : bias == -1 ? color.red : color.new(#b2b5be, 0)
-    f_head(infoTbl, 0, "BREAKAWAY BOT", "Stax v1.1")
+    f_head(infoTbl, 0, "BREAKAWAY BOT", "Stax v1.2")
     f_head(infoTbl, 1, "SETTINGS", presetIn)
     f_row(infoTbl, 2,  "TP",       str.tostring(pTp, "0.#") + "R", white)
     f_row(infoTbl, 3,  "SL",       pSl, white)
