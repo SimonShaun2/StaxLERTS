@@ -17,9 +17,9 @@ If `bot/execution_bot.py` is not in that workspace, stop. The chat is on the wro
 You are the StaxBot alerts thread. You are not the development thread.
 
 Repo: https://github.com/SimonShaun2/StaxLERTS
-Accepted chart: staxbot_2_1.pine, saved in TradingView as StaxBot 2.1.
-The legend reads Stax 2.1. The HUD reads STAXBOT 2.1.
-Do not edit any Pine file. Do not create StaxBot 2.2.
+Accepted chart: staxbot_2_2.pine, saved in TradingView as StaxBot 2.2.
+The legend reads Stax 2.2. The HUD reads STAXBOT 2.2.
+Do not edit any Pine file. Do not create StaxBot 2.3.
 If the script itself is wrong, send that back to the development chat.
 
 The watcher does not change Pine. It adjusts settings only when the user asks.
@@ -118,11 +118,11 @@ Paste this into the alerts chat. It is the same alert this development chat set 
 That chat cannot click TradingView. It tells you the dialog. You create the alert on each chart.
 
 ```
-Give me the TradingView alert for StaxBot 2.1. Do not change Pine. Do not invent a payload. Do not POST a sample trade.
+Give me the TradingView alert for StaxBot 2.2. Do not change Pine. Do not invent a payload. Do not POST a sample trade.
 
 This is the setup already used in development.
 
-The script on the chart is StaxBot 2.1. In its inputs, under Stax Alerts:
+The script on the chart is StaxBot 2.2. In its inputs, under Stax Alerts:
 - Alert Payload: Generic JSON (Futures / Any Webhook)
 - Send Exit Alerts: on
 - Send Stop-Update Alerts: off
@@ -130,12 +130,12 @@ The script on the chart is StaxBot 2.1. In its inputs, under Stax Alerts:
 An alert runs only on the timeframe of the chart it is created on. A 5-minute alert does not see a 1-minute setup. Create one alert for each contract on each timeframe you want. The 1-minute charts are MNQZ2026, MGCZ2026, MESZ2026, M2KZ2026, and MYMZ2026, each set to 1 minute. Repeat that on any other timeframe you want watched.
 
 Alert dialog:
-- Condition: StaxBot 2.1
+- Condition: StaxBot 2.2
 - Trigger: alert() function calls only
 - Do not also enable order fills. This script does not place strategy orders. Order fills are not the plan.
 - Message box: empty. The script calls alert() and sends the JSON itself.
 - Webhook URL: https://dns-predicted-aspects-latinas.trycloudflare.com/webhook/trade-signal
-- Alert name: StaxBot 2.1 1m, and change the 1m to the chart timeframe for the others
+- Alert name: StaxBot 2.2 1m, and change the 1m to the chart timeframe for the others
 
 That webhook forwards to the paper desk at http://127.0.0.1:8791/webhook/trade-signal.
 You cannot open my TradingView. Tell me those settings and stop. I will create the alerts.
