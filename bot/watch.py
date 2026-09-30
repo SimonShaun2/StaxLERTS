@@ -1,8 +1,7 @@
-"""Scan the markets chosen on the desk and paper setups that pass its settings.
+"""TradingView is the live plan source; this module mirrors its webhook plan.
 
-Markets, minimum grade, take profit, and contract counts come from the desk.
-They are the same knobs as the StaxBot chart. A different watch is a settings
-change. MNQ stays off this account because it is too expensive for Select 25K.
+The legacy scanner helpers remain for offline diagnostics only. They do not run
+in the live watcher and must not be treated as synchronized plan settings.
 """
 from __future__ import annotations
 
@@ -121,6 +120,45 @@ def accepts(grade: str, minimum: str) -> bool:
     return minimum == "A" and grade == "A"
 
 
+def _make_targets(entry: float, risk: float, direction: int, qty: int, reward: float, plan: Any) -> list[dict[str, Any]]:
+    """Resolve enabled 1x/2x/3x TP steps into exact whole-contract allocations."""
+    if not isinstance(plan, list) or not plan:
+        return [{"id": "TP1", "price": round(entry + direction * risk * reward, 2), "qty": qty, "r": reward}]
+    enabled = [
+        (index, item) for index, item in enumerate(plan[:3], 1)
+        if isinstance(item, dict) and bool(item.get("enabled"))
+    ]
+    if not enabled:
+        return []
+    if len(enabled) == 1:
+        index, _ = enabled[0]
+        return [{"id": f"TP{index}", "price": round(entry + direction * risk * reward * index, 2), "qty": qty, "r": reward * index}]
+
+    remaining = qty
+    result = []
+    for index, item in enabled:
+        try:
+            requested = int(item.get("qty") or 1)
+        except (TypeError, ValueError):
+            return []
+        # Once an enabled level cannot fit, skip it and all farther levels.
+        if requested > remaining:
+            break
+        result.append({
+            "id": f"TP{index}",
+            "price": round(entry + direction * risk * reward * index, 2),
+            "qty": requested,
+            "r": reward * index,
+        })
+        remaining -= requested
+    if not result:
+        return []
+    # Keep every contract accounted for. Any unallocated remainder stays with
+    # the nearest selected target when farther allocations do not fit.
+    result[0]["qty"] += remaining
+    return result
+
+
 class Market:
     def __init__(self, spec: dict[str, Any], rules: dict[str, Any]) -> None:
         self.spec = spec
@@ -143,6 +181,8 @@ class Market:
         self.pending = None
         self.open_trade = None
         self.last_close = None
+        self.exit_events: list[dict[str, Any]] = []
+        self.trade_events: list[dict[str, Any]] = []
 
     def replay(self, bars: list[dict[str, Any]], live_from: datetime | None = None) -> None:
         self._reset()
@@ -254,8 +294,13 @@ class Market:
             return {"i": i, "grade": None, "flags": flags, "wide": True, "side": side}
         reward = float(self.rules["tp_r"])
         target = entry + direction * risk * reward
+        targets = [{"id": "TP1", "price": round(target, 2), "qty": qty, "r": reward}]
+        if not targets:
+            return {"i": i, "grade": None, "flags": flags, "wide": False, "side": side}
+        setup_id = f"{self.spec['root']}:{bar['t'].isoformat()}:{side}"
         setup = {
             "i": i,
+            "setup_id": setup_id,
             "root": self.spec["root"],
             "grade": setup_grade,
             "flags": flags,
@@ -264,6 +309,7 @@ class Market:
             "entry": round(entry, 2),
             "stop": round(stop, 2),
             "target": round(target, 2),
+            "targets": targets,
             "far": far,
             "qty": qty,
             "risk": round(risk_dollars, 2),
@@ -293,17 +339,19 @@ class Market:
             return []
         self.pending = None
         stop_hit = _stop_hit(bar, direction, pending["stop"], self.spec["tick"])
-        target_hit = bar["h"] >= pending["target"] if direction == 1 else bar["l"] <= pending["target"]
-        self.open_trade = {**pending, "fill_i": i, "when": bar["t"]}
-        if stop_hit or target_hit:
-            self._finish(pending["stop"] if stop_hit else pending["target"], "SL" if stop_hit else "TP", bar["t"])
+        self.open_trade = {**pending, "fill_i": i, "when": bar["t"], "remaining_qty": pending["qty"]}
+        self.trade_events.append({
+            "kind": "fill", "event_id": f"{pending['setup_id']}:ENTRY", "setup": dict(pending), "when": bar["t"],
+        })
+        if stop_hit:
+            exits = [self._exit_event(self.open_trade, pending["stop"], "SL", bar["t"], pending["qty"], "STOP")]
+            self._finish(pending["stop"], "SL", bar["t"])
+        else:
+            exits = self._targets_hit(self.open_trade, bar, bar["t"])
         if not act:
             return []
         actions = [{"kind": "fill", **pending, "when": bar["t"]}]
-        if stop_hit:
-            actions.append({"kind": "exit", "price": pending["stop"], "reason": "SL", "when": bar["t"]})
-        elif target_hit:
-            actions.append({"kind": "exit", "price": pending["target"], "reason": "TP", "when": bar["t"]})
+        actions.extend({"kind": "exit", **event} for event in exits)
         return actions
 
     def _guard(self, bars, i, act: bool) -> list[dict[str, Any]]:
@@ -311,14 +359,47 @@ class Market:
         bar = bars[i]
         direction = trade["direction"]
         stop_hit = _stop_hit(bar, direction, trade["stop"], self.spec["tick"])
-        target_hit = bar["h"] >= trade["target"] if direction == 1 else bar["l"] <= trade["target"]
-        if not stop_hit and not target_hit:
-            return []
-        if stop_hit:
-            self._finish(trade["stop"], "SL", bar["t"])
-            return [{"kind": "exit", "price": trade["stop"], "reason": "SL", "when": bar["t"]}] if act else []
-        self._finish(trade["target"], "TP", bar["t"])
-        return [{"kind": "exit", "price": trade["target"], "reason": "TP", "when": bar["t"]}] if act else []
+        if not stop_hit:
+            exits = self._targets_hit(trade, bar, bar["t"])
+            return [{"kind": "exit", **event} for event in exits] if act else []
+        remaining = trade["remaining_qty"]
+        event = self._exit_event(trade, trade["stop"], "SL", bar["t"], remaining, "STOP")
+        self._finish(trade["stop"], "SL", bar["t"])
+        return [{"kind": "exit", **event}] if act else []
+
+    def _targets_hit(self, trade: dict[str, Any], bar: dict[str, Any], when: datetime) -> list[dict[str, Any]]:
+        hits = []
+        remaining_targets = trade.setdefault("remaining_targets", [dict(item) for item in trade["targets"]])
+        for target in list(remaining_targets):
+            hit = bar["h"] >= target["price"] if trade["direction"] == 1 else bar["l"] <= target["price"]
+            if not hit:
+                continue
+            qty = int(target["qty"])
+            event = self._exit_event(trade, target["price"], "TP", when, qty, target["id"])
+            hits.append(event)
+            remaining_targets.remove(target)
+            trade["remaining_qty"] -= qty
+            if trade["remaining_qty"] <= 0:
+                self._finish(target["price"], "TP", when)
+                break
+        return hits
+
+    def _exit_event(self, trade: dict[str, Any], price: float, reason: str, when: datetime, qty: int, target_id: str) -> dict[str, Any]:
+        event_id = f"{trade['setup_id']}:EXIT:{target_id}"
+        if target_id == "STOP":
+            event_id = f"{trade['setup_id']}:EXIT:STOP:{when.isoformat()}"
+        event = {
+            "setup": trade,
+            "event_id": event_id,
+            "price": price,
+            "qty": qty,
+            "target_id": target_id,
+            "reason": reason,
+            "when": when,
+        }
+        self.exit_events.append(event)
+        self.trade_events.append({"kind": "exit", **event})
+        return event
 
     def _finish(self, price: float, reason: str, when) -> None:
         trade = self.open_trade
@@ -365,6 +446,8 @@ def payload_from(setup: dict[str, Any], event: str, price: float, reason: str, w
     return {
         "source": "breakaway-bot",
         "event": event,
+        "eventId": f"{setup.get('setup_id', root + ':' + when.isoformat())}:ENTRY" if event == "entry" else None,
+        "setupId": setup.get("setup_id"),
         "action": "buy" if (event == "entry" and side == "long") or (event == "exit" and side == "short") else "sell",
         "side": side,
         "ticker": root,
@@ -373,6 +456,7 @@ def payload_from(setup: dict[str, Any], event: str, price: float, reason: str, w
         "price": price,
         "stop": setup["stop"],
         "target": setup["target"],
+        "targets": setup.get("targets"),
         "grade": setup["grade"],
         "reason": reason,
         "timestamp": when.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -393,8 +477,11 @@ def apply_actions(desk, actions: list[dict[str, Any]]) -> None:
         elif action["kind"] == "fill":
             desk.handle(payload_from(action, "entry", action["entry"], "fvg_retrace", action["when"]))
         elif action["kind"] == "exit":
+            setup = action.get("setup") or action
             desk.handle({
-                "event": "exit", "price": action["price"], "reason": action["reason"],
+                "event": "exit", "eventId": action.get("event_id"), "setupId": setup.get("setup_id"),
+                "targetId": action.get("target_id"), "qty": action.get("qty"),
+                "price": action["price"], "reason": action["reason"],
                 "timestamp": action["when"].strftime("%Y-%m-%dT%H:%M:%S%z"),
             })
 
@@ -405,8 +492,8 @@ def describe(market: Market, bars: list[dict[str, Any]]) -> str:
     trade = market.open_trade
     if trade:
         return (
-            f"{root} {trade['grade']} {trade['side']} {trade['qty']} @ {trade['entry']:.2f} "
-            f"stop {trade['stop']:.2f} target {trade['target']:.2f}"
+            f"{root} {trade['grade']} {trade['side']} {trade.get('remaining_qty', trade['qty'])}/{trade['qty']} @ {trade['entry']:.2f} "
+            f"stop {trade['stop']:.2f} targets " + ", ".join(f"{item['id']} {item['price']:.2f} x{item['qty']}" for item in trade.get("remaining_targets", trade["targets"]))
         )
     pending = market.pending
     if pending and pending.get("grade"):
@@ -429,10 +516,10 @@ def rules_from(desk) -> dict[str, Any]:
     snap = desk.snapshot()
     roots = [root for root in (snap.get("watchMarkets") or DEFAULT_ROOTS) if root in CATALOG]
     return {
-        "min_grade": snap.get("minGrade") or "A",
-        "tp_r": float(snap.get("tpR") or 1.0),
-        "qty_a": int(snap.get("qtyA") or 3),
-        "qty_aplus": int(snap.get("qtyAplus") or 5),
+        "min_grade": DEFAULT_RULES["min_grade"],
+        "tp_r": DEFAULT_RULES["tp_r"],
+        "qty_a": DEFAULT_RULES["qty_a"],
+        "qty_aplus": DEFAULT_RULES["qty_aplus"],
         "roots": roots or list(DEFAULT_ROOTS),
     }
 
@@ -450,6 +537,7 @@ def _shown_grade(market: Market, live_from: datetime | None) -> str | None:
 def scan(desk, rules: dict[str, Any], live_from: datetime | None) -> tuple[list[str], str | None]:
     lines = []
     grade = None
+    replay_events = []
     for root in rules["roots"]:
         spec = CATALOG[root]
         try:
@@ -461,7 +549,7 @@ def scan(desk, rules: dict[str, Any], live_from: datetime | None) -> tuple[list[
             market = Market(spec, rules)
             market.replay(bars, live_from)
             if desk is not None and live_from is not None:
-                sync_open(desk, market, live_from)
+                replay_events.extend(event for event in market.trade_events if event["when"] >= live_from)
             lines.append(describe(market, bars))
             shown = _shown_grade(market, live_from)
             if shown:
@@ -469,6 +557,8 @@ def scan(desk, rules: dict[str, Any], live_from: datetime | None) -> tuple[list[
         except Exception as exc:
             lines.append(f"{root} feed error")
             print(root, exc)
+    if desk is not None and live_from is not None:
+        sync_events(desk, replay_events)
     return lines, grade
 
 
@@ -490,7 +580,8 @@ def _same_trade(pos: dict[str, Any] | None, trade: dict[str, Any] | None) -> boo
         return False
     try:
         same_root = _root_of(pos) == _root_of(trade)
-        return same_root and pos.get("side") == trade.get("side") and int(pos.get("qty")) == int(trade.get("qty")) and abs(float(pos.get("entry")) - float(trade.get("entry"))) < 0.05
+        pos_initial = int(pos.get("initialQty", pos.get("qty")))
+        return same_root and pos.get("side") == trade.get("side") and pos_initial == int(trade.get("qty")) and abs(float(pos.get("entry")) - float(trade.get("entry"))) < 0.05
     except (TypeError, ValueError):
         return False
 
@@ -502,39 +593,45 @@ def _already_closed(desk, closed: dict[str, Any]) -> bool:
     return False
 
 
-def sync_open(desk, market: Market, live_from: datetime) -> None:
-    """Book a setup that fills after the desk starts, using the grade and target in that setup."""
-    pos = desk.snapshot().get("position")
-    trade = market.open_trade if market.open_trade and market.open_trade["when"] >= live_from else None
-    closed = market.last_close if market.last_close and market.last_close["when"] >= live_from else None
-    if pos and not _same_trade(pos, trade) and closed and _same_trade(pos, closed):
-        apply_actions(desk, [{
-            "kind": "exit",
-            "price": closed["exit_price"],
-            "reason": closed["exit_reason"],
-            "when": closed["exit_when"],
-        }])
-        pos = None
-    if trade and pos is None:
-        apply_actions(desk, [{"kind": "fill", **trade}])
-    elif closed and pos is None and trade is None and not _already_closed(desk, closed):
-        apply_actions(desk, [
-            {"kind": "fill", **closed},
-            {"kind": "exit", "price": closed["exit_price"], "reason": closed["exit_reason"], "when": closed["exit_when"]},
-        ])
+def sync_events(desk, events: list[dict[str, Any]]) -> None:
+    """Replay stable events chronologically; desk eventId tracking prevents rebooking."""
+    events.sort(key=lambda event: (event["when"], 0 if event["kind"] == "fill" else 1, event["event_id"]))
+    for event in events:
+        if event["kind"] == "fill":
+            setup = event["setup"]
+            payload = payload_from(setup, "entry", setup["entry"], "fvg_retrace", event["when"])
+            payload["eventId"] = event["event_id"]
+            desk.handle(payload)
+            continue
+        setup = event["setup"]
+        desk.handle({
+            "event": "exit", "eventId": event["event_id"], "setupId": setup["setup_id"],
+            "targetId": event["target_id"], "qty": event["qty"], "price": event["price"],
+            "reason": event["reason"],
+            "timestamp": event["when"].strftime("%Y-%m-%dT%H:%M:%S%z"),
+        })
 
 
 def start_watcher(desk) -> None:
+    """Mirror the plan received at the webhook; do not make an independent plan."""
     def loop() -> None:
-        live_from = datetime.now(NY)
         while True:
             try:
-                rules = rules_from(desk)
-                lines, grade = scan(desk, rules, live_from)
-                desk.set_watch({"symbol": " ".join(rules["roots"]), "grade": grade, "note": " · ".join(lines)})
+                plan = desk.snapshot().get("plan")
+                if plan:
+                    targets = ", ".join(
+                        f"{item['id']} {item['price']:.2f} (w{item.get('allocation', 1):g})" for item in plan["targets"]
+                    )
+                    status = str(plan.get("status") or "PLAN")
+                    desk.set_watch({
+                        "symbol": plan["root"], "price": plan["entry"], "grade": plan["grade"],
+                        "note": f"{status}: {plan['side'].upper()} {plan['root']} @ {plan['entry']:.2f} stop {plan['stop']:.2f}; {targets}",
+                    })
+                else:
+                    desk.set_watch({"grade": None, "note": "Waiting for a TradingView plan"})
             except Exception as exc:
                 desk.set_watch({"note": f"Watch error: {exc}"})
-            time.sleep(30)
+            time.sleep(1)
 
     threading.Thread(target=loop, name="stax-watch", daemon=True).start()
 

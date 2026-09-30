@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-Breakaway execution bot.
+Breakaway paper execution desk.
 
-TradingView finds the setup. This process takes the trade.
+TradingView sends price levels and R targets. This process sizes and papers the trade.
 
-It listens for the Generic JSON alert from breakaway_bot_stax.pine and
-immediately papers the order: one position, the stop and target from the
-alert, then the exit when the strategy sends one. Daily trade count, daily
-loss, and daily profit target are enforced here, so a signal can still be
-refused after it leaves the chart.
+It takes entry, stop, and target prices from the Pine alert, applies the desk's
+independent per-trade dollar-risk setting to choose contract quantity, and
+scales target allocation weights to that quantity. Desk-side limits can still
+refuse a signal after it leaves the chart.
 
     python3 bot/execution_bot.py                 # http://127.0.0.1:8791
     python3 bot/execution_bot.py --selftest
@@ -20,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import threading
 import time
 import urllib.error
@@ -84,6 +84,28 @@ def contract_key(root: str) -> str:
     return root
 
 
+def allocate_target_contracts(total_qty: int, targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Scale plan weights to the desk-sized position, assigning remainders nearest-first."""
+    if total_qty <= 0 or not targets:
+        return []
+    weights = [max(0.0, float(item.get("allocation", item.get("qty", 1)))) for item in targets]
+    weight_sum = sum(weights)
+    if weight_sum <= 0:
+        weights = [1.0] * len(targets)
+        weight_sum = float(len(targets))
+    exact = [total_qty * weight / weight_sum for weight in weights]
+    quantities = [math.floor(value) for value in exact]
+    remainder = total_qty - sum(quantities)
+    priority = sorted(range(len(targets)), key=lambda index: (-(exact[index] - quantities[index]), index))
+    for index in priority[:remainder]:
+        quantities[index] += 1
+    return [
+        {**item, "allocation": weights[index], "qty": quantities[index]}
+        for index, item in enumerate(targets)
+        if quantities[index] > 0
+    ]
+
+
 def session_date(when: datetime) -> datetime.date:
     """Tradeify's session ends at 5:00 PM New York. After that, it is the next day."""
     if when.tzinfo is None:
@@ -104,11 +126,8 @@ class Desk:
         self.max_daily_loss = 0.0
         self.daily_target = SELECT_DAY_CAP
         self.point_override = 0.0
+        self.risk_per_trade = SELECT_MAX_RISK
         self.forward_url = ""
-        self.min_grade = "A"
-        self.tp_r = 1.0
-        self.qty_a = 3
-        self.qty_aplus = 5
         self.watch_markets = ["MES", "MGC", "MYM"]
         self.watch = {"symbol": "MES MGC MYM", "price": None, "grade": None, "note": "Select 25K paper. The watch is the settings on this desk."}
         self.day = session_date(now_ny())
@@ -121,8 +140,10 @@ class Desk:
         self.floor_locked = False
         self.failed = False
         self.position: dict[str, Any] | None = None
+        self.plan: dict[str, Any] | None = None
         self.fills: list[dict[str, Any]] = []
         self.activity: list[dict[str, Any]] = []
+        self.processed_event_ids: set[str] = set()
         self.killed = False
 
     def snapshot(self) -> dict[str, Any]:
@@ -156,15 +177,14 @@ class Desk:
                 "maxDailyLoss": self.max_daily_loss,
                 "dailyTarget": self.daily_target,
                 "pointOverride": self.point_override,
+                "riskPerTrade": self.risk_per_trade,
                 "forwardUrl": self.forward_url,
-                "minGrade": self.min_grade,
-                "tpR": self.tp_r,
-                "qtyA": self.qty_a,
-                "qtyAplus": self.qty_aplus,
+                "planSettingsSource": "TradingView prices and R levels; paper desk sizing settings",
                 "watchMarkets": list(self.watch_markets),
                 "killed": self.killed,
                 "watch": dict(self.watch),
                 "position": pos,
+                "plan": dict(self.plan) if self.plan else None,
                 "fills": list(reversed(self.fills[-30:])),
                 "activity": list(reversed(self.activity[-40:])),
             }
@@ -179,16 +199,10 @@ class Desk:
                 self.daily_target = max(0.0, float(body["dailyTarget"]))
             if "pointOverride" in body:
                 self.point_override = max(0.0, float(body["pointOverride"]))
+            if "riskPerTrade" in body:
+                self.risk_per_trade = min(SELECT_MAX_RISK, max(1.0, float(body["riskPerTrade"])))
             if "forwardUrl" in body:
                 self.forward_url = str(body["forwardUrl"] or "").strip()
-            if "minGrade" in body and str(body["minGrade"]) in ("Off", "A", "A+"):
-                self.min_grade = str(body["minGrade"])
-            if "tpR" in body:
-                self.tp_r = min(5.0, max(0.1, float(body["tpR"])))
-            if "qtyA" in body:
-                self.qty_a = min(10, max(1, int(body["qtyA"])))
-            if "qtyAplus" in body:
-                self.qty_aplus = min(10, max(1, int(body["qtyAplus"])))
             if "watchMarkets" in body:
                 raw = body["watchMarkets"]
                 if isinstance(raw, str):
@@ -217,8 +231,10 @@ class Desk:
             self.day_start_equity = self.equity
             self.trades_today = 0
             self.position = None
+            self.plan = None
             self.fills.clear()
             self.activity.clear()
+            self.processed_event_ids.clear()
             self.killed = False
             self.days_traded = 0
             self.day_pnls = {}
@@ -236,18 +252,103 @@ class Desk:
         with self.lock:
             if not isinstance(payload, dict):
                 return self._result(False, "Body must be a JSON object")
+            event_id = str(payload.get("eventId") or "")
+            if event_id and event_id in self.processed_event_ids:
+                return self._result(False, "Duplicate event ignored")
             when = parse_time(payload.get("timestamp"))
             self._roll_day(when)
             if "unmodifiedTicker" in payload and "event" not in payload:
-                return self._take_option(payload, when)
-            event = payload.get("event") or "entry"
-            if event == "entry":
-                return self._take_future(payload, when)
-            if event == "exit":
-                return self._on_exit(payload, when)
-            if event == "stop_update":
-                return self._on_stop(payload)
-            return self._result(False, f"Unknown event {event!r}")
+                result = self._take_option(payload, when)
+            else:
+                event = payload.get("event") or "entry"
+                if event == "entry":
+                    result = self._take_future(payload, when)
+                elif event == "exit":
+                    result = self._on_exit(payload, when)
+                elif event == "stop_update":
+                    result = self._on_stop(payload)
+                elif event == "plan":
+                    result = self._on_plan(payload, when)
+                elif event == "plan_cancel":
+                    result = self._on_plan_cancel(payload)
+                else:
+                    result = self._result(False, f"Unknown event {event!r}")
+            if event_id and result.get("success"):
+                self.processed_event_ids.add(event_id)
+            return result
+
+    def _on_plan(self, payload: dict[str, Any], when: datetime) -> dict[str, Any]:
+        setup_id = str(payload.get("setupId") or "")
+        side = str(payload.get("side") or "")
+        try:
+            entry = float(payload.get("entry", payload.get("price")))
+            stop = float(payload["stop"])
+        except (KeyError, TypeError, ValueError):
+            return self._result(False, "Plan needs entry and stop prices")
+        if not setup_id or side not in ("long", "short") or entry <= 0 or stop <= 0:
+            return self._result(False, "Plan needs setupId, valid side, and positive prices")
+        if (side == "long" and stop >= entry) or (side == "short" and stop <= entry):
+            return self._result(False, "Stop must be beyond entry in the risk direction")
+        root = str(payload.get("root") or payload.get("ticker") or "MES").rsplit(":", 1)[-1]
+        if contract_key(root) not in self.watch_markets:
+            return self._result(False, f"{root} is not enabled in the desk market allowlist")
+        targets = payload.get("targets")
+        if not isinstance(targets, list) or not targets:
+            try:
+                target_price = float(payload["target"])
+            except (KeyError, TypeError, ValueError):
+                return self._result(False, "Plan needs target or targets")
+            targets = [{"id": "TP1", "price": target_price, "allocation": 1, "r": None}]
+        if len(targets) > 3:
+            return self._result(False, "Plan supports at most three targets")
+        normalized = []
+        previous = None
+        for index, item in enumerate(targets, 1):
+            if not isinstance(item, dict):
+                return self._result(False, f"Target {index} must be an object")
+            try:
+                target_price = float(item["price"])
+                allocation = float(item.get("allocation", item.get("qty", 1)))
+            except (KeyError, TypeError, ValueError):
+                return self._result(False, f"Target {index} needs a price and allocation weight")
+            if target_price <= 0 or allocation <= 0:
+                return self._result(False, f"Target {index} price and allocation weight must be positive")
+            if (side == "long" and target_price <= entry) or (side == "short" and target_price >= entry):
+                return self._result(False, f"Target {index} must be beyond entry in the trade direction")
+            if previous is not None and ((side == "long" and target_price <= previous) or (side == "short" and target_price >= previous)):
+                return self._result(False, "Targets must be ordered from nearest to farthest")
+            normalized.append({"id": str(item.get("id") or f"TP{index}"), "price": target_price, "allocation": allocation, "r": item.get("r")})
+            previous = target_price
+        plan = {
+            "setupId": setup_id,
+            "settingsId": str(payload.get("settingsId") or ""),
+            "ticker": str(payload.get("ticker") or root),
+            "root": root,
+            "side": side,
+            "grade": str(payload.get("grade") or ""),
+            "entry": entry,
+            "stop": stop,
+            "targets": normalized,
+            "status": "PLAN",
+            "receivedAt": when.isoformat(),
+        }
+        self.plan = plan
+        target_text = ", ".join(f"{item['id']} {item['price']:.2f} ({item['allocation']:g}w)" for item in normalized)
+        self.watch.update({
+            "symbol": root, "price": entry, "grade": plan["grade"],
+            "note": f"TradingView plan: {side.upper()} {root} @ {entry:.2f} stop {stop:.2f}; {target_text}",
+        })
+        self._note("PLAN", self.watch["note"])
+        return self._result(True, "Plan received", plan)
+
+    def _on_plan_cancel(self, payload: dict[str, Any]) -> dict[str, Any]:
+        setup_id = str(payload.get("setupId") or "")
+        if not self.plan or (setup_id and self.plan.get("setupId") != setup_id):
+            return self._result(False, "No matching active plan")
+        self._note("PLAN", f"TradingView plan cancelled ({self.plan['setupId']})")
+        self.plan = None
+        self.watch.update({"grade": None, "note": "Waiting for a TradingView plan"})
+        return self._result(True, "Plan cleared")
 
     def _roll_day(self, when: datetime) -> None:
         session = session_date(when)
@@ -288,63 +389,139 @@ class Desk:
             return f"Already in {self.position['side']} {self.position['ticker']}"
         return None
 
+    def _normalize_targets(self, targets: Any, side: str, price: float) -> list[dict[str, Any]] | str:
+        if not isinstance(targets, list) or not targets:
+            return "Targets must be a non-empty array"
+        normalized_targets = []
+        previous = None
+        for index, item in enumerate(targets, 1):
+            if not isinstance(item, dict):
+                return f"Target {index} must be an object"
+            try:
+                target_price = float(item["price"])
+                allocation = float(item.get("allocation", item.get("qty", 1)))
+            except (KeyError, TypeError, ValueError):
+                return f"Target {index} needs price and allocation weight"
+            if target_price <= 0 or allocation <= 0:
+                return f"Target {index} price and allocation weight must be positive"
+            if side == "long" and target_price <= price or side == "short" and target_price >= price:
+                return f"Target {index} must be beyond entry in the trade direction"
+            if previous is not None and (target_price <= previous if side == "long" else target_price >= previous):
+                return "Targets must be ordered from nearest to farthest"
+            normalized_targets.append({
+                "id": str(item.get("id") or f"TP{index}"),
+                "price": target_price,
+                "allocation": allocation,
+                "r": item.get("r"),
+            })
+            previous = target_price
+        return normalized_targets
+
     def _take_future(self, payload: dict[str, Any], when: datetime) -> dict[str, Any]:
         reason = self._blocked()
         if reason:
             self._note("REFUSED", reason)
             return self._result(False, reason)
         try:
-            qty = int(payload["qty"])
             price = float(payload["price"])
             stop = float(payload["stop"])
             target = float(payload["target"])
         except (KeyError, TypeError, ValueError):
-            self._note("REFUSED", "Entry needs qty, price, stop, and target")
-            return self._result(False, "Entry needs qty, price, stop, and target")
-        if qty <= 0 or price <= 0:
-            self._note("REFUSED", "Qty and price must be positive")
-            return self._result(False, "Qty and price must be positive")
+            self._note("REFUSED", "Entry needs price, stop, and target")
+            return self._result(False, "Entry needs price, stop, and target")
+        if price <= 0:
+            self._note("REFUSED", "Price must be positive")
+            return self._result(False, "Price must be positive")
         side = payload.get("side") or ("long" if payload.get("action") == "buy" else "short")
         if side not in ("long", "short"):
             self._note("REFUSED", "Side must be long or short")
             return self._result(False, "Side must be long or short")
         grade = payload.get("grade")
-        root = str(payload.get("root") or payload.get("ticker") or "MES")
+        root = str(payload.get("root") or payload.get("ticker") or "MES").rsplit(":", 1)[-1]
+        setup_id = str(payload.get("setupId") or "")
+        if self.plan and setup_id and self.plan.get("setupId") != setup_id:
+            self._note("REFUSED", "Entry setup does not match the TradingView plan")
+            return self._result(False, "Entry setup does not match the TradingView plan")
+        targets = payload.get("targets")
+        use_plan = bool(self.plan and setup_id and self.plan.get("setupId") == setup_id)
+        if use_plan:
+            assert self.plan is not None
+            price = float(self.plan["entry"])
+            stop = float(self.plan["stop"])
+            side = str(self.plan["side"])
+            grade = self.plan.get("grade") or grade
+            root = str(self.plan.get("root") or root)
+            targets = list(self.plan["targets"])
+            target = float(targets[0]["price"])
+            entry_fp = str(payload.get("settingsId") or "")
+            plan_fp = str(self.plan.get("settingsId") or "")
+            if entry_fp and plan_fp and entry_fp != plan_fp:
+                self._note("MISMATCH", "Alert settings differ from the armed plan. Prices stay on the plan.")
+        if contract_key(root) not in self.watch_markets:
+            self._note("REFUSED", f"{root} is not enabled in the desk market allowlist")
+            return self._result(False, "Market is not enabled in the desk allowlist")
         if contract_key(root) in {"MNQ", "NQ"}:
             self._note("REFUSED", "MNQ is off the watch. It is too expensive for this Select account.")
             return self._result(False, "MNQ is excluded")
+        if (side == "long" and stop >= price) or (side == "short" and stop <= price):
+            self._note("REFUSED", "Stop must be beyond entry in the risk direction")
+            return self._result(False, "Stop must be beyond entry in the risk direction")
         pv = point_value(root[:3] if root[:3] in POINT_VALUES else root, self.point_override)
         risk_pts = abs(price - stop)
         if risk_pts <= 0:
             self._note("REFUSED", "Stop is on top of the entry")
             return self._result(False, "Stop is on top of the entry")
         key = contract_key(root)
-        if key in MICROS and qty > 10:
-            self._note("REFUSED", f"{qty} micros is over the Select cap of 10.")
-            return self._result(False, "Over the 10 micro contract cap")
-        if key in MINIS and qty > 1:
-            self._note("REFUSED", f"{qty} minis is over the Select cap of 1.")
-            return self._result(False, "Over the 1 mini contract cap")
-        risk_dollars = risk_pts * qty * pv
         room = self.equity - self.floor
+        risk_per_contract = risk_pts * pv
+        budget = min(self.risk_per_trade, SELECT_MAX_RISK, max(0.0, room))
+        qty = math.floor(budget / risk_per_contract) if risk_per_contract > 0 else 0
+        qty_cap = 10 if key in MICROS else 1 if key in MINIS else 0
+        if qty_cap:
+            qty = min(qty, qty_cap)
+        if qty < 1:
+            self._note("REFUSED", f"One contract risks ${risk_per_contract:.0f}; watcher budget is ${budget:.0f}.")
+            return self._result(False, "One contract exceeds the watcher's per-trade risk budget")
+        risk_dollars = risk_per_contract * qty
         if risk_dollars > SELECT_MAX_RISK or risk_dollars >= room:
             self._note("REFUSED", f"Stop risks ${risk_dollars:.0f}. The trail has ${room:.0f} left, and one trade is capped at ${SELECT_MAX_RISK:.0f}.")
             return self._result(False, "Stop risks more than the trailing drawdown allows")
-        ticker = str(payload.get("ticker") or root)
+        if targets is not None:
+            # Pine supplies target prices and relative weights; the desk sizes
+            # the position and translates those weights into whole contracts.
+            normalized = self._normalize_targets(targets, side, price)
+            if isinstance(normalized, str):
+                self._note("REFUSED", normalized)
+                return self._result(False, normalized)
+            normalized_targets = normalized
+        else:
+            normalized_targets = [{"id": "TP1", "price": target, "allocation": 1.0, "r": None}]
+        normalized_targets = allocate_target_contracts(qty, normalized_targets)
+        if not normalized_targets or sum(item["qty"] for item in normalized_targets) != qty:
+            return self._result(False, "Watcher could not allocate the sized position across the plan targets")
+        ticker = str((self.plan or {}).get("ticker") or payload.get("ticker") or root) if use_plan else str(payload.get("ticker") or root)
         self.position = {
             "ticker": ticker,
             "root": root,
+            "setupId": setup_id,
             "side": side,
             "qty": qty,
             "entry": price,
             "stop": stop,
             "target": target,
+            "targets": normalized_targets,
+            "targetQtyMap": {item["id"]: item["qty"] for item in normalized_targets},
+            "initialQty": qty,
+            "exitedTargetIds": [],
             "pointValue": pv,
             "riskDollars": risk_pts * qty * pv,
+            "initialRiskDollars": risk_pts * qty * pv,
             "openedAt": when.isoformat(),
             "reason": payload.get("reason") or "fvg_retrace",
             "grade": grade or "",
         }
+        if self.plan and self.plan.get("setupId") == self.position["setupId"]:
+            self.plan["status"] = "PAPER POSITION"
         if self.trades_today == 0:
             self.days_traded += 1
         self.trades_today += 1
@@ -353,7 +530,13 @@ class Desk:
             "TAKEN",
             f"{tag}{side.upper()} {qty} {ticker} @ {price:.2f}  stop {stop:.2f}  target {target:.2f}",
         )
-        self._forward(payload)
+        forward_payload = dict(payload)
+        forward_payload["qty"] = qty
+        forward_payload["price"] = price
+        forward_payload["stop"] = stop
+        forward_payload["target"] = target
+        forward_payload["targets"] = normalized_targets
+        self._forward(forward_payload)
         return self._result(True, "Trade taken", self.position)
 
     def _take_option(self, payload: dict[str, Any], when: datetime) -> dict[str, Any]:
@@ -388,16 +571,40 @@ class Desk:
         if not self.position:
             self._note("IGNORED", "Exit arrived with no open trade")
             return self._result(False, "No open trade")
+        exit_setup_id = str(payload.get("setupId") or "")
+        open_setup_id = str(self.position.get("setupId") or "")
+        if exit_setup_id and open_setup_id and exit_setup_id != open_setup_id:
+            self._note("IGNORED", "Exit setup ID does not match the open trade")
+            return self._result(False, "Exit setup ID does not match the open trade")
         try:
             price = float(payload["price"])
         except (KeyError, TypeError, ValueError):
             self._note("IGNORED", "Exit is missing a price")
             return self._result(False, "Exit is missing a price")
-        return self._close(price, str(payload.get("reason") or "EXIT"), when)
+        target_id = str(payload.get("targetId") or "")
+        if target_id and target_id in self.position.get("exitedTargetIds", []):
+            self._note("IGNORED", f"Duplicate {target_id} exit ignored")
+            return self._result(False, f"Duplicate {target_id} exit")
+        reason = str(payload.get("reason") or "EXIT")
+        if target_id.startswith("TP") and reason == "TP":
+            qty = int(self.position.get("targetQtyMap", {}).get(target_id, 0))
+            if qty <= 0:
+                self._note("IGNORED", f"No watcher contracts allocated to {target_id}")
+                return self._result(False, f"No watcher contracts allocated to {target_id}")
+            qty = min(qty, int(self.position["qty"]))
+        else:
+            # Pine may emit one stop-fill alert for each simulated target leg;
+            # a shared stop closes the watcher's entire remaining position once.
+            qty = int(self.position["qty"])
+        return self._close(price, reason, when, qty, target_id, str(payload.get("eventId") or ""))
 
     def _on_stop(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.position:
             return self._result(False, "No open trade")
+        stop_setup = str(payload.get("setupId") or "")
+        open_setup = str(self.position.get("setupId") or "")
+        if stop_setup and open_setup and stop_setup != open_setup:
+            return self._result(False, "Stop update setup ID does not match the open trade")
         try:
             new_stop = float(payload.get("stop") if payload.get("stop") is not None else payload["price"])
         except (KeyError, TypeError, ValueError):
@@ -413,13 +620,16 @@ class Desk:
         self._note("STOP", f"Stop moved to {pos['stop']}")
         return self._result(True, "Stop updated", pos)
 
-    def _close(self, price: float, reason: str, when: datetime) -> dict[str, Any]:
+    def _close(self, price: float, reason: str, when: datetime, qty: int | None = None, target_id: str = "", event_id: str = "") -> dict[str, Any]:
         pos = self.position
         assert pos is not None
+        close_qty = pos["qty"] if qty is None else qty
+        if close_qty <= 0 or close_qty > pos["qty"]:
+            return self._result(False, f"Exit qty {close_qty} exceeds remaining position {pos['qty']}")
         entry = pos["entry"] if isinstance(pos["entry"], (int, float)) else price
         sign = 1 if pos["side"] == "long" else -1
-        pnl = sign * (price - entry) * pos["qty"] * pos["pointValue"]
-        risk = pos["riskDollars"] or 0
+        pnl = sign * (price - entry) * close_qty * pos["pointValue"]
+        risk = pos.get("initialRiskDollars", pos["riskDollars"]) or 0
         realized_r = pnl / risk if risk else None
         self.equity += pnl
         self.day_pnls[self.day] = self.day_pnls.get(self.day, 0.0) + pnl
@@ -427,18 +637,29 @@ class Desk:
         fill = {
             "ticker": pos["ticker"],
             "side": pos["side"],
-            "qty": pos["qty"],
+            "qty": close_qty,
             "entry": entry,
             "exit": price,
             "pnl": round(pnl, 2),
             "r": None if realized_r is None else round(realized_r, 2),
             "reason": reason,
+            "eventId": event_id or None,
+            "targetId": target_id or None,
+            "remainingQty": pos["qty"] - close_qty,
             "closedAt": when.isoformat(),
         }
         self.fills.append(fill)
-        self.position = None
-        self._note("CLOSED", f"{reason} {pos['side']} {pos['qty']} {pos['ticker']} pnl {pnl:+.2f}")
-        return self._result(True, "Trade closed", fill)
+        pos["qty"] -= close_qty
+        pos["riskDollars"] = abs(pos["entry"] - pos["stop"]) * pos["qty"] * pos["pointValue"]
+        if target_id:
+            pos.setdefault("exitedTargetIds", []).append(target_id)
+        if pos["qty"] == 0:
+            self.position = None
+            if self.plan and self.plan.get("setupId") == pos.get("setupId"):
+                self.plan["status"] = "COMPLETE"
+        kind = "CLOSED" if self.position is None else "PARTIAL"
+        self._note(kind, f"{reason} {pos['side']} {close_qty}/{pos.get('initialQty', close_qty)} {pos['ticker']} pnl {pnl:+.2f}")
+        return self._result(True, "Trade closed" if self.position is None else "Partial exit booked", fill)
 
     def _forward(self, payload: dict[str, Any]) -> None:
         url = self.forward_url
@@ -475,29 +696,31 @@ def demo_script() -> list[dict[str, Any]]:
     stamp = now_ny().strftime("%Y-%m-%dT%H:%M:%S%z")
     long_entry = {
         "source": "breakaway-bot", "event": "entry", "action": "buy", "side": "long",
-        "ticker": "MESZ2026", "root": "MES", "exchange": "CME", "qty": 2,
+        "ticker": "MESZ2026", "root": "MES", "exchange": "CME",
         "orderType": "limit", "price": 5800.0, "stop": 5785.6, "target": 5814.4,
+        "targets": [{"id": "TP1", "price": 5814.4, "allocation": 1, "r": 1.0}],
         "reason": "fvg_retrace", "timestamp": stamp,
     }
     stop_move = {
         "source": "breakaway-bot", "event": "stop_update", "action": "sell", "side": "long",
-        "ticker": "MESZ2026", "root": "MES", "qty": 2, "price": 5800.0, "stop": 5800.0,
+        "ticker": "MESZ2026", "root": "MES", "price": 5800.0, "stop": 5800.0,
         "target": 5814.4, "reason": "trail", "timestamp": stamp,
     }
     long_exit = {
         "source": "breakaway-bot", "event": "exit", "action": "sell", "side": "long",
-        "ticker": "MESZ2026", "root": "MES", "qty": 2, "price": 5814.4, "stop": 5800.0,
-        "target": 5814.4, "reason": "TP", "timestamp": stamp,
+        "ticker": "MESZ2026", "root": "MES", "price": 5814.4, "stop": 5800.0,
+        "target": 5814.4, "reason": "TP", "targetId": "TP1", "timestamp": stamp,
     }
     short_entry = {
         "source": "breakaway-bot", "event": "entry", "action": "sell", "side": "short",
-        "ticker": "MESZ2026", "root": "MES", "exchange": "CME", "qty": 1,
+        "ticker": "MESZ2026", "root": "MES", "exchange": "CME",
         "orderType": "limit", "price": 5800.0, "stop": 5812.0, "target": 5776.0,
+        "targets": [{"id": "TP1", "price": 5776.0, "allocation": 1, "r": 2.0}],
         "reason": "fvg_retrace", "timestamp": stamp,
     }
     short_exit = {
         "source": "breakaway-bot", "event": "exit", "action": "buy", "side": "short",
-        "ticker": "MESZ2026", "root": "MES", "qty": 1, "price": 5812.0, "stop": 5812.0,
+        "ticker": "MESZ2026", "root": "MES", "price": 5812.0, "stop": 5812.0,
         "target": 5776.0, "reason": "SL", "timestamp": stamp,
     }
     return [long_entry, stop_move, long_exit, short_entry, short_exit]
@@ -517,21 +740,52 @@ def selftest() -> int:
     saved = DESK
     DESK = desk
     try:
+        desk.risk_per_trade = 100.0
         run_demo()
         snap = desk.snapshot()
         assert snap["position"] is None, snap["position"]
         assert snap["tradesToday"] == 2, snap["tradesToday"]
-        # Long 2 MES, 14.4 points * $5 * 2 = +144. Short 1 MES, 12 points * $5 = -60. Net +84.
-        assert abs(snap["equity"] - 25084.0) < 0.01, snap["equity"]
-        assert abs(snap["dailyPnl"] - 84.0) < 0.01, snap["dailyPnl"]
-        assert snap["minGrade"] == "A", snap["minGrade"]
-        assert snap["tpR"] == 1.0, snap["tpR"]
+        # Desk risk setting sizes each setup to one MES; Pine quantities are absent.
+        assert abs(snap["equity"] - 25012.0) < 0.01, snap["equity"]
+        assert abs(snap["dailyPnl"] - 12.0) < 0.01, snap["dailyPnl"]
         assert snap["watchMarkets"] == ["MES", "MGC", "MYM"], snap["watchMarkets"]
         refused = desk.handle(demo_script()[0])
         # max trades default 5, so a third entry is allowed. Hit the cap instead.
         desk.max_trades = 2
         refused = desk.handle(demo_script()[0])
         assert refused["success"] is False, refused
+        desk.handle({"event": "exit", "price": 5800.0, "reason": "FLAT", "timestamp": now_ny().strftime("%Y-%m-%dT%H:%M:%S%z")})
+        desk.max_trades = 5
+        stamp = now_ny().strftime("%Y-%m-%dT%H:%M:%S%z")
+        blocked_root = desk.handle({
+            "event": "plan", "setupId": "mnq-plan", "side": "long", "root": "MNQ",
+            "entry": 20000.0, "stop": 19900.0, "timestamp": stamp,
+            "targets": [{"id": "TP1", "price": 20100.0, "allocation": 1, "r": 1}],
+        })
+        assert blocked_root["success"] is False, blocked_root
+        armed = desk.handle({
+            "event": "plan", "setupId": "mes-plan", "settingsId": "fp-a", "side": "long", "root": "MES",
+            "ticker": "MESZ2026", "entry": 5800.0, "stop": 5785.6, "grade": "A", "timestamp": stamp,
+            "targets": [{"id": "TP1", "price": 5814.4, "allocation": 1, "r": 1}],
+        })
+        assert armed["success"] is True, armed
+        mismatched = desk.handle({
+            "event": "entry", "setupId": "other-plan", "side": "long", "root": "MES",
+            "price": 5800.0, "stop": 5785.6, "target": 5814.4, "timestamp": stamp,
+        })
+        assert mismatched["success"] is False, mismatched
+        taken = desk.handle({
+            "event": "entry", "setupId": "mes-plan", "settingsId": "fp-b", "side": "short", "root": "MES",
+            "price": 1.0, "stop": 2.0, "target": 9.0, "timestamp": stamp,
+            "targets": [{"id": "TP1", "price": 9.0, "allocation": 1, "r": 1}],
+        })
+        assert taken["success"] is True, taken
+        assert desk.position is not None
+        assert desk.position["entry"] == 5800.0, desk.position
+        assert desk.position["stop"] == 5785.6, desk.position
+        assert desk.position["target"] == 5814.4, desk.position
+        assert desk.position["side"] == "long", desk.position
+        assert any(item["kind"] == "MISMATCH" for item in desk.activity), desk.activity
         print("selftest: PASS", snap["equity"], snap["dailyPnl"])
         return 0
     except AssertionError as exc:

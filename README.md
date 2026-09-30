@@ -18,9 +18,9 @@ original's exact rules are not public, this README says what this version does i
 
 | Path | Purpose |
 | --- | --- |
-| `breakaway_bot_stax.pine` | The signal. One script, titled StaxBot. Risk, take profit, daily loss, and minimum grade are settings on the chart. The table reads **StaxBot** and **v1.5**. |
-| `bot/execution_bot.py` | The bot that takes the trade. Paper desk at `http://127.0.0.1:8791`. |
-| `bot/watch.py` | The desk scan. Markets, minimum grade, take profit, and size come from the desk settings. |
+| `breakaway_bot_stax.pine` | The plan. One script, titled StaxBot. Entry, stop, and R targets are chart settings. The table reads **StaxBot** and **v1.7**. |
+| `bot/execution_bot.py` | The paper desk at `http://127.0.0.1:8791`. It sizes contracts from its own risk setting and uses the prices in the alert. |
+| `bot/watch.py` | Mirrors the TradingView plan on the desk. It does not invent entry, stop, or target prices. |
 | `docs/strategy-logic.md` | Bar-by-bar description of every rule and setting. |
 | `tools/mock_stax_webhook.py` | Payload checker for the Stax options webhook format. |
 
@@ -35,15 +35,17 @@ python3 bot/execution_bot.py --port 8791
 
 Open the desk, then in TradingView set **Alert Payload** to **Generic JSON** and create an alert:
 
-- Condition: this strategy, **Order fills only**
-- Message: `{{strategy.order.alert_message}}`
+- Condition: this strategy, **alert() function calls only**
+- The message box can stay empty. The script sends the JSON itself.
 - Webhook URL: `http://127.0.0.1:8791/webhook/trade-signal` while you are on this machine. TradingView's servers cannot see localhost, so a public HTTPS tunnel is required before a real alert will arrive.
 
-An entry alert opens the paper position at the signal price with the stop and target from the strategy. An exit alert closes it and books P/L using the contract point value (MNQ = $2). The desk refuses a new trade when the daily loss cap, the profit target, or the max-trades count is hit, or when a position is already open.
+A `plan` alert stores the chart's entry, stop, and targets. An `entry` alert opens the paper position at those prices. The desk chooses the contract count from **Risk per trade**. It does not recompute the target from its own R. An `exit` alert closes the contracts it allocated. The desk refuses a new trade when the daily loss cap, the profit target, or the max-trades count is hit, when a position is already open, or when the root is not MES, MGC, or MYM. MNQ is refused.
 
 **Take sample trades** on the desk runs two MES round-trips so you can see a fill without waiting for the chart. MNQ is not on the watch. Leave the forward URL blank for futures. Stax's webhook expects an options ticker (`SPY260930C660.0`), not a futures root. Paste that URL only when the chart is the underlying and the payload is **Stax Options Webhook**.
 
-StaxBot is one script. Another watch is a change to the chart inputs, not a new file. Size is `floor(Risk Per Trade / (stop distance × point value))`. Defaults are the ones this script was built with: risk $100, take profit 1R, max daily loss $0, minimum grade Off. The paper desk has its own settings for markets, minimum grade, take profit, and contract counts. MNQ stays off this Select account. The paper desk is a Tradeify Select 25K evaluation: $25,000 start, $1,500 profit target, $1,000 end-of-day trailing drawdown enforced in real time, no daily loss limit, and a 40% consistency rule. The day stops at $600 so the best day can still be 40% of the $1,500 target. Max size is 1 mini or 10 micros. One trade is capped at $250 of stop risk so a single stop cannot spend the trail. An alert from the chart is taken with the grade and target in that alert.
+StaxBot is one script. Another watch is a change to the chart inputs, not a new file. The chart plan is price and R only: TP1 is `Take Profit (R)` times the stop distance, TP2 is twice that, and TP3 is three times that. Turn each target on or off and set its weight in the inputs. Weights are shares, not contracts. Defaults match the original replay's single 1R target: TP1 on, TP2 off, TP3 off, minimum grade Off. Dollar loss, dollar profit, and contract size are not chart inputs. The paper desk is a Tradeify Select 25K evaluation: $25,000 start, $1,500 profit target, $1,000 end-of-day trailing drawdown enforced in real time, no daily loss limit, and a 40% consistency rule. The day stops at $600 so the best day can still be 40% of the $1,500 target. Max size is 1 mini or 10 micros. One trade is capped at $250 of stop risk. The desk's **Risk per trade** setting sizes the position from the alert's stop distance. MNQ stays off this Select account.
+
+TradingView copies the script inputs into an alert when the alert is created. Editing the chart later does not edit that alert, and the drawn plan does not move. The HUD says **INPUTS CHANGED** when the live inputs no longer match the plan. Delete the old alert and create it again. The script also puts a `settingsId` on the payload so the desk can see that an entry was built from a different snapshot than the armed plan. It still uses the armed plan's prices.
 
 ## How the strategy trades
 
@@ -55,14 +57,16 @@ StaxBot is one script. Another watch is a change to the chart inputs, not a new 
 4. **Entry** — one resting **limit order** at the FVG near edge (default), midpoint (CE), or far edge.
 5. **Stop** — `Tight` (far edge of the FVG), `Medium` (displacement candle low/high), or
    `Large` (origin of the leg: last swing that started the move), plus a tick buffer.
-6. **Target** — `Take Profit (R)` × the stop distance (0.1R–5R).
-7. **Size** — `floor(Risk Per Trade / (stop distance × point value))` contracts; point value
-   is taken from the exchange (MNQ = $2) unless overridden.
+6. **Targets** — TP1, TP2, and TP3 are 1×, 2×, and 3× `Take Profit (R)` times the stop
+   distance. Only enabled targets are drawn and alerted. Weights are allocation shares.
+7. **Size** — not calculated on the chart. The paper desk sizes from its own risk setting
+   after the alert arrives.
 8. **Management** — optional breakeven or a trailing ladder (Aggressive / Standard / Wide,
    same steps as the original's v1.9 release notes). The stop never moves backwards.
+   The new stop is active from the next bar.
 9. **Coach filters** — direction, session preset (NY AM / NY PM / London / Asia / Overnight /
-   Custom / 24-5), volume on the displacement candle, max trades per day, max daily loss,
-   daily profit target.
+   Custom / 24-5), volume on the displacement candle, max trades per day, minimum grade.
+   Dollar loss and dollar profit are desk limits, not plan filters.
 
 The setup is cancelled if it expires, if the FVG fails the `FVG Line Check` (Strict: a close
 through the far edge of the gap; Relaxed: a close through the stop), if price reaches the
@@ -85,11 +89,11 @@ and the input in this script that carries each one:
 | Custom Start / End | 8:00 PM – 9:30 PM (unused) | `Custom Session = 2000-2130` |
 | Timezone | America/New_York | `Timezone = America/New_York` |
 | Max Trades Per Day | 5 | `Max Trades Per Day = 5` |
-| Max Daily Loss | 0 (off) | `Max Daily Loss = 0` |
-| Daily Profit Target | 0 (off) | `Daily Profit Target = 0` |
-| Point Value Override | 0 (auto → $2 on MNQ) | `Point Value Override = 0` |
-| Risk Per Trade | $100 | `Risk Per Trade = 100` |
-| Take Profit (R) | 1 | `Take Profit (R) = 1.0` |
+| Max Daily Loss | 0 (off) | Desk limit, not a chart input |
+| Daily Profit Target | 0 (off) | Desk limit. Select paper uses a $600 day cap |
+| Point Value Override | 0 (auto) | Desk input. The chart does not price from it |
+| Risk Per Trade | $100 | Desk **Risk per trade**. It does not move chart prices |
+| Take Profit (R) | 1 | `Take Profit (R) = 1.0`, TP1 on, TP2 off, TP3 off |
 | FVG Line Check | Strict | `FVG Line Check = Strict` |
 | SL Type | Large | `SL Type = Large` |
 | Breakeven / +1 Tick | Off / unchecked | `Breakeven = Off`, `BE +1 Tick Buffer = off` |
@@ -98,10 +102,9 @@ and the input in this script that carries each one:
 | Show Info Table / Drawings | on / on | same |
 | EMA Cloud Color | cyan | `EMA Cloud Color` |
 
-These are also the script's defaults, so a fresh add-to-chart matches the replay
-configuration. The chart labels follow the original's convention: `L_10509 +2` = long,
-setup id 10509 (the FVG bar index), 2 contracts; `X_L_10509 -2` = its exit, tagged with the
-result (`TP +1.0R`, `SL -1.0R`, `BE +0.0R`, `TRAILED +1.5R`).
+A fresh add-to-chart uses those structure defaults. The chart does not draw strategy
+order arrows. A filled long is a `LONG` mark, and an exit is `TP`, `SL`, `BE`, `TRAILED`,
+or `FLAT` with the R result. Price tags sit on the plan, to the left of the last plan bar.
 
 ## Wiring it to Stax
 
@@ -130,13 +133,11 @@ fields the script includes (`source`, `side`, `underlyingEntry`, `underlyingStop
    * `Days To Expiration`, `Strikes OTM`, `Strike Step` to taste (0DTE, ATM, step 1 by default)
    * `Underlying Symbol Override` only if the chart root differs from the option root (e.g. `SPX` on an `ES` chart)
 3. Create an alert on the strategy:
-   * **Condition**: the strategy → **Order fills only**
-   * **Message**: `{{strategy.order.alert_message}}`
-   * **Webhook URL**: your Stax URL
+   * **Condition**: the strategy → **alert() function calls only**
+   * **Webhook URL**: your Stax URL for options, or the paper desk for futures
    * Expiration: as long as your TradingView plan allows; alerts that expire fail silently
-   * If you prefer `Deliver Alerts Via = alert() calls at bar close`, use condition
-     **alert() function calls only** instead. Don't select "Order fills and alert()" — that
-     doubles the alerts.
+   * Do not also select order fills. This script does not place strategy orders, so an
+     order-fill alert would never fire. Recreate the alert after you change an input.
 4. Fire a couple of paper trades (or run the mock receiver below) and confirm they land in
    Stax's alert feed before enabling the strategy.
 
@@ -151,13 +152,17 @@ or your own receiver, set `Alert Payload = Generic JSON (Futures / Any Webhook)`
 exits, and (optionally) stop updates are then sent as:
 
 ```json
-{"source":"breakaway-bot","event":"entry","action":"buy","side":"long","ticker":"MNQZ2026",
- "root":"MNQ","exchange":"CME","qty":2,"orderType":"limit","price":30677.75,"stop":30652.75,
- "target":30702.75,"reason":"fvg_retrace","realizedR":null,"timestamp":"2026-09-30T04:15:00-0400"}
+{"source":"staxbot","event":"plan","side":"long","ticker":"MESZ2026","root":"MES",
+ "setupId":"MESZ2026:1759234500000:long","settingsId":"1.00|1:1|0:1|0:1|Large|Off|...",
+ "entry":5800.00,"stop":5785.60,"target":5814.40,
+ "targets":[{"id":"TP1","price":5814.40,"allocation":1,"r":1.00}],
+ "timestamp":"2026-09-30T09:35:00-0400"}
 ```
 
-If Stax publishes a futures payload format, the `f_genMsg` / `f_staxMsg` helpers at the top of
-the script are the only place that needs to change.
+The payload has no contract quantity and no dollar risk. `allocation` is the weight from
+the chart. The desk turns weights into whole contracts. There is no Pine compiler in this
+repo, so paste `breakaway_bot_stax.pine` into TradingView and confirm **v1.7** in the HUD
+before treating the script as compiled.
 
 ## Testing alerts locally
 
@@ -187,6 +192,6 @@ printed with the decoded contract, and the response mirrors Stax's success / err
 
 ## Running it
 
-There is nothing to build: paste `breakaway_bot_stax.pine` into TradingView's Pine Editor and
-click *Add to chart*. The strategy tester shows the backtest; the info table in the top right
-mirrors the original's SETTINGS / LIVE panel.
+Paste `breakaway_bot_stax.pine` into TradingView's Pine Editor and use **Save as…** if the
+tab is already named something else. The chart name is StaxBot. The HUD must read **v1.7**.
+The strategy tester will not show order arrows: the plan is the drawing, not a broker fill.

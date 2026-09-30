@@ -120,18 +120,8 @@
         <label class="check"><input id="mMGC" type="checkbox" checked /> MGC</label>
         <label class="check"><input id="mMYM" type="checkbox" checked /> MYM</label>
       </div>
-      <label>Minimum grade</label>
-      <select id="minGrade">
-        <option>Off</option>
-        <option selected>A</option>
-        <option>A+</option>
-      </select>
-      <label>Take profit (R)</label>
-      <input id="tpR" type="number" min="0.1" max="5" step="0.1" value="1" />
-      <label>A contracts</label>
-      <input id="qtyA" type="number" min="1" max="10" value="3" />
-      <label>A+ contracts</label>
-      <input id="qtyAplus" type="number" min="1" max="10" value="5" />
+      <label>Risk per trade ($)</label>
+      <input id="riskPerTrade" type="number" min="1" max="250" step="1" value="250" />
       <h2 style="margin-top:16px">BOT LIMITS</h2>
       <label>Max trades per day</label>
       <input id="maxTrades" type="number" min="1" value="5" />
@@ -183,17 +173,21 @@ async function refresh() {
   const box = document.getElementById("position");
   if (!pos) {
     const markets = (state.watchMarkets || ["MES", "MGC", "MYM"]).join(", ");
-    const grade = state.minGrade || "A";
-    const tp = state.tpR ?? 1;
     box.className = "pos";
-    box.innerHTML = `<div class="meta">Flat.</div><div class="meta">Watch ${markets}. Minimum ${grade}. Target ${tp}R. Change those in the settings, not in the script.</div>`;
+    const risk = state.riskPerTrade ?? 250;
+    const plan = state.plan;
+    box.innerHTML = plan
+      ? `<div class="meta">${plan.status || "PLAN"} ${(plan.side || "").toUpperCase()} ${plan.root || ""} @ ${Number(plan.entry).toFixed(2)}</div><div class="meta">Stop ${Number(plan.stop).toFixed(2)}. Prices stay on the TradingView plan. This desk sizes at ${money(risk)} risk.</div>`
+      : `<div class="meta">Flat.</div><div class="meta">Waiting for a TradingView plan. Markets ${markets}. Risk ${money(risk)} per trade.</div>`;
   } else {
     box.className = "pos live";
     const px = pos.entry == null ? "market" : Number(pos.entry).toFixed(2);
     const grade = pos.grade ? pos.grade + " " : "";
+    const tgts = (pos.targets || []).map((t) => `${t.id} ${Number(t.price).toFixed(2)}`).join(" · ");
     box.innerHTML = `<h3>${grade}${pos.side.toUpperCase()} ${pos.qty} ${pos.ticker}</h3>
       <div class="meta">Taken ${pos.openedAt}</div>
-      <div class="row"><div>Entry ${px}</div><div>Stop ${pos.stop ?? "—"}</div><div>Target ${pos.target ?? "—"}</div></div>`;
+      <div class="row"><div>Entry ${px}</div><div>Stop ${pos.stop ?? "—"}</div><div>Target ${pos.target ?? "—"}</div></div>
+      <div class="meta">${tgts}</div>`;
   }
   document.getElementById("fills").innerHTML = state.fills.map((f) =>
     `<tr><td>${f.ticker}</td><td>${f.side}</td><td>${f.qty}</td><td>${Number(f.entry).toFixed(2)}</td><td>${Number(f.exit).toFixed(2)}</td><td class="${cls(f.pnl)}">${money(f.pnl)} ${f.reason}</td></tr>`
@@ -212,11 +206,8 @@ document.getElementById("save").onclick = async () => {
     maxDailyLoss: Number(field("maxDailyLoss").value),
     dailyTarget: Number(field("dailyTarget").value),
     pointOverride: Number(field("pointOverride").value),
+    riskPerTrade: Number(field("riskPerTrade").value),
     forwardUrl: field("forwardUrl").value,
-    minGrade: field("minGrade").value,
-    tpR: Number(field("tpR").value),
-    qtyA: Number(field("qtyA").value),
-    qtyAplus: Number(field("qtyAplus").value),
     watchMarkets: markets
   })});
   refresh();

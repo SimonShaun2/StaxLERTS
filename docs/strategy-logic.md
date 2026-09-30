@@ -10,7 +10,7 @@ TradingView's alert-server copy agree.
   Breakeven, Trailing Stop and Max Trades Per Day. All other inputs are always honoured.
 * If a **Trailing Stop** preset is on, **Breakeven** is ignored — the ladder's first step is
   breakeven. (The original's rule: "Trail ON? Breakeven OFF.")
-* **Point value** = `Point Value Override` if > 0, else `syminfo.pointvalue`.
+* **Point value and dollar risk** are not chart inputs. The paper desk owns contract size.
 * **Session** presets (times in the `Timezone` input):
 
   | Preset | Session string |
@@ -64,8 +64,8 @@ The FVG counts only if a same-direction BOS happened within
 | Direction | Longs Only / Shorts Only / Both |
 | Session | bar must be inside the session (24/5 = always) |
 | Max Trades Per Day | filled trades today `<` the limit |
-| Max Daily Loss | realized P/L today `>` −limit |
-| Daily Profit Target | realized P/L today `<` target |
+| Minimum Grade | Off, A (A and A+), or A+ only |
+| Enabled targets | at least one of TP1, TP2, TP3 is on |
 | Volume Filter | displacement candle volume `>` SMA × 1.0 (Above Average) or × 1.5 (Strong) |
 | EMA bias | optional, see §1 |
 | One at a time | no open position and no resting order |
@@ -80,18 +80,20 @@ The FVG counts only if a same-direction BOS happened within
 | SL `Tight` | far edge − buffer | far edge + buffer |
 | SL `Medium` | `low[1]` − buffer | `high[1]` + buffer |
 | SL `Large` | min(leg low, `low[1]`) − buffer | max(leg high, `high[1]`) + buffer |
-| Target | entry + TP(R) × risk | entry − TP(R) × risk |
+| TP1 / TP2 / TP3 | entry + n × TP(R) × risk, n = 1, 2, 3, only if that target is on | entry − the same distance |
 | Invalidation (`FVG Line Check`) | Strict: far edge, Relaxed: stop | same |
 
 `buffer = SL Buffer (ticks) × mintick`. The setup is skipped if the stop distance is below
-`Min Stop Distance (ticks)` or above `Max Stop Distance (points)`.
+`Min Stop Distance (ticks)` or above `Max Stop Distance (points)`, or if every target toggle
+is off. Weights do not change the prices. A disabled target is omitted from the drawing,
+the HUD, and the alert.
 
-Size = `floor(Risk Per Trade / (risk points × point value))`. If that is below 1 contract,
-either 1 contract is taken (`Take 1 Contract When Risk Budget Is Too Small` on) or the setup
-is skipped.
-
-The bot then places one limit order (`L` or `S`) and a matching stop/limit exit (`XL`/`XS`).
-The setup id shown in labels is the bar index of the FVG bar.
+The plan is drawn when the setup qualifies. No `strategy.entry` or `strategy.exit` is sent,
+so TradingView does not add order arrows or per-target fill tags. A limit fill is simulated
+on a later bar. The same bar cannot be both the signal and the fill. If that later bar
+trades through the entry and the stop, the stop wins. If it trades through the stop and a
+target, the stop wins. The setup id is `ticker + bar time + side`, and the prices plus a
+`settingsId` are frozen at that bar.
 
 ## 7. While the order rests
 
@@ -101,13 +103,15 @@ Cancel the order when any of these happen:
 * a bar **closes** beyond the invalidation level (Strict = through the gap, Relaxed = through the stop)
 * price reaches the target without filling (missed trade)
 * an opposite BOS prints (structure flipped)
-* the session ended, or the daily loss / profit cap was hit
+* the session ended
 
-The FVG box turns grey when a setup is cancelled; filled setups keep their colour.
+The plan drawing fades when it is cancelled or closed. Dollar loss and dollar profit caps
+are enforced by the paper desk, not by this plan.
 
 ## 8. While in a trade
 
-* Filled trades increment the daily counter and draw the entry label (`L_<id> +qty`).
+* Filled trades increment the daily counter and draw a `LONG` or `SHORT` mark. The mark is
+  not a strategy order.
 * Favourable excursion in R is measured from the fill price using the bar's high (long) /
   low (short). The **fill bar itself is skipped** so pre-entry price action never arms
   breakeven (a bug the original fixed in v1.9).
@@ -120,12 +124,12 @@ The FVG box turns grey when a setup is cancelled; filled setups keep their colou
   | Standard | 1.0R | 1.5R → +0.5R | 2.0R → +1.0R | 2.5R → +1.5R |
   | Wide | 1.5R | 2.0R → +0.5R | 2.5R → +1.0R | 3.0R → +1.5R |
 
-* A yellow line marks the live stop once it differs from the original red stop.
+* Once the stop moves, the same stop line and STOP tag move to the new price and turn gray. They stay inside the original plan box.
 * Optional `Flatten Open Trade At Session End`.
 
 ## 9. On exit
 
-The exit label `X_L_<id> -qty` carries the result tag:
+The exit mark carries the result tag:
 
 | Tag | Meaning |
 | --- | --- |
@@ -137,18 +141,16 @@ The exit label `X_L_<id> -qty` carries the result tag:
 
 ## 10. Alerts
 
-| Mode | Entry | Exit | Stop update |
-| --- | --- | --- | --- |
-| Stax Options Webhook | `{timestamp, unmodifiedTicker, …}` — call for longs, put for shorts | not sent (Stax manages exits) | not sent |
-| Generic JSON | `event: "entry"` with qty / price / stop / target | `event: "exit"` with reason and realized R | `event: "stop_update"` via `alert()` when enabled |
+| Mode | Plan | Entry | Exit | Stop update |
+| --- | --- | --- | --- | --- |
+| Stax Options Webhook | drawn, not sent | `{timestamp, unmodifiedTicker}` — call for longs, put for shorts | not sent | not sent |
+| Generic JSON | `event: "plan"` with entry, stop, enabled targets, weights, R, `settingsId` | `event: "entry"` with the same frozen prices | `event: "exit"` with reason, target id, and realized R | `event: "stop_update"` when enabled |
 
-Delivery:
-
-* **Order fills (strategy alert_message)** — payload rides on the order and fires the instant
-  the limit fills. Alert condition: *Order fills only*; message `{{strategy.order.alert_message}}`.
-  The resting order is re-issued every bar so the timestamp in the payload is fresh.
-* **alert() calls at bar close** — payload is emitted by `alert()` when the fill is detected at
-  the close of the fill bar. Alert condition: *alert() function calls only*.
+Delivery is `alert()` at bar close. Create the alert with **alert() function calls only**.
+There is no order-fill message. Changing an input after the alert exists does not change
+that alert; the HUD shows `INPUTS CHANGED` and the already drawn prices stay put.
+`plan_cancel` is sent if the resting plan expires, the gap fails, price runs to the nearest
+target without filling, structure flips, or the session ends.
 
 Option contract encoding (Stax mode): `root + YYMMDD + C/P + strike`. Expiration is today +
 `Days To Expiration`, rolled forward off weekends. Strike is `close` rounded up (calls) or down
