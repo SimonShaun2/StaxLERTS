@@ -61,6 +61,8 @@ empty, say the desk is waiting. Do not invent a setup.
 After that presentation is in the chat, POST http://127.0.0.1:8791/api/release
 with {"eventId":"<that alert's eventId>"}. That release is the only path to Sam.
 Do not release an alert you have not presented. Do not POST the body to Sam yourself.
+If release says the Sam URL or sender key is not saved, leave the alert in the inbox
+and try that same eventId on the next check.
 
 Keep watching. On a one-minute timer, read http://127.0.0.1:8791/api/state.
 If inbox has an alert, present it, release that eventId, then arm the next check.

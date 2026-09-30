@@ -734,22 +734,20 @@ class Desk:
     def release_to_sam(self, event_id: str | None = None) -> dict[str, Any]:
         """The chat has presented this alert. Now send that same body to Sam."""
         with self.lock:
+            if not self.forward_url or not self.forward_token:
+                self._note("CHAT", "Release held. Sam URL or sender key is not saved.")
+                return self._result(False, "Sam URL or sender key is not saved", {"released": 0})
             if event_id:
                 held = [item for item in self.inbox if item["eventId"] == event_id]
                 self.inbox = [item for item in self.inbox if item["eventId"] != event_id]
             else:
                 held = list(self.inbox)
                 self.inbox.clear()
-            url_set = bool(self.forward_url)
             for item in held:
                 label = f"{str(item['event']).upper()} {item['ticker']}".strip()
-                if url_set:
-                    self._note("CHAT", f"Chat released {label}. Forwarding to Sam.")
-                else:
-                    self._note("CHAT", f"Chat released {label}. Sam URL is not saved.")
-        if url_set:
-            for item in held:
-                self._forward(item["payload"])
+                self._note("CHAT", f"Chat released {label}. Forwarding to Sam.")
+        for item in held:
+            self._forward(item["payload"])
         return self._result(True, f"Released {len(held)}", {"released": len(held)})
 
     def forward_alert(self, payload: dict[str, Any]) -> None:
@@ -910,10 +908,15 @@ def selftest() -> int:
         desk.hold_for_chat(held_payload)
         assert [item["eventId"] for item in desk.snapshot()["inbox"]] == ["hold-1"]
         assert desk.forward_url == ""
+        blocked = desk.release_to_sam("hold-1")
+        assert blocked["success"] is False, blocked
+        assert blocked["data"]["released"] == 0, blocked
+        assert [item["eventId"] for item in desk.inbox] == ["hold-1"]
+        desk.forward_url = "https://example.invalid/webhook"
+        desk.forward_token = "test-key"
         released = desk.release_to_sam("hold-1")
         assert released["data"]["released"] == 1, released
         assert desk.inbox == []
-        assert any("Sam URL is not saved" in item["text"] for item in desk.activity)
         missing = desk.release_to_sam("missing")
         assert missing["data"]["released"] == 0, missing
         print("selftest: PASS", snap["equity"], snap["dailyPnl"])
