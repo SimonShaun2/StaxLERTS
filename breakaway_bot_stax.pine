@@ -1,10 +1,10 @@
 //@version=6
 //@strategy_alert_message {{strategy.order.alert_message}}
 // ============================================================================
-//  StaxBot  (build 1.6)
-//  Title on the chart is StaxBot. The table header must read StaxBot / v1.6.
-//  Replace the entire Pine editor contents, then Add to chart.
-//  Takes A (3 contracts) and A+ (5 contracts) only.
+//  StaxBot  (build 1.5)
+//  Title on the chart is StaxBot. The table header must read StaxBot / v1.5.
+//  One script for every watch. Minimum Grade and Take Profit are inputs.
+//  Change those settings. Do not save a second copy of the script.
 //
 //  Open re-implementation of the "Breakaway model":
 //     1. A valid market range (last confirmed swing high / swing low)
@@ -56,7 +56,7 @@ maxTradesIn      = input.int(5, "Max Trades Per Day", minval = 1, group = G_COAC
 maxDailyLossIn   = input.float(750, "Max Daily Loss ($, 0 = off)", minval = 0, step = 50, group = G_COACH, tooltip = "Realized P/L. Once hit, pending setups are cancelled and no new setups are taken until the next day. Keep a broker-level daily loss limit as well.")
 dailyTargetIn    = input.float(0, "Daily Profit Target ($, 0 = off)", minval = 0, step = 50, group = G_COACH, tooltip = "Realized P/L. Once hit, the bot stops taking new setups for the day.")
 ptValOverrideIn  = input.float(0, "Point Value Override ($ per 1.00 move, 0 = auto)", minval = 0, group = G_COACH, tooltip = "Leave 0 to use the exchange point value (MGC = $10, MNQ = $2, NQ = $20, MES = $5, ES = $50).")
-minGradeIn       = input.string("A+", "Minimum Grade", options = ["Off", "A", "A+"], group = G_COACH, tooltip = "A+ needs all five: displacement, EMA bias, above-average volume, London 03:00-06:00 or New York 08:20-11:30, and the gap within 3 bars of the break. A is four of those five, and one must be displacement or the session. Off takes every Breakaway setup.")
+minGradeIn       = input.string("A", "Minimum Grade", options = ["Off", "A", "A+"], group = G_COACH, tooltip = "Change this per watch. A+ needs all five: displacement, EMA bias, above-average volume, London 03:00-06:00 or New York 08:20-11:30, and the gap within 3 bars of the break. A is four of those five, and one must be displacement or the session. Off takes every Breakaway setup.")
 qtyAIn           = input.int(3, "A Contracts", minval = 1, maxval = 20, group = G_COACH)
 qtyAplusIn       = input.int(5, "A+ Contracts", minval = 1, maxval = 20, group = G_COACH)
 riskUsdIn        = input.float(100, "Risk Per Trade ($)", minval = 1, step = 25, group = G_COACH, tooltip = "Shown for reference. Size is the contract count above, not this dollar amount.")
@@ -70,7 +70,7 @@ setupExpiryIn    = input.int(20, "Setup Expires After N Bars", minval = 1, group
 entryLevelIn     = input.string("FVG Near Edge (Aggressive)", "Entry Level", group = G_STRUCT,
      options = ["FVG Near Edge (Aggressive)", "FVG Midpoint (CE)", "FVG Far Edge (Deep)"])
 
-tpRIn            = input.float(2.0, "Take Profit (R)", minval = 0.1, maxval = 5, step = 0.1, group = G_TP, tooltip = "Target is 2R. The desk skips a graded setup aimed under 2R.")
+tpRIn            = input.float(1.0, "Take Profit (R)", minval = 0.1, maxval = 5, step = 0.1, group = G_TP)
 
 fvgCheckIn       = input.string("Strict", "FVG Line Check", options = ["Strict", "Relaxed"], group = G_SL,
      tooltip = "Strict: the setup is cancelled as soon as a candle CLOSES through the far edge of the FVG before the fill (the gap must hold). Relaxed: only a close beyond the stop level cancels it.")
@@ -652,7 +652,7 @@ f_money(float v) =>
 if showTableIn and na(infoTbl)
     infoTbl := table.new(position.top_right, 2, 6, bgcolor = color.new(#131722, 10), border_width = 1, border_color = color.new(#2a2e39, 0), frame_color = color.new(#2a2e39, 0), frame_width = 1)
     f_cell(infoTbl, 0, 0, "StaxBot", color.white, color.new(#2962ff, 0))
-    f_cell(infoTbl, 1, 0, "v1.6", color.white, color.new(#2962ff, 0))
+    f_cell(infoTbl, 1, 0, "v1.5", color.white, color.new(#2962ff, 0))
 
 if showTableIn
     ink   = color.white
@@ -665,7 +665,7 @@ if showTableIn
     dayCol  = lossHit or targetHit ? color.orange : dailyPL >= 0 ? color.lime : color.red
     planTxt = str.tostring(pTp, "0.#") + "R " + pSl + " " + pDir
     f_cell(infoTbl, 0, 0, "StaxBot", ink, color.new(#2962ff, 0))
-    f_cell(infoTbl, 1, 0, "v1.6", ink, color.new(#2962ff, 0))
+    f_cell(infoTbl, 1, 0, "v1.5", ink, color.new(#2962ff, 0))
     f_cell(infoTbl, 0, 1, "Trade", muted, keyBg)
     f_cell(infoTbl, 1, 1, tradeTxt, ink, rowBg)
     f_cell(infoTbl, 0, 2, "Bias", muted, keyBg)

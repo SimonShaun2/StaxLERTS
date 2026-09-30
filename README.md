@@ -18,7 +18,7 @@ original's exact rules are not public, this README says what this version does i
 
 | Path | Purpose |
 | --- | --- |
-| `breakaway_bot_stax.pine` | The signal. Paste the whole file into TradingView's Pine Editor and add it to the chart. The table must read **StaxBot** and **v1.6**. |
+| `breakaway_bot_stax.pine` | The signal. One script, titled StaxBot. Minimum Grade and Take Profit are settings on the chart. The table reads **StaxBot** and **v1.5**. |
 | `bot/execution_bot.py` | The bot that takes the trade. Paper desk at `http://127.0.0.1:8791`. |
 | `docs/strategy-logic.md` | Bar-by-bar description of every rule and setting. |
 | `tools/mock_stax_webhook.py` | Payload checker for the Stax options webhook format. |
@@ -42,7 +42,7 @@ An entry alert opens the paper position at the signal price with the stop and ta
 
 **Take sample trades** on the desk runs two MNQ round-trips so you can see a fill without waiting for the chart. Leave the forward URL blank for futures. Stax's webhook expects an options ticker (`SPY260930C660.0`), not a futures root. Paste that URL only when the chart is the underlying and the payload is **Stax Options Webhook**.
 
-The desk watches MNQ, MES, MGC, and MYM (`MNQ=F`, `MES=F`, `MGC=F`, `MYM=F`, 5-minute bars) and takes only A+ setups, 5 contracts, target 2R. A setup that needs a stop wider than the $750 daily loss cap is skipped. A+ requires all five: displacement, EMA bias, above-average volume, London (03:00–06:00) or New York (08:20–11:30), and a gap within 3 bars of the break. An A is not taken.
+StaxBot is one script. Another watch is a change to Minimum Grade and Take Profit on the chart, not a new file. The paper desk is currently scanning MNQ, MES, MGC, and MYM for A+ setups with a 2R target and 5 contracts. A setup that needs a stop wider than the $750 daily loss cap is skipped. An alert from the chart is taken with the grade and target in that alert.
 
 ## How the strategy trades
 

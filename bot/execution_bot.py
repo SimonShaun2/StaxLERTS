@@ -36,8 +36,6 @@ POINT_VALUES = {
     "MNQ": 2.0, "NQ": 20.0, "MES": 5.0, "ES": 50.0, "MYM": 0.5, "YM": 5.0, "M2K": 5.0, "RTY": 50.0,
     "MGC": 10.0, "GC": 100.0,
 }
-ALLOWED_GRADES = {"A+"}
-
 
 def now_ny() -> datetime:
     return datetime.now(NY)
@@ -207,18 +205,12 @@ class Desk:
             self._note("REFUSED", "Side must be long or short")
             return self._result(False, "Side must be long or short")
         grade = payload.get("grade")
-        if grade and grade not in ALLOWED_GRADES:
-            self._note("SKIPPED", f"{grade} is not A+. Only A+ is taken, 5 contracts, target 2R.")
-            return self._result(False, "Grade is not A+")
         root = str(payload.get("root") or payload.get("ticker") or "MNQ")
         pv = point_value(root[:3] if root[:3] in POINT_VALUES else root, self.point_override)
         risk_pts = abs(price - stop)
         if risk_pts <= 0:
             self._note("REFUSED", "Stop is on top of the entry")
             return self._result(False, "Stop is on top of the entry")
-        if grade and abs(target - price) / risk_pts < 1.99:
-            self._note("SKIPPED", "Target is under 2R.")
-            return self._result(False, "Target is under 2R")
         ticker = str(payload.get("ticker") or root)
         self.position = {
             "ticker": ticker,
