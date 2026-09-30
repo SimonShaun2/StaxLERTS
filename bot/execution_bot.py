@@ -86,6 +86,15 @@ def contract_key(root: str) -> str:
     return root
 
 
+def bearer_token(value: str) -> str:
+    text = (value or "").strip()
+    if text.lower().startswith("authorization:"):
+        text = text.split(":", 1)[1].strip()
+    if text.lower().startswith("bearer "):
+        text = text[7:].strip()
+    return text
+
+
 def current_contract(root: str) -> str:
     return f"{contract_key(root)}{CONTRACT_MONTH}"
 
@@ -142,6 +151,7 @@ class Desk:
         self.point_override = 0.0
         self.risk_per_trade = SELECT_MAX_RISK
         self.forward_url = ""
+        self.forward_token = ""
         self.watch_markets = list(WATCH_ROOTS)
         self.contract_month = CONTRACT_MONTH
         self.watch = {
@@ -199,6 +209,7 @@ class Desk:
                 "pointOverride": self.point_override,
                 "riskPerTrade": self.risk_per_trade,
                 "forwardUrl": self.forward_url,
+                "samKeySet": bool(self.forward_token),
                 "planSettingsSource": "TradingView prices and R levels; paper desk sizing settings",
                 "contractMonth": self.contract_month,
                 "contracts": [current_contract(name) for name in self.watch_markets],
@@ -225,6 +236,8 @@ class Desk:
                 self.risk_per_trade = min(SELECT_MAX_RISK, max(1.0, float(body["riskPerTrade"])))
             if "forwardUrl" in body:
                 self.forward_url = str(body["forwardUrl"] or "").strip()
+            if body.get("forwardToken"):
+                self.forward_token = bearer_token(str(body["forwardToken"]))
             if "watchMarkets" in body:
                 raw = body["watchMarkets"]
                 if isinstance(raw, str):
@@ -689,9 +702,15 @@ class Desk:
         if not url:
             return
 
+        token = self.forward_token
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+            headers["X-Automation-Key"] = token
+
         def send() -> None:
             data = json.dumps(payload).encode()
-            req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+            req = urllib.request.Request(url, data=data, headers=headers)
             try:
                 with urllib.request.urlopen(req, timeout=5) as resp:
                     note = f"Sam accepted ({resp.status})"

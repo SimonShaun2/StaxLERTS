@@ -133,8 +133,10 @@
       <input id="dailyTarget" type="number" min="0" value="600" />
       <label>Point value override (0 = exchange value)</label>
       <input id="pointOverride" type="number" min="0" step="0.5" value="0" />
-      <label>Forward alerts to Sam (blank = desk only)</label>
-      <input id="forwardUrl" placeholder="https://api.staxinvesting.com/webhook/trade-signal" />
+      <label>Sam POST URL</label>
+      <input id="forwardUrl" placeholder="https://api2.cursor.sh/automations/webhook/..." />
+      <label>Sam sender key</label>
+      <input id="forwardToken" type="password" autocomplete="off" placeholder="Paste the key here, not into chat" />
       <div class="actions">
         <button id="save" type="button">Save limits</button>
         <button id="demo" class="ghost" type="button">Take sample trades</button>
@@ -216,6 +218,11 @@ document.getElementById("save").onclick = async () => {
     forwardUrl: field("forwardUrl").value,
     watchMarkets: markets
   })});
+  const samKey = field("forwardToken").value.trim();
+  if (samKey) {
+    await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ forwardToken: samKey })});
+    field("forwardToken").value = "";
+  }
   refresh();
 };
 document.getElementById("demo").onclick = async () => {
