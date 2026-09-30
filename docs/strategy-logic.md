@@ -125,7 +125,7 @@ are enforced by the paper desk, not by this plan.
   | Wide | 1.5R | 2.0R → +0.5R | 2.5R → +1.0R | 3.0R → +1.5R |
 
 * Once the stop moves, the stop line and STOP tag move to the new price and turn gray. Entry, stop, and targets stay lines.
-* Those lines start 24 bars before the signal and run through the current bar. They are solid: entry is 2px, stop and the higher targets are 3px. The price tag sits on the current bar and grows left, off the price scale. The HUD uses normal type so the card matches the design states: title and LIVE on top, bias, armed side, then entry, stop, and each enabled target.
+* Those lines start 24 bars before the signal and run through the current bar. They are solid: entry is 2px, stop and the higher targets are 3px. The price tag sits on the current bar and grows left, off the price scale. The HUD uses small type: title and LIVE, bias and session, the side and grade, then only the enabled targets, entry, and stop. Disabled targets do not leave a blank row.
 * Optional `Flatten Open Trade At Session End`.
 
 ## 9. On exit
