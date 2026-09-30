@@ -99,6 +99,14 @@ def _in_session(when: datetime) -> bool:
     return london or ny_gold
 
 
+def _stop_hit(bar: dict[str, Any], direction: int, stop: float) -> bool:
+    # A print on the tick in front of the stop counts. Yahoo's MGC high
+    # came in 0.1 under the stop that traded on the COMEX chart.
+    if direction == 1:
+        return bar["l"] <= stop + TICK + 1e-4
+    return bar["h"] >= stop - TICK - 1e-4
+
+
 def grade_setup(flags: dict[str, bool]) -> str | None:
     score = sum(flags.values())
     if score == 5:
@@ -264,7 +272,7 @@ class Market:
         if not touched:
             return []
         self.pending = None
-        stop_hit = bar["l"] <= pending["stop"] if direction == 1 else bar["h"] >= pending["stop"]
+        stop_hit = _stop_hit(bar, direction, pending["stop"])
         target_hit = bar["h"] >= pending["target"] if direction == 1 else bar["l"] <= pending["target"]
         self.open_trade = {**pending, "fill_i": i, "when": bar["t"]}
         if stop_hit or target_hit:
@@ -282,7 +290,7 @@ class Market:
         trade = self.open_trade
         bar = bars[i]
         direction = trade["direction"]
-        stop_hit = bar["l"] <= trade["stop"] if direction == 1 else bar["h"] >= trade["stop"]
+        stop_hit = _stop_hit(bar, direction, trade["stop"])
         target_hit = bar["h"] >= trade["target"] if direction == 1 else bar["l"] <= trade["target"]
         if not stop_hit and not target_hit:
             return []
@@ -416,8 +424,15 @@ def _same_trade(pos: dict[str, Any] | None, trade: dict[str, Any] | None) -> boo
         return False
 
 
+def _already_closed(desk, closed: dict[str, Any]) -> bool:
+    for fill in desk.snapshot().get("fills") or []:
+        if _same_trade(fill, closed) and abs(float(fill.get("exit")) - float(closed["exit_price"])) < 0.05:
+            return True
+    return False
+
+
 def sync_open(desk, market: Market) -> None:
-    """Put the still-open A/A+ trade on the desk, and exit it when the model does."""
+    """Keep the desk on the current A/A+ trade, including a stop that just printed."""
     pos = desk.snapshot().get("position")
     trade = market.open_trade
     closed = market.last_close
@@ -431,6 +446,17 @@ def sync_open(desk, market: Market) -> None:
         pos = None
     if trade and pos is None:
         apply_actions(desk, [{"kind": "fill", **trade}])
+    elif (
+        closed
+        and pos is None
+        and trade is None
+        and closed["exit_when"].astimezone(NY).date() == datetime.now(NY).date()
+        and not _already_closed(desk, closed)
+    ):
+        apply_actions(desk, [
+            {"kind": "fill", **closed},
+            {"kind": "exit", "price": closed["exit_price"], "reason": closed["exit_reason"], "when": closed["exit_when"]},
+        ])
 
 
 def start_watcher(desk) -> None:
