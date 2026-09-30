@@ -18,7 +18,7 @@ original's exact rules are not public, this README says what this version does i
 
 | Path | Purpose |
 | --- | --- |
-| `breakaway_bot_stax.pine` | The plan. One script, titled StaxBot. Entry, stop, and R targets are chart settings. The table reads **StaxBot** and **v1.7**. |
+| `staxbot_1_7.pine` | The plan. Saved in TradingView as **StaxBot 1.7** so it does not overwrite the older StaxBot script. The chart legend reads **Stax 1.7**. The HUD reads **StaxBot 1.7**. |
 | `bot/execution_bot.py` | The paper desk at `http://127.0.0.1:8791`. It sizes contracts from its own risk setting and uses the prices in the alert. |
 | `bot/watch.py` | Mirrors the TradingView plan on the desk. It does not invent entry, stop, or target prices. |
 | `docs/strategy-logic.md` | Bar-by-bar description of every rule and setting. |
@@ -127,7 +127,7 @@ fields the script includes (`source`, `side`, `underlyingEntry`, `underlyingStop
    and copy your personal webhook URL. Leave the strategy **disabled** until you have seen test
    alerts arrive.
 2. In TradingView, open the chart you want Stax to trade from (for options that is the
-   underlying — SPY, QQQ, SPX…), add `breakaway_bot_stax.pine` from the Pine Editor, and set
+   underlying — SPY, QQQ, SPX…), add `staxbot_1_7.pine` from the Pine Editor, and set
    your inputs. In the **Stax Alerts** group:
    * `Alert Payload = Stax Options Webhook`
    * `Days To Expiration`, `Strikes OTM`, `Strike Step` to taste (0DTE, ATM, step 1 by default)
@@ -161,7 +161,7 @@ exits, and (optionally) stop updates are then sent as:
 
 The payload has no contract quantity and no dollar risk. `allocation` is the weight from
 the chart. The desk turns weights into whole contracts. There is no Pine compiler in this
-repo, so paste `breakaway_bot_stax.pine` into TradingView and confirm **v1.7** in the HUD
+repo, so paste `staxbot_1_7.pine` into TradingView and confirm the HUD reads **StaxBot 1.7**
 before treating the script as compiled.
 
 ## Testing alerts locally
@@ -192,6 +192,7 @@ printed with the decoded contract, and the response mirrors Stax's success / err
 
 ## Running it
 
-Paste `breakaway_bot_stax.pine` into TradingView's Pine Editor and use **Save as…** if the
-tab is already named something else. The chart name is StaxBot. The HUD must read **v1.7**.
+Paste `staxbot_1_7.pine` into a new Pine Editor tab and save it. The script name is
+**StaxBot 1.7**, which is a different saved script from the older StaxBot tab. The legend
+reads **Stax 1.7** and the HUD reads **StaxBot 1.7**.
 The strategy tester will not show order arrows: the plan is the drawing, not a broker fill.
