@@ -1,9 +1,9 @@
 //@version=6
 // ============================================================================
-//  StaxBot 1.8
-//  Each update is a new saved script: 1.8, then 1.9, then 2.0.
+//  StaxBot 1.9
+//  Each update is a new saved script: 1.9, then 2.0, then 2.1.
 //  TradingView will not overwrite the previous name. The chart legend reads
-//  Stax 1.8. The HUD reads StaxBot 1.8.
+//  Stax 1.9. The HUD reads StaxBot 1.9.
 //
 //  TradingView presents the plan: direction, entry, stop, and enabled targets.
 //  Targets are price levels at 1×, 2×, and 3× Take Profit (R). R is the
@@ -25,7 +25,7 @@
 //  The paper desk sizes contracts from its own risk setting. It must use the
 //  prices in the alert. This script cannot read the desk.
 // ============================================================================
-strategy("StaxBot 1.8", shorttitle = "Stax 1.8", overlay = true,
+strategy("StaxBot 1.9", shorttitle = "Stax 1.9", overlay = true,
      initial_capital = 50000, default_qty_type = strategy.fixed, default_qty_value = 1, pyramiding = 0,
      margin_long = 1, margin_short = 1,
      calc_on_every_tick = false, calc_on_order_fills = false, process_orders_on_close = false,
@@ -424,10 +424,21 @@ f_exit_mark(float y, string txt, color ink) =>
         result := label.new(bar_index, y, txt, style = label.style_label_up, color = ink, textcolor = color.white, size = size.tiny, text_font_family = font.family_monospace)
     result
 f_note(int at, float y, string txt) =>
-    label.new(at, y, txt, style = label.style_none, color = color.new(#7F8AA3, 100), textcolor = color.new(#7F8AA3, 65), size = size.tiny)
+    label.new(at, y, txt, style = label.style_none, color = color.new(#7F8AA3, 100), textcolor = color.new(#E6EAF2, 0), size = size.small)
 
 f_price_tag(int at, float y, string txt, color ink) =>
-    label.new(at, y, txt, style = label.style_label_right, color = color.new(#0B0F19, 20), textcolor = ink, size = size.small, text_font_family = font.family_monospace)
+    label.new(at, y, txt, style = label.style_label_right, color = color.new(#0B0F19, 0), textcolor = ink, size = size.normal, text_font_family = font.family_monospace)
+
+f_stretch(line l, int left, int right) =>
+    if not na(l)
+        line.set_x1(l, left)
+        line.set_x2(l, right)
+    true
+
+f_tag_x(label l, int at) =>
+    if not na(l)
+        label.set_x(l, at)
+    true
 
 f_done() =>
     (not on1 or hit1) and (not on2 or hit2) and (not on3 or hit3)
@@ -692,28 +703,42 @@ if armed and showDrawingsIn
     lbFvg := na
     lbFill := na
     lbExit := na
-    int left = math.max(0, bornBar - 10)
-    int right = bornBar
+    int left = math.max(0, bornBar - 24)
+    int right = bar_index
     float zoneTop = math.max(fvgTop, fvgBot)
     float zoneBot = math.min(fvgTop, fvgBot)
     color sideInk = dir == 1 ? color.new(#4C8DFF, 0) : color.new(#FF8A3D, 0)
-    fvgBox := box.new(bornBar - 2, zoneTop, bornBar, zoneBot, border_color = color.new(sideInk, 0), border_width = 1, border_style = line.style_dashed, bgcolor = color.new(sideInk, 88))
-    lnEn := line.new(left, entryPx, right, entryPx, color = color.new(#E6EAF2, 0), width = 1)
-    lnSl := line.new(left, stopPx, right, stopPx, color = color.new(#FF5C6C, 0), width = 2)
-    lbEn := f_price_tag(right, entryPx, "ENTRY " + f_num(entryPx), color.new(#E6EAF2, 0))
-    lbSl := f_price_tag(right, stopPx, "STOP " + f_num(stopPx), color.new(#FF5C6C, 0))
+    fvgBox := box.new(math.max(0, bornBar - 2), zoneTop, bornBar, zoneBot, border_color = color.new(sideInk, 0), border_width = 2, border_style = line.style_solid, bgcolor = color.new(sideInk, 70))
+    lnEn := line.new(left, entryPx, right, entryPx, color = color.new(#E6EAF2, 0), style = line.style_solid, width = 2)
+    lnSl := line.new(left, stopPx, right, stopPx, color = color.new(#FF5C6C, 0), style = line.style_solid, width = 3)
+    lbEn := f_price_tag(right, entryPx, "ENTRY  " + f_num(entryPx), color.new(#E6EAF2, 0))
+    lbSl := f_price_tag(right, stopPx, "STOP  " + f_num(stopPx), color.new(#FF5C6C, 0))
     if on1
-        ln1 := line.new(left, t1, right, t1, color = color.new(#3DDC97, 0), style = line.style_dotted, width = 1)
-        lb1 := f_price_tag(right, t1, "TP1 " + f_num(t1) + "  " + str.tostring(rUnit, "0.#") + "R  w" + str.tostring(w1), color.new(#3DDC97, 0))
+        ln1 := line.new(left, t1, right, t1, color = color.new(#3DDC97, 0), style = line.style_solid, width = 2)
+        lb1 := f_price_tag(right, t1, "TP1  " + f_num(t1) + "   " + str.tostring(rUnit, "0.#") + "R", color.new(#3DDC97, 0))
     if on2
-        ln2 := line.new(left, t2, right, t2, color = color.new(#3DDC97, 0), style = line.style_solid, width = 2)
-        lb2 := f_price_tag(right, t2, "TP2 " + f_num(t2) + "  " + str.tostring(rUnit * 2.0, "0.#") + "R  w" + str.tostring(w2), color.new(#3DDC97, 0))
+        ln2 := line.new(left, t2, right, t2, color = color.new(#3DDC97, 0), style = line.style_solid, width = 3)
+        lb2 := f_price_tag(right, t2, "TP2  " + f_num(t2) + "   " + str.tostring(rUnit * 2.0, "0.#") + "R", color.new(#3DDC97, 0))
     if on3
-        ln3 := line.new(left, t3, right, t3, color = color.new(#147A4E, 0), style = line.style_dashed, width = 2)
-        lb3 := f_price_tag(right, t3, "TP3 " + f_num(t3) + "  " + str.tostring(rUnit * 3.0, "0.#") + "R  w" + str.tostring(w3), color.new(#147A4E, 0))
+        ln3 := line.new(left, t3, right, t3, color = color.new(#147A4E, 0), style = line.style_solid, width = 3)
+        lb3 := f_price_tag(right, t3, "TP3  " + f_num(t3) + "   " + str.tostring(rUnit * 3.0, "0.#") + "R", color.new(#147A4E, 0))
     float bosY = dir == 1 ? low[bar_index - bosAt] : high[bar_index - bosAt]
     lbBos := f_note(bosAt, bosY, "BOS")
     lbFvg := f_note(bornBar, dir == 1 ? high : low, "FVG")
+
+if showDrawingsIn and not na(lnEn) and (pending or inTrade or ended)
+    int left = math.max(0, bornBar - 24)
+    int right = bar_index
+    f_stretch(lnEn, left, right)
+    f_stretch(lnSl, left, right)
+    f_stretch(ln1, left, right)
+    f_stretch(ln2, left, right)
+    f_stretch(ln3, left, right)
+    f_tag_x(lbEn, right)
+    f_tag_x(lbSl, right)
+    f_tag_x(lb1, right)
+    f_tag_x(lb2, right)
+    f_tag_x(lb3, right)
 
 if ended and not armed and showDrawingsIn
     f_box_end(fvgBox, false)
@@ -742,7 +767,7 @@ bgcolor(showSessBgIn and sessionFilterOn and inSession ? color.new(cloudColorIn,
 var table infoTbl = na
 var string hudKey = ""
 f_cell(table t, int col, int row, string txt, color ink, color bg, string align) =>
-    table.cell(t, col, row, txt, text_color = ink, bgcolor = bg, text_halign = align == "r" ? text.align_right : text.align_left, text_valign = text.align_center, text_size = size.tiny, text_font_family = font.family_monospace)
+    table.cell(t, col, row, txt, text_color = ink, bgcolor = bg, text_halign = align == "r" ? text.align_right : text.align_left, text_valign = text.align_center, text_size = size.normal, text_font_family = font.family_monospace)
 
 if not showTableIn and not na(infoTbl)
     table.delete(infoTbl)
@@ -755,63 +780,73 @@ if showTableIn and wantKey != hudKey
     if not na(infoTbl)
         table.delete(infoTbl)
     int cols = hudSizeIn == "Compact" ? 3 : 2
-    int rows = (hudSizeIn == "Compact" ? 4 : 9) + hudPad
+    int rows = (hudSizeIn == "Compact" ? 4 : 11) + hudPad
     infoTbl := table.new(hudPosIn == "Top left" ? position.top_left : hudPosIn == "Bottom right" ? position.bottom_right : hudPosIn == "Bottom left" ? position.bottom_left : position.top_right, cols, rows, bgcolor = color.new(#0B0F19, 100), border_width = 0, frame_width = 0)
     if hudPad == 1
         table.merge_cells(infoTbl, 0, 0, cols - 1, 0)
     if hudSizeIn == "Full"
-        table.merge_cells(infoTbl, 0, 2 + hudPad, 1, 2 + hudPad)
-        table.merge_cells(infoTbl, 0, 8 + hudPad, 1, 8 + hudPad)
+        table.merge_cells(infoTbl, 0, 4 + hudPad, 1, 4 + hudPad)
+        table.merge_cells(infoTbl, 0, 10 + hudPad, 1, 10 + hudPad)
     hudKey := wantKey
 
 if showTableIn and not na(infoTbl)
     bool stale = (pending or inTrade) and f_fp() != fpNow
     bool live = pending or inTrade
-    color head = live ? (dir == 1 ? color.new(#4C8DFF, 0) : color.new(#FF8A3D, 0)) : color.new(#121A2B, 0)
+    color headBg = color.new(#121A2B, 0)
     color ink = color.white
     color muted = color.new(#7F8AA3, 0)
+    color liveGreen = color.new(#3DDC97, 0)
     color rowBg = color.new(#0B0F19, 0)
     color keyBg = color.new(#121A2B, 0)
+    color sideInk = live ? (dir == 1 ? color.new(#4C8DFF, 0) : color.new(#FF8A3D, 0)) : ink
+    color stateBg = live ? sideInk : keyBg
     int bulls = (hD == 1 ? 1 : 0) + (h4 == 1 ? 1 : 0) + (h1 == 1 ? 1 : 0) + (h15 == 1 ? 1 : 0) + (h5 == 1 ? 1 : 0)
     int bears = (hD == -1 ? 1 : 0) + (h4 == -1 ? 1 : 0) + (h1 == -1 ? 1 : 0) + (h15 == -1 ? 1 : 0) + (h5 == -1 ? 1 : 0)
     string cloud = bulls > bears ? "BULL " + str.tostring(bulls) + "/5" : bears > bulls ? "BEAR " + str.tostring(bears) + "/5" : "MIX"
+    color biasInk = bulls > bears ? color.new(#4C8DFF, 0) : bears > bulls ? color.new(#FF8A3D, 0) : ink
     string state = inTrade ? "LIVE" : pending ? "ARMED" : "SCAN"
     string sideTxt = live ? (dir == 1 ? "LONG" : "SHORT") : ""
+    string stateTxt = live ? state + "  ·  " + sideTxt : "No position"
     float openR = live and riskPx > 0 ? dir * (close - entryPx) / riskPx : 0.0
-    string note = not targetsOk ? "Enable TP1, TP2, or TP3" : stale ? "INPUTS CHANGED. Recreate the alert." : pending ? "BOS + FVG. Waiting for the retest." : inTrade ? "Plan is live. " + f_signed(openR) : "D" + (hD == 1 ? "+" : hD == -1 ? "-" : "·") + " 4H" + (h4 == 1 ? "+" : h4 == -1 ? "-" : "·") + " 1H" + (h1 == 1 ? "+" : h1 == -1 ? "-" : "·") + " 15" + (h15 == 1 ? "+" : h15 == -1 ? "-" : "·") + " 5" + (h5 == 1 ? "+" : h5 == -1 ? "-" : "·")
-    string foot = stale ? "INPUTS CHANGED" : live ? footNow : str.tostring(pTp, "0.#") + "R · " + pSl + " · " + (targetsOk ? "targets on" : "no target") + " · " + sessShort
+    string gradeTxt = live ? (inTrade ? gradeNow + "   " + f_signed(openR) : "Grade " + gradeNow) : cloud
+    string note = not targetsOk ? "Enable TP1, TP2, or TP3." : stale ? "INPUTS CHANGED. Recreate the alert." : pending ? "BOS confirmed. Waiting for the retest." : inTrade ? "Plan is live.  " + f_signed(openR) : "Watching BOS."
+    string foot = stale ? "INPUTS CHANGED" : live ? footNow + "  ·  " + pDir : str.tostring(pTp, "0.#") + "R  ·  " + pSl + "  ·  " + (targetsOk ? "targets on" : "no target") + "  ·  " + sessShort + "  ·  " + pDir
     int p = hudPad
     if p == 1
         table.cell(infoTbl, 0, 0, "", bgcolor = color.new(#0B0F19, 100), height = 6)
     if hudSizeIn == "Compact"
-        f_cell(infoTbl, 0, p, "StaxBot 1.8", ink, head, "l")
-        f_cell(infoTbl, 1, p, "PLAN", ink, head, "l")
-        f_cell(infoTbl, 2, p, live ? gradeNow : cloud, ink, head, "r")
-        f_cell(infoTbl, 0, p + 1, state + (sideTxt == "" ? "" : " " + sideTxt), ink, keyBg, "l")
-        f_cell(infoTbl, 1, p + 1, live ? f_num(entryPx) : "—", ink, rowBg, "r")
-        f_cell(infoTbl, 2, p + 1, live ? f_signed(openR) : str.tostring(tradesToday) + "/" + str.tostring(pMaxTrades), live ? ink : muted, rowBg, "r")
-        string tpName = live ? (on1 and not hit1 ? "TP1" : on2 and not hit2 ? "TP2" : on3 and not hit3 ? "TP3" : "TP") : "TP1"
+        f_cell(infoTbl, 0, p, "STAXBOT 1.9", ink, headBg, "l")
+        f_cell(infoTbl, 1, p, cloud, biasInk, headBg, "l")
+        f_cell(infoTbl, 2, p, "LIVE", liveGreen, headBg, "r")
+        f_cell(infoTbl, 0, p + 1, stateTxt, color.white, stateBg, "l")
+        f_cell(infoTbl, 1, p + 1, live ? f_num(entryPx) : str.tostring(tradesToday) + " / " + str.tostring(pMaxTrades), ink, rowBg, "r")
+        f_cell(infoTbl, 2, p + 1, live ? f_signed(openR) : "trades", live ? liveGreen : muted, rowBg, "r")
+        string tpName = live ? (on1 and not hit1 ? "TP1" : on2 and not hit2 ? "TP2" : on3 and not hit3 ? "TP3" : "TP") : "Session"
         float tpShow = live ? (on1 and not hit1 ? t1 : on2 and not hit2 ? t2 : on3 and not hit3 ? t3 : nearPx) : na
-        f_cell(infoTbl, 0, p + 2, tpName, color.new(#3DDC97, 0), keyBg, "l")
-        f_cell(infoTbl, 1, p + 2, live ? f_num(tpShow) : "—", ink, rowBg, "r")
-        f_cell(infoTbl, 2, p + 2, live ? "w" + str.tostring(on1 and not hit1 ? w1 : on2 and not hit2 ? w2 : w3) : "", muted, rowBg, "r")
+        f_cell(infoTbl, 0, p + 2, tpName, live ? liveGreen : muted, keyBg, "l")
+        f_cell(infoTbl, 1, p + 2, live ? f_num(tpShow) : sessShort, ink, rowBg, "r")
+        f_cell(infoTbl, 2, p + 2, live ? str.tostring(rUnit, "0.#") + "R" : "", muted, rowBg, "r")
         f_cell(infoTbl, 0, p + 3, stale ? "INPUTS CHANGED" : "STOP", stale ? color.new(#e6b35a, 0) : color.new(#FF5C6C, 0), keyBg, "l")
-        f_cell(infoTbl, 1, p + 3, live ? f_num(liveStop) : foot, ink, rowBg, "r")
+        f_cell(infoTbl, 1, p + 3, live ? f_num(liveStop) : pSl, ink, rowBg, "r")
         f_cell(infoTbl, 2, p + 3, live ? f_signed(riskPx > 0 ? dir * (liveStop - entryPx) / riskPx : 0.0) : "", muted, rowBg, "r")
     else
-        f_cell(infoTbl, 0, p, "StaxBot 1.8", ink, head, "l")
-        f_cell(infoTbl, 1, p, "PLAN", ink, head, "r")
-        f_cell(infoTbl, 0, p + 1, state + (sideTxt == "" ? "" : "  " + sideTxt), ink, keyBg, "l")
-        f_cell(infoTbl, 1, p + 1, live ? gradeNow + "  " + f_signed(openR) : cloud, ink, rowBg, "r")
-        f_cell(infoTbl, 0, p + 2, note, stale ? color.new(#e6b35a, 0) : muted, rowBg, "l")
-        f_cell(infoTbl, 0, p + 3, on3 and live ? "TP3  " + str.tostring(rUnit * 3.0, "0.#") + "R  w" + str.tostring(w3) : "", color.new(#147A4E, 0), keyBg, "l")
-        f_cell(infoTbl, 1, p + 3, on3 and live ? f_num(t3) : "", ink, rowBg, "r")
-        f_cell(infoTbl, 0, p + 4, on2 and live ? "TP2  " + str.tostring(rUnit * 2.0, "0.#") + "R  w" + str.tostring(w2) : "", color.new(#3DDC97, 0), keyBg, "l")
-        f_cell(infoTbl, 1, p + 4, on2 and live ? f_num(t2) : "", ink, rowBg, "r")
-        f_cell(infoTbl, 0, p + 5, on1 and live ? "TP1  " + str.tostring(rUnit, "0.#") + "R  w" + str.tostring(w1) : live ? "" : "Trades", on1 and live ? color.new(#3DDC97, 0) : muted, keyBg, "l")
-        f_cell(infoTbl, 1, p + 5, on1 and live ? f_num(t1) : live ? "" : str.tostring(tradesToday) + "/" + str.tostring(pMaxTrades), ink, rowBg, "r")
-        f_cell(infoTbl, 0, p + 6, live ? "ENTRY" : "", color.new(#E6EAF2, 0), keyBg, "l")
-        f_cell(infoTbl, 1, p + 6, live ? f_num(entryPx) : "", ink, rowBg, "r")
-        f_cell(infoTbl, 0, p + 7, live ? "STOP" : "", color.new(#FF5C6C, 0), keyBg, "l")
-        f_cell(infoTbl, 1, p + 7, live ? f_num(liveStop) : "", ink, rowBg, "r")
-        f_cell(infoTbl, 0, p + 8, foot + " · " + pDir, stale ? color.new(#e6b35a, 0) : muted, keyBg, "l")
+        f_cell(infoTbl, 0, p, "STAXBOT 1.9", ink, headBg, "l")
+        f_cell(infoTbl, 1, p, "LIVE", liveGreen, headBg, "r")
+        f_cell(infoTbl, 0, p + 1, "StaxBot", muted, keyBg, "l")
+        f_cell(infoTbl, 1, p + 1, sessShort, ink, rowBg, "r")
+        f_cell(infoTbl, 0, p + 2, "Bias", muted, keyBg, "l")
+        f_cell(infoTbl, 1, p + 2, cloud, biasInk, rowBg, "r")
+        f_cell(infoTbl, 0, p + 3, stateTxt, color.white, stateBg, "l")
+        f_cell(infoTbl, 1, p + 3, gradeTxt, live ? ink : biasInk, rowBg, "r")
+        f_cell(infoTbl, 0, p + 4, note, stale ? color.new(#e6b35a, 0) : muted, rowBg, "l")
+        f_cell(infoTbl, 0, p + 5, on3 and live ? "TP3   " + str.tostring(rUnit * 3.0, "0.#") + "R   w" + str.tostring(w3) : live ? " " : "Watching", on3 and live ? color.new(#147A4E, 0) : muted, keyBg, "l")
+        f_cell(infoTbl, 1, p + 5, on3 and live ? f_num(t3) : live ? " " : "BOS", ink, rowBg, "r")
+        f_cell(infoTbl, 0, p + 6, on2 and live ? "TP2   " + str.tostring(rUnit * 2.0, "0.#") + "R   w" + str.tostring(w2) : live ? " " : "Trades", on2 and live ? liveGreen : muted, keyBg, "l")
+        f_cell(infoTbl, 1, p + 6, on2 and live ? f_num(t2) : live ? " " : str.tostring(tradesToday) + " / " + str.tostring(pMaxTrades), ink, rowBg, "r")
+        f_cell(infoTbl, 0, p + 7, on1 and live ? "TP1   " + str.tostring(rUnit, "0.#") + "R   w" + str.tostring(w1) : live ? " " : "Direction", on1 and live ? liveGreen : muted, keyBg, "l")
+        f_cell(infoTbl, 1, p + 7, on1 and live ? f_num(t1) : live ? " " : pDir, ink, rowBg, "r")
+        f_cell(infoTbl, 0, p + 8, live ? "ENTRY" : "Stop", live ? color.new(#E6EAF2, 0) : muted, keyBg, "l")
+        f_cell(infoTbl, 1, p + 8, live ? f_num(entryPx) : pSl, ink, rowBg, "r")
+        f_cell(infoTbl, 0, p + 9, live ? "STOP" : "Session", live ? color.new(#FF5C6C, 0) : muted, keyBg, "l")
+        f_cell(infoTbl, 1, p + 9, live ? f_num(liveStop) : sessShort, live ? color.new(#FF5C6C, 0) : ink, rowBg, "r")
+        f_cell(infoTbl, 0, p + 10, foot, stale ? color.new(#e6b35a, 0) : muted, keyBg, "l")
