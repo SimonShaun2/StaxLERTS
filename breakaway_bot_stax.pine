@@ -1,8 +1,9 @@
 //@version=6
 //@strategy_alert_message {{strategy.order.alert_message}}
 // ============================================================================
-//  Breakaway Bot — Stax Edition  (build 1.3)
-//  Upload this file to Pine. Table must read Stax v1.3.
+//  MGC A Desk  (build 1.4)
+//  Upload this file to Pine. The script name is MGC A Desk.
+//  Table must read MGC v1.4. Do not save it as Breakaway Bot.
 //  Takes A (3 contracts) and A+ (5 contracts) only.
 //
 //  Open re-implementation of the "Breakaway model":
@@ -19,7 +20,7 @@
 //  Educational software. No guarantee of profit. Backtest, then paper trade,
 //  then decide.
 // ============================================================================
-strategy("Breakaway Bot (Stax Edition)", shorttitle = "Breakaway | Stax", overlay = true,
+strategy("MGC A Desk", shorttitle = "MGC A Desk", overlay = true,
      initial_capital = 50000, default_qty_type = strategy.fixed, default_qty_value = 1, pyramiding = 0,
      margin_long = 1, margin_short = 1,
      calc_on_every_tick = false, calc_on_order_fills = false, process_orders_on_close = false,
@@ -656,7 +657,7 @@ if showTableIn
          pending ? pendGrade + " " + (pendDir == 1 ? "L rest @ " : "S rest @ ") + str.tostring(pendEntry, format.mintick) : "---"
     biasTxt = bias == 1 ? "Bull" : bias == -1 ? "Bear" : "Flat"
     biasCol = bias == 1 ? color.lime : bias == -1 ? color.red : color.new(#b2b5be, 0)
-    f_head(infoTbl, 0, "BREAKAWAY BOT", "Stax v1.3")
+    f_head(infoTbl, 0, "MGC A DESK", "MGC v1.4")
     f_head(infoTbl, 1, "SETTINGS", presetIn)
     f_row(infoTbl, 2,  "TP",       str.tostring(pTp, "0.#") + "R", white)
     f_row(infoTbl, 3,  "SL",       pSl, white)
