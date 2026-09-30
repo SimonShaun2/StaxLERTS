@@ -36,7 +36,7 @@ POINT_VALUES = {
     "MNQ": 2.0, "NQ": 20.0, "MES": 5.0, "ES": 50.0, "MYM": 0.5, "YM": 5.0, "M2K": 5.0, "RTY": 50.0,
     "MGC": 10.0, "GC": 100.0,
 }
-ALLOWED_GRADES = {"A", "A+"}
+ALLOWED_GRADES = {"A+"}
 
 
 def now_ny() -> datetime:
@@ -76,7 +76,7 @@ class Desk:
         self.daily_target = 0.0
         self.point_override = 0.0
         self.forward_url = ""
-        self.watch = {"symbol": "MGC", "price": None, "grade": None, "note": "Starting the MGC watch"}
+        self.watch = {"symbol": "MNQ MES MGC MYM", "price": None, "grade": None, "note": "Watching MNQ, MES, MGC, and MYM for A+ setups. Target is 2R."}
         self.day = now_ny().date()
         self.day_start_equity = self.equity
         self.trades_today = 0
@@ -208,14 +208,17 @@ class Desk:
             return self._result(False, "Side must be long or short")
         grade = payload.get("grade")
         if grade and grade not in ALLOWED_GRADES:
-            self._note("SKIPPED", f"{grade} is below A. Only A (3) and A+ (5) are taken.")
-            return self._result(False, "Grade below A")
+            self._note("SKIPPED", f"{grade} is not A+. Only A+ is taken, 5 contracts, target 2R.")
+            return self._result(False, "Grade is not A+")
         root = str(payload.get("root") or payload.get("ticker") or "MNQ")
         pv = point_value(root[:3] if root[:3] in POINT_VALUES else root, self.point_override)
         risk_pts = abs(price - stop)
         if risk_pts <= 0:
             self._note("REFUSED", "Stop is on top of the entry")
             return self._result(False, "Stop is on top of the entry")
+        if grade and abs(target - price) / risk_pts < 1.99:
+            self._note("SKIPPED", "Target is under 2R.")
+            return self._result(False, "Target is under 2R")
         ticker = str(payload.get("ticker") or root)
         self.position = {
             "ticker": ticker,
@@ -499,7 +502,7 @@ def main() -> int:
     server.demo_running = False
     from mgc_watch import start_watcher
     start_watcher(DESK)
-    print(f"Breakaway execution bot listening on http://127.0.0.1:{args.port}  (watching MGC, A=3 A+=5)")
+    print(f"Breakaway execution bot listening on http://127.0.0.1:{args.port}  (MNQ MES MGC MYM, A+ only, 2R)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -1,4 +1,4 @@
-"""Watch Micro Gold 5-minute bars and take only A and A+ Breakaway setups.
+"""Watch MNQ, MES, MGC, and MYM 5-minute bars and take only A+ Breakaway setups.
 
 A setup is a close through the last confirmed swing, then a fair value gap in
 that direction. Five checks grade it:
@@ -6,13 +6,11 @@ that direction. Five checks grade it:
   displacement   the break candle's body is at least 1 ATR
   bias           9/21 EMA cloud agrees with the trade
   volume         the gap's middle candle is above its 20-bar average
-  session        London 03:00-06:00 or NY gold 08:20-11:30 New York
+  session        London 03:00-06:00 or New York 08:20-11:30
   timing         the gap prints within 3 bars of the break
 
-A+ means all five. A means four, and one of them is displacement or the session.
-Anything less is logged and skipped.
-
-Size is fixed: A takes 3 MGC, A+ takes 5. MGC is $10 per 1.00 point.
+A+ means all five. Anything less is skipped, including a four-flag A.
+Size is 5 contracts. The target is 2R.
 """
 from __future__ import annotations
 
@@ -25,21 +23,24 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 NY = ZoneInfo("America/New_York")
-CHART = "https://query1.finance.yahoo.com/v8/finance/chart/MGC=F?interval=5m&range=5d"
 SWING = 5
 FVG_WINDOW = 5
 EXPIRY = 20
-TICK = 0.1
-BUFFER = 2 * TICK
-MIN_STOP = 8 * TICK
-POINT = 10.0
-QTY = {"A": 3, "A+": 5}
+QTY_APLUS = 5
+REWARD = 2.0
 # One full stop on 5 contracts has to fit under the desk's daily loss cap.
 MAX_STOP_DOLLARS = 750.0
+MARKETS = (
+    {"root": "MNQ", "yahoo": "MNQ=F", "tick": 0.25, "point": 2.0},
+    {"root": "MES", "yahoo": "MES=F", "tick": 0.25, "point": 5.0},
+    {"root": "MGC", "yahoo": "MGC=F", "tick": 0.1, "point": 10.0},
+    {"root": "MYM", "yahoo": "MYM=F", "tick": 1.0, "point": 0.5},
+)
 
 
-def fetch_bars() -> list[dict[str, Any]]:
-    req = urllib.request.Request(CHART, headers={"User-Agent": "BreakawayDesk/1.2"})
+def fetch_bars(yahoo: str) -> list[dict[str, Any]]:
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo}?interval=5m&range=5d"
+    req = urllib.request.Request(url, headers={"User-Agent": "BreakawayDesk/1.2"})
     with urllib.request.urlopen(req, timeout=20) as resp:
         payload = json.loads(resp.read().decode())
     result = payload["chart"]["result"][0]
@@ -99,12 +100,12 @@ def _in_session(when: datetime) -> bool:
     return london or ny_gold
 
 
-def _stop_hit(bar: dict[str, Any], direction: int, stop: float) -> bool:
-    # A print on the tick in front of the stop counts. Yahoo's MGC high
-    # came in 0.1 under the stop that traded on the COMEX chart.
+def _stop_hit(bar: dict[str, Any], direction: int, stop: float, tick: float) -> bool:
+    # A print on the tick in front of the stop counts. The feed can sit
+    # one tick short of the price that trades on the chart.
     if direction == 1:
-        return bar["l"] <= stop + TICK + 1e-4
-    return bar["h"] >= stop - TICK - 1e-4
+        return bar["l"] <= stop + tick + 1e-4
+    return bar["h"] >= stop - tick - 1e-4
 
 
 def grade_setup(flags: dict[str, bool]) -> str | None:
@@ -117,7 +118,11 @@ def grade_setup(flags: dict[str, bool]) -> str | None:
 
 
 class Market:
-    def __init__(self) -> None:
+    def __init__(self, spec: dict[str, Any]) -> None:
+        self.spec = spec
+        self._reset()
+
+    def _reset(self) -> None:
         self.range_high = None
         self.range_low = None
         self.range_high_i = None
@@ -134,10 +139,15 @@ class Market:
         self.open_trade = None
         self.last_close = None
 
-    def replay(self, bars: list[dict[str, Any]]) -> None:
-        self.__init__()
+    def replay(self, bars: list[dict[str, Any]], live_from: datetime | None = None) -> None:
+        self._reset()
         for i in range(len(bars)):
             self._step(bars, i, act=False)
+            # A trade that filled before this watch started is not ours.
+            # Drop it so a later A+ on the same market can still be taken.
+            if live_from and self.open_trade and self.open_trade["when"] < live_from:
+                self.open_trade = None
+                self.last_close = None
 
     def _pivot(self, bars, i, key):
         p = i - SWING
@@ -194,7 +204,7 @@ class Market:
                 if act:
                     actions.append({"kind": "rest", **setup})
             elif setup and act:
-                why = "stop wider than the $750 daily cap" if setup.get("wide") else "below A"
+                why = "stop wider than the $750 daily cap" if setup.get("wide") else "below A+"
                 actions.append({"kind": "skip", "side": setup.get("side", ""), "why": why})
         return actions
 
@@ -215,10 +225,12 @@ class Market:
         entry = fvg_top if direction == 1 else fvg_bot
         far = fvg_bot if direction == 1 else fvg_top
         leg = self.bull_leg if direction == 1 else self.bear_leg
+        tick = self.spec["tick"]
+        buffer = 2 * tick
         raw = min(leg, mid["l"]) if direction == 1 else max(leg, mid["h"])
-        stop = raw - BUFFER if direction == 1 else raw + BUFFER
+        stop = raw - buffer if direction == 1 else raw + buffer
         risk = (entry - stop) if direction == 1 else (stop - entry)
-        if risk < MIN_STOP:
+        if risk < 8 * tick:
             return None
         flags = {
             "displacement": bool(self.bull_displaced if direction == 1 else self.bear_displaced),
@@ -228,18 +240,20 @@ class Market:
             "timing": i - bos_i <= 3,
         }
         setup_grade = grade_setup(flags)
-        if setup_grade is None:
-            return {"i": i, "grade": None, "flags": flags, "side": "long" if direction == 1 else "short"}
-        qty = QTY[setup_grade]
-        risk_dollars = risk * qty * POINT
+        side = "long" if direction == 1 else "short"
+        if setup_grade != "A+":
+            return {"i": i, "grade": None, "flags": flags, "side": side}
+        qty = QTY_APLUS
+        risk_dollars = risk * qty * self.spec["point"]
         if risk_dollars > MAX_STOP_DOLLARS:
-            return {"i": i, "grade": None, "flags": flags, "wide": True, "side": "long" if direction == 1 else "short"}
-        target = entry + direction * risk
+            return {"i": i, "grade": None, "flags": flags, "wide": True, "side": side}
+        target = entry + direction * risk * REWARD
         setup = {
             "i": i,
-            "grade": setup_grade,
+            "root": self.spec["root"],
+            "grade": "A+",
             "flags": flags,
-            "side": "long" if direction == 1 else "short",
+            "side": side,
             "direction": direction,
             "entry": round(entry, 2),
             "stop": round(stop, 2),
@@ -272,7 +286,7 @@ class Market:
         if not touched:
             return []
         self.pending = None
-        stop_hit = _stop_hit(bar, direction, pending["stop"])
+        stop_hit = _stop_hit(bar, direction, pending["stop"], self.spec["tick"])
         target_hit = bar["h"] >= pending["target"] if direction == 1 else bar["l"] <= pending["target"]
         self.open_trade = {**pending, "fill_i": i, "when": bar["t"]}
         if stop_hit or target_hit:
@@ -290,7 +304,7 @@ class Market:
         trade = self.open_trade
         bar = bars[i]
         direction = trade["direction"]
-        stop_hit = _stop_hit(bar, direction, trade["stop"])
+        stop_hit = _stop_hit(bar, direction, trade["stop"], self.spec["tick"])
         target_hit = bar["h"] >= trade["target"] if direction == 1 else bar["l"] <= trade["target"]
         if not stop_hit and not target_hit:
             return []
@@ -332,22 +346,23 @@ def enrich(bars: list[dict[str, Any]]) -> None:
         bar["vol_avg"] = sum(window) / len(window) if window else 0.0
 
 
-def prepare(bars: list[dict[str, Any]]) -> Market:
+def prepare(bars: list[dict[str, Any]], spec: dict[str, Any]) -> Market:
     enrich(bars)
-    market = Market()
+    market = Market(spec)
     market.replay(bars)
     return market
 
 
 def payload_from(setup: dict[str, Any], event: str, price: float, reason: str, when: datetime) -> dict[str, Any]:
     side = setup["side"]
+    root = setup.get("root") or "MNQ"
     return {
-        "source": "breakaway-mgc",
+        "source": "breakaway-bot",
         "event": event,
         "action": "buy" if (event == "entry" and side == "long") or (event == "exit" and side == "short") else "sell",
         "side": side,
-        "ticker": "MGC",
-        "root": "MGC",
+        "ticker": root,
+        "root": root,
         "qty": setup["qty"],
         "price": price,
         "stop": setup["stop"],
@@ -379,47 +394,55 @@ def apply_actions(desk, actions: list[dict[str, Any]]) -> None:
 
 
 def describe(market: Market, bars: list[dict[str, Any]]) -> str:
-    last = bars[-1]
+    root = market.spec["root"]
+    last = bars[-1]["c"]
     trade = market.open_trade
     if trade:
         return (
-            f"In {trade['grade']} {trade['side']} {trade['qty']} MGC @ {trade['entry']:.2f} "
-            f"stop {trade['stop']:.2f} target {trade['target']:.2f}. Last {last['c']:.1f}"
+            f"{root} A+ {trade['side']} {trade['qty']} @ {trade['entry']:.2f} "
+            f"stop {trade['stop']:.2f} target {trade['target']:.2f}"
         )
     pending = market.pending
-    if not pending:
-        return f"MGC {last['c']:.1f} flat, no A or A+ setup on the last closed 5m bar"
-    if pending.get("grade") is None:
-        return f"MGC {last['c']:.1f} saw a break, grade below A, skipped"
-    return (
-        f"Resting {pending['grade']} {pending['side']} {pending['qty']} MGC "
-        f"@ {pending['entry']:.2f} stop {pending['stop']:.2f}"
-    )
+    if pending and pending.get("grade") == "A+":
+        return (
+            f"{root} resting A+ {pending['side']} {pending['qty']} "
+            f"@ {pending['entry']:.2f} target {pending['target']:.2f}"
+        )
+    return f"{root} {last:.1f} flat"
 
 
 def watch_once(desk=None) -> str:
-    bars = fetch_bars()
-    if len(bars) < 30:
-        note = "MGC feed returned too few closed bars"
-        if desk:
-            desk.set_watch({"symbol": "MGC", "note": note})
-        return note
-    market = prepare(bars)
-    note = describe(market, bars)
+    lines = []
+    grade = None
+    for spec in MARKETS:
+        try:
+            bars = fetch_bars(spec["yahoo"])
+            if len(bars) < 30:
+                lines.append(f"{spec['root']} waiting")
+                continue
+            market = prepare(bars, spec)
+            lines.append(describe(market, bars))
+            if (market.open_trade or market.pending or {}).get("grade") == "A+":
+                grade = "A+"
+        except Exception as exc:
+            lines.append(f"{spec['root']} feed error")
+            print(spec["root"], exc)
+    note = " · ".join(lines)
     if desk:
-        desk.set_watch({
-            "symbol": "MGC", "price": bars[-1]["c"],
-            "grade": (market.open_trade or market.pending or {}).get("grade"),
-            "note": note,
-        })
+        desk.set_watch({"symbol": "MNQ", "grade": grade, "note": note})
     return note
+
+
+def _root_of(row: dict[str, Any]) -> str:
+    return str(row.get("root") or row.get("ticker") or "")
 
 
 def _same_trade(pos: dict[str, Any] | None, trade: dict[str, Any] | None) -> bool:
     if not pos or not trade:
         return False
     try:
-        return pos.get("side") == trade.get("side") and int(pos.get("qty")) == int(trade.get("qty")) and abs(float(pos.get("entry")) - float(trade.get("entry"))) < 0.05
+        same_root = _root_of(pos) == _root_of(trade)
+        return same_root and pos.get("side") == trade.get("side") and int(pos.get("qty")) == int(trade.get("qty")) and abs(float(pos.get("entry")) - float(trade.get("entry"))) < 0.05
     except (TypeError, ValueError):
         return False
 
@@ -431,11 +454,11 @@ def _already_closed(desk, closed: dict[str, Any]) -> bool:
     return False
 
 
-def sync_open(desk, market: Market) -> None:
-    """Keep the desk on the current A/A+ trade, including a stop that just printed."""
+def sync_open(desk, market: Market, live_from: datetime) -> None:
+    """Take an A+ that fills after the watch starts, and exit it at 2R or the stop."""
     pos = desk.snapshot().get("position")
-    trade = market.open_trade
-    closed = market.last_close
+    trade = market.open_trade if market.open_trade and market.open_trade["when"] >= live_from else None
+    closed = market.last_close if market.last_close and market.last_close["when"] >= live_from else None
     if pos and not _same_trade(pos, trade) and closed and _same_trade(pos, closed):
         apply_actions(desk, [{
             "kind": "exit",
@@ -446,13 +469,7 @@ def sync_open(desk, market: Market) -> None:
         pos = None
     if trade and pos is None:
         apply_actions(desk, [{"kind": "fill", **trade}])
-    elif (
-        closed
-        and pos is None
-        and trade is None
-        and closed["exit_when"].astimezone(NY).date() == datetime.now(NY).date()
-        and not _already_closed(desk, closed)
-    ):
+    elif closed and pos is None and trade is None and not _already_closed(desk, closed):
         apply_actions(desk, [
             {"kind": "fill", **closed},
             {"kind": "exit", "price": closed["exit_price"], "reason": closed["exit_reason"], "when": closed["exit_when"]},
@@ -461,24 +478,30 @@ def sync_open(desk, market: Market) -> None:
 
 def start_watcher(desk) -> None:
     def loop() -> None:
+        live_from = datetime.now(NY)
         while True:
+            lines = []
+            grade = None
             try:
-                bars = fetch_bars()
-                if len(bars) < 30:
-                    desk.set_watch({"symbol": "MGC", "note": "Waiting for enough MGC bars"})
-                    time.sleep(30)
-                    continue
-                enrich(bars)
-                market = Market()
-                market.replay(bars)
-                sync_open(desk, market)
-                desk.set_watch({
-                    "symbol": "MGC", "price": bars[-1]["c"],
-                    "grade": (market.open_trade or market.pending or {}).get("grade"),
-                    "note": describe(market, bars),
-                })
-            except Exception as exc:  # keep the watch alive across a bad poll
-                desk.set_watch({"symbol": "MGC", "note": f"MGC feed error: {exc}"})
+                for spec in MARKETS:
+                    try:
+                        bars = fetch_bars(spec["yahoo"])
+                        if len(bars) < 30:
+                            lines.append(f"{spec['root']} waiting")
+                            continue
+                        enrich(bars)
+                        market = Market(spec)
+                        market.replay(bars, live_from)
+                        sync_open(desk, market, live_from)
+                        lines.append(describe(market, bars))
+                        if (market.open_trade and market.open_trade["when"] >= live_from) or (market.pending or {}).get("grade") == "A+":
+                            grade = "A+"
+                    except Exception as exc:
+                        lines.append(f"{spec['root']} feed error")
+                        print(spec["root"], exc)
+                desk.set_watch({"symbol": "MNQ MES MGC MYM", "grade": grade, "note": " · ".join(lines)})
+            except Exception as exc:
+                desk.set_watch({"symbol": "MNQ MES MGC MYM", "note": f"Watch error: {exc}"})
             time.sleep(30)
 
     threading.Thread(target=loop, name="mgc-watch", daemon=True).start()

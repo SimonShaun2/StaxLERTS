@@ -18,7 +18,7 @@ original's exact rules are not public, this README says what this version does i
 
 | Path | Purpose |
 | --- | --- |
-| `breakaway_bot_stax.pine` | The signal. Paste the whole file into TradingView's Pine Editor and add it to the chart. The table must read **StaxBot** and **v1.5**. |
+| `breakaway_bot_stax.pine` | The signal. Paste the whole file into TradingView's Pine Editor and add it to the chart. The table must read **StaxBot** and **v1.6**. |
 | `bot/execution_bot.py` | The bot that takes the trade. Paper desk at `http://127.0.0.1:8791`. |
 | `docs/strategy-logic.md` | Bar-by-bar description of every rule and setting. |
 | `tools/mock_stax_webhook.py` | Payload checker for the Stax options webhook format. |
@@ -42,7 +42,7 @@ An entry alert opens the paper position at the signal price with the stop and ta
 
 **Take sample trades** on the desk runs two MNQ round-trips so you can see a fill without waiting for the chart. Leave the forward URL blank for futures. Stax's webhook expects an options ticker (`SPY260930C660.0`), not a futures root. Paste that URL only when the chart is the underlying and the payload is **Stax Options Webhook**.
 
-The desk also watches Micro Gold itself (`MGC=F`, 5-minute bars) and takes only A and A+ Breakaway setups. A is 3 contracts. A+ is 5. MGC is $10 per point. A setup that needs a stop wider than the $750 daily loss cap is skipped. A+ requires displacement, EMA bias, above-average volume, a London (03:00–06:00) or NY gold (08:20–11:30) session, and a gap within 3 bars of the break. A is four of those five, and one of the four has to be displacement or the session.
+The desk watches MNQ, MES, MGC, and MYM (`MNQ=F`, `MES=F`, `MGC=F`, `MYM=F`, 5-minute bars) and takes only A+ setups, 5 contracts, target 2R. A setup that needs a stop wider than the $750 daily loss cap is skipped. A+ requires all five: displacement, EMA bias, above-average volume, London (03:00–06:00) or New York (08:20–11:30), and a gap within 3 bars of the break. An A is not taken.
 
 ## How the strategy trades
 
