@@ -1,6 +1,6 @@
 # Alerts thread
 
-StaxBot 2.1 is the chart. It is the 2.0 drawing with the bar-1001 history error removed. The user adds it in TradingView and recreates each alert. StaxBot 2.0 stays saved and is not edited.
+StaxBot 2.2 is the chart. A move that trades through the first target on the signal bar is a trade, not a silent miss. The user adds it in TradingView and recreates each alert.
 
 - The development chat owns Pine. A new chart build is a new saved script: 2.1, then 2.2.
 - The alerts chat runs the paper desk and presents entry alerts. It does not edit Pine.
