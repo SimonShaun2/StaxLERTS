@@ -1,18 +1,8 @@
-"""Watch MES, MGC, and MYM 5-minute bars and take only A+ Breakaway setups.
+"""Scan the markets chosen on the desk and paper setups that pass its settings.
 
-MNQ is left off the watch. It is too expensive for the Select 25K account.
-
-A setup is a close through the last confirmed swing, then a fair value gap in
-that direction. Five checks grade it:
-
-  displacement   the break candle's body is at least 1 ATR
-  bias           9/21 EMA cloud agrees with the trade
-  volume         the gap's middle candle is above its 20-bar average
-  session        London 03:00-06:00 or New York 08:20-11:30
-  timing         the gap prints within 3 bars of the break
-
-A+ means all five. Anything less is skipped, including a four-flag A.
-Size is 5 contracts. The target is 2R.
+Markets, minimum grade, take profit, and contract counts come from the desk.
+They are the same knobs as the StaxBot chart. A different watch is a settings
+change. MNQ stays off this account because it is too expensive for Select 25K.
 """
 from __future__ import annotations
 
@@ -28,16 +18,20 @@ NY = ZoneInfo("America/New_York")
 SWING = 5
 FVG_WINDOW = 5
 EXPIRY = 20
-QTY_APLUS = 5
-REWARD = 2.0
-# One full stop has to leave the Select 25K $1,000 trail intact.
-# The desk caps a single trade at $250.
 MAX_STOP_DOLLARS = 250.0
-MARKETS = (
-    {"root": "MES", "yahoo": "MES=F", "tick": 0.25, "point": 5.0},
-    {"root": "MGC", "yahoo": "MGC=F", "tick": 0.1, "point": 10.0},
-    {"root": "MYM", "yahoo": "MYM=F", "tick": 1.0, "point": 0.5},
-)
+CATALOG = {
+    "MES": {"root": "MES", "yahoo": "MES=F", "tick": 0.25, "point": 5.0},
+    "MGC": {"root": "MGC", "yahoo": "MGC=F", "tick": 0.1, "point": 10.0},
+    "MYM": {"root": "MYM", "yahoo": "MYM=F", "tick": 1.0, "point": 0.5},
+}
+DEFAULT_ROOTS = ("MES", "MGC", "MYM")
+DEFAULT_RULES = {
+    "min_grade": "A",
+    "tp_r": 1.0,
+    "qty_a": 3,
+    "qty_aplus": 5,
+    "roots": list(DEFAULT_ROOTS),
+}
 
 
 def fetch_bars(yahoo: str) -> list[dict[str, Any]]:
@@ -110,18 +104,27 @@ def _stop_hit(bar: dict[str, Any], direction: int, stop: float, tick: float) -> 
     return bar["h"] >= stop - tick - 1e-4
 
 
-def grade_setup(flags: dict[str, bool]) -> str | None:
+def grade_setup(flags: dict[str, bool]) -> str:
     score = sum(flags.values())
     if score == 5:
         return "A+"
     if score == 4 and (flags["displacement"] or flags["session"]):
         return "A"
-    return None
+    return "B"
+
+
+def accepts(grade: str, minimum: str) -> bool:
+    if minimum == "Off":
+        return True
+    if grade == "A+":
+        return True
+    return minimum == "A" and grade == "A"
 
 
 class Market:
-    def __init__(self, spec: dict[str, Any]) -> None:
+    def __init__(self, spec: dict[str, Any], rules: dict[str, Any]) -> None:
         self.spec = spec
+        self.rules = rules
         self._reset()
 
     def _reset(self) -> None:
@@ -145,8 +148,7 @@ class Market:
         self._reset()
         for i in range(len(bars)):
             self._step(bars, i, act=False)
-            # A trade that filled before this watch started is not ours.
-            # Drop it so a later A+ on the same market can still be taken.
+            # A fill from before this process started is history, not a live trade.
             if live_from and self.open_trade and self.open_trade["when"] < live_from:
                 self.open_trade = None
                 self.last_close = None
@@ -206,7 +208,7 @@ class Market:
                 if act:
                     actions.append({"kind": "rest", **setup})
             elif setup and act:
-                why = "stop risks more than $250" if setup.get("wide") else "below A+"
+                why = "stop risks more than $250" if setup.get("wide") else f"below {self.rules['min_grade']}"
                 actions.append({"kind": "skip", "side": setup.get("side", ""), "why": why})
         return actions
 
@@ -243,17 +245,19 @@ class Market:
         }
         setup_grade = grade_setup(flags)
         side = "long" if direction == 1 else "short"
-        if setup_grade != "A+":
+        minimum = str(self.rules.get("min_grade") or "A")
+        if not accepts(setup_grade, minimum):
             return {"i": i, "grade": None, "flags": flags, "side": side}
-        qty = QTY_APLUS
+        qty = int(self.rules["qty_aplus"] if setup_grade == "A+" else self.rules["qty_a"])
         risk_dollars = risk * qty * self.spec["point"]
         if risk_dollars > MAX_STOP_DOLLARS:
             return {"i": i, "grade": None, "flags": flags, "wide": True, "side": side}
-        target = entry + direction * risk * REWARD
+        reward = float(self.rules["tp_r"])
+        target = entry + direction * risk * reward
         setup = {
             "i": i,
             "root": self.spec["root"],
-            "grade": "A+",
+            "grade": setup_grade,
             "flags": flags,
             "side": side,
             "direction": direction,
@@ -348,16 +352,16 @@ def enrich(bars: list[dict[str, Any]]) -> None:
         bar["vol_avg"] = sum(window) / len(window) if window else 0.0
 
 
-def prepare(bars: list[dict[str, Any]], spec: dict[str, Any]) -> Market:
+def prepare(bars: list[dict[str, Any]], spec: dict[str, Any], rules: dict[str, Any] | None = None) -> Market:
     enrich(bars)
-    market = Market(spec)
+    market = Market(spec, rules or DEFAULT_RULES)
     market.replay(bars)
     return market
 
 
 def payload_from(setup: dict[str, Any], event: str, price: float, reason: str, when: datetime) -> dict[str, Any]:
     side = setup["side"]
-    root = setup.get("root") or "MNQ"
+    root = setup.get("root") or "MES"
     return {
         "source": "breakaway-bot",
         "event": event,
@@ -401,37 +405,79 @@ def describe(market: Market, bars: list[dict[str, Any]]) -> str:
     trade = market.open_trade
     if trade:
         return (
-            f"{root} A+ {trade['side']} {trade['qty']} @ {trade['entry']:.2f} "
+            f"{root} {trade['grade']} {trade['side']} {trade['qty']} @ {trade['entry']:.2f} "
             f"stop {trade['stop']:.2f} target {trade['target']:.2f}"
         )
     pending = market.pending
-    if pending and pending.get("grade") == "A+":
+    if pending and pending.get("grade"):
         return (
-            f"{root} resting A+ {pending['side']} {pending['qty']} "
+            f"{root} resting {pending['grade']} {pending['side']} {pending['qty']} "
             f"@ {pending['entry']:.2f} target {pending['target']:.2f}"
         )
     return f"{root} {last:.1f} flat"
 
 
-def watch_once(desk=None) -> str:
+def rules_from(desk) -> dict[str, Any]:
+    if desk is None:
+        return {
+            "min_grade": DEFAULT_RULES["min_grade"],
+            "tp_r": DEFAULT_RULES["tp_r"],
+            "qty_a": DEFAULT_RULES["qty_a"],
+            "qty_aplus": DEFAULT_RULES["qty_aplus"],
+            "roots": list(DEFAULT_ROOTS),
+        }
+    snap = desk.snapshot()
+    roots = [root for root in (snap.get("watchMarkets") or DEFAULT_ROOTS) if root in CATALOG]
+    return {
+        "min_grade": snap.get("minGrade") or "A",
+        "tp_r": float(snap.get("tpR") or 1.0),
+        "qty_a": int(snap.get("qtyA") or 3),
+        "qty_aplus": int(snap.get("qtyAplus") or 5),
+        "roots": roots or list(DEFAULT_ROOTS),
+    }
+
+
+def _shown_grade(market: Market, live_from: datetime | None) -> str | None:
+    trade = market.open_trade
+    if trade and (live_from is None or trade["when"] >= live_from) and trade.get("grade"):
+        return trade["grade"]
+    pending = market.pending or {}
+    if pending.get("grade"):
+        return pending["grade"]
+    return None
+
+
+def scan(desk, rules: dict[str, Any], live_from: datetime | None) -> tuple[list[str], str | None]:
     lines = []
     grade = None
-    for spec in MARKETS:
+    for root in rules["roots"]:
+        spec = CATALOG[root]
         try:
             bars = fetch_bars(spec["yahoo"])
             if len(bars) < 30:
-                lines.append(f"{spec['root']} waiting")
+                lines.append(f"{root} waiting")
                 continue
-            market = prepare(bars, spec)
+            enrich(bars)
+            market = Market(spec, rules)
+            market.replay(bars, live_from)
+            if desk is not None and live_from is not None:
+                sync_open(desk, market, live_from)
             lines.append(describe(market, bars))
-            if (market.open_trade or market.pending or {}).get("grade") == "A+":
-                grade = "A+"
+            shown = _shown_grade(market, live_from)
+            if shown:
+                grade = shown
         except Exception as exc:
-            lines.append(f"{spec['root']} feed error")
-            print(spec["root"], exc)
+            lines.append(f"{root} feed error")
+            print(root, exc)
+    return lines, grade
+
+
+def watch_once(desk=None) -> str:
+    rules = rules_from(desk)
+    lines, grade = scan(desk, rules, None)
     note = " · ".join(lines)
     if desk:
-        desk.set_watch({"symbol": "MES MGC MYM", "grade": grade, "note": note})
+        desk.set_watch({"symbol": " ".join(rules["roots"]), "grade": grade, "note": note})
     return note
 
 
@@ -457,7 +503,7 @@ def _already_closed(desk, closed: dict[str, Any]) -> bool:
 
 
 def sync_open(desk, market: Market, live_from: datetime) -> None:
-    """Take an A+ that fills after the watch starts, and exit it at 2R or the stop."""
+    """Book a setup that fills after the desk starts, using the grade and target in that setup."""
     pos = desk.snapshot().get("position")
     trade = market.open_trade if market.open_trade and market.open_trade["when"] >= live_from else None
     closed = market.last_close if market.last_close and market.last_close["when"] >= live_from else None
@@ -482,31 +528,15 @@ def start_watcher(desk) -> None:
     def loop() -> None:
         live_from = datetime.now(NY)
         while True:
-            lines = []
-            grade = None
             try:
-                for spec in MARKETS:
-                    try:
-                        bars = fetch_bars(spec["yahoo"])
-                        if len(bars) < 30:
-                            lines.append(f"{spec['root']} waiting")
-                            continue
-                        enrich(bars)
-                        market = Market(spec)
-                        market.replay(bars, live_from)
-                        sync_open(desk, market, live_from)
-                        lines.append(describe(market, bars))
-                        if (market.open_trade and market.open_trade["when"] >= live_from) or (market.pending or {}).get("grade") == "A+":
-                            grade = "A+"
-                    except Exception as exc:
-                        lines.append(f"{spec['root']} feed error")
-                        print(spec["root"], exc)
-                desk.set_watch({"symbol": "MES MGC MYM", "grade": grade, "note": " · ".join(lines)})
+                rules = rules_from(desk)
+                lines, grade = scan(desk, rules, live_from)
+                desk.set_watch({"symbol": " ".join(rules["roots"]), "grade": grade, "note": " · ".join(lines)})
             except Exception as exc:
-                desk.set_watch({"symbol": "MES MGC MYM", "note": f"Watch error: {exc}"})
+                desk.set_watch({"note": f"Watch error: {exc}"})
             time.sleep(30)
 
-    threading.Thread(target=loop, name="mgc-watch", daemon=True).start()
+    threading.Thread(target=loop, name="stax-watch", daemon=True).start()
 
 
 if __name__ == "__main__":

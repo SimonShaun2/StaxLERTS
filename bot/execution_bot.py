@@ -105,7 +105,12 @@ class Desk:
         self.daily_target = SELECT_DAY_CAP
         self.point_override = 0.0
         self.forward_url = ""
-        self.watch = {"symbol": "MES MGC MYM", "price": None, "grade": None, "note": "Select 25K. Watching MES, MGC, and MYM. MNQ is excluded."}
+        self.min_grade = "A"
+        self.tp_r = 1.0
+        self.qty_a = 3
+        self.qty_aplus = 5
+        self.watch_markets = ["MES", "MGC", "MYM"]
+        self.watch = {"symbol": "MES MGC MYM", "price": None, "grade": None, "note": "Select 25K paper. The watch is the settings on this desk."}
         self.day = session_date(now_ny())
         self.day_start_equity = self.equity
         self.trades_today = 0
@@ -152,6 +157,11 @@ class Desk:
                 "dailyTarget": self.daily_target,
                 "pointOverride": self.point_override,
                 "forwardUrl": self.forward_url,
+                "minGrade": self.min_grade,
+                "tpR": self.tp_r,
+                "qtyA": self.qty_a,
+                "qtyAplus": self.qty_aplus,
+                "watchMarkets": list(self.watch_markets),
                 "killed": self.killed,
                 "watch": dict(self.watch),
                 "position": pos,
@@ -171,9 +181,27 @@ class Desk:
                 self.point_override = max(0.0, float(body["pointOverride"]))
             if "forwardUrl" in body:
                 self.forward_url = str(body["forwardUrl"] or "").strip()
+            if "minGrade" in body and str(body["minGrade"]) in ("Off", "A", "A+"):
+                self.min_grade = str(body["minGrade"])
+            if "tpR" in body:
+                self.tp_r = min(5.0, max(0.1, float(body["tpR"])))
+            if "qtyA" in body:
+                self.qty_a = min(10, max(1, int(body["qtyA"])))
+            if "qtyAplus" in body:
+                self.qty_aplus = min(10, max(1, int(body["qtyAplus"])))
+            if "watchMarkets" in body:
+                raw = body["watchMarkets"]
+                if isinstance(raw, str):
+                    names = [part.strip().upper() for part in raw.replace(";", ",").split(",") if part.strip()]
+                else:
+                    names = [str(part).strip().upper() for part in raw]
+                chosen = [name for name in ("MES", "MGC", "MYM") if name in names]
+                if chosen:
+                    self.watch_markets = chosen
+                    self.watch["symbol"] = " ".join(chosen)
             if "killed" in body:
                 self.killed = bool(body["killed"])
-            self._note("SETTINGS", "Risk limits updated")
+            self._note("SETTINGS", "Desk settings updated")
 
     def flatten(self) -> dict[str, Any]:
         with self.lock:
@@ -496,6 +524,9 @@ def selftest() -> int:
         # Long 2 MES, 14.4 points * $5 * 2 = +144. Short 1 MES, 12 points * $5 = -60. Net +84.
         assert abs(snap["equity"] - 25084.0) < 0.01, snap["equity"]
         assert abs(snap["dailyPnl"] - 84.0) < 0.01, snap["dailyPnl"]
+        assert snap["minGrade"] == "A", snap["minGrade"]
+        assert snap["tpR"] == 1.0, snap["tpR"]
+        assert snap["watchMarkets"] == ["MES", "MGC", "MYM"], snap["watchMarkets"]
         refused = desk.handle(demo_script()[0])
         # max trades default 5, so a third entry is allowed. Hit the cap instead.
         desk.max_trades = 2
@@ -587,9 +618,9 @@ def main() -> int:
         return selftest()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.demo_running = False
-    from mgc_watch import start_watcher
+    from watch import start_watcher
     start_watcher(DESK)
-    print(f"Breakaway execution bot listening on http://127.0.0.1:{args.port}  (MES MGC MYM, Select 25K)")
+    print(f"StaxBot paper desk listening on http://127.0.0.1:{args.port}  (Select 25K)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

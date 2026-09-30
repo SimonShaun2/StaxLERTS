@@ -66,6 +66,10 @@
   }
   button.ghost { background: transparent; border: 1px solid var(--line); color: var(--text); }
   button.danger { background: #3a1d24; color: var(--red); }
+  select { width: 100%; background: #0e141c; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .checks { display: flex; gap: 14px; margin-top: 4px; }
+  .check { display: flex; align-items: center; gap: 6px; color: var(--text); margin: 0; }
+  .check input { width: auto; }
   .feed { list-style: none; margin: 0; padding: 0; max-height: 280px; overflow: auto; }
   .feed li { padding: 7px 0; border-bottom: 1px solid var(--line); }
   .kind { display: inline-block; min-width: 64px; font-size: 11px; color: var(--amber); }
@@ -80,8 +84,8 @@
 <body>
 <header>
   <div>
-    <h1>Breakaway desk</h1>
-    <div class="sub" id="watch">Select 25K. Micros only, 10 contract max.</div>
+    <h1>StaxBot</h1>
+    <div class="sub" id="watch">Select 25K paper. The watch is the settings on this desk.</div>
     <div class="sub" id="eval">Profit $0 / $1,500 · floor $24,000 · consistency 40%</div>
   </div>
   <div class="pill" id="status">Paper · starting</div>
@@ -97,7 +101,7 @@
         <div class="stat"><span>Open risk</span><strong id="risk">—</strong></div>
       </div>
       <h2>OPEN TRADE</h2>
-      <div class="pos" id="position"><div class="meta">Flat. The next Breakaway entry alert is taken here.</div></div>
+      <div class="pos" id="position"><div class="meta">Flat. Waiting on the watch settings.</div></div>
     </section>
     <section style="margin-top:16px">
       <h2>FILLS</h2>
@@ -109,7 +113,26 @@
   </div>
   <div>
     <section>
-      <h2>BOT LIMITS</h2>
+      <h2>WATCH</h2>
+      <label>Markets</label>
+      <div class="checks">
+        <label class="check"><input id="mMES" type="checkbox" checked /> MES</label>
+        <label class="check"><input id="mMGC" type="checkbox" checked /> MGC</label>
+        <label class="check"><input id="mMYM" type="checkbox" checked /> MYM</label>
+      </div>
+      <label>Minimum grade</label>
+      <select id="minGrade">
+        <option>Off</option>
+        <option selected>A</option>
+        <option>A+</option>
+      </select>
+      <label>Take profit (R)</label>
+      <input id="tpR" type="number" min="0.1" max="5" step="0.1" value="1" />
+      <label>A contracts</label>
+      <input id="qtyA" type="number" min="1" max="10" value="3" />
+      <label>A+ contracts</label>
+      <input id="qtyAplus" type="number" min="1" max="10" value="5" />
+      <h2 style="margin-top:16px">BOT LIMITS</h2>
       <label>Max trades per day</label>
       <input id="maxTrades" type="number" min="1" value="5" />
       <label>Max daily loss ($ , 0 = off)</label>
@@ -142,7 +165,7 @@ async function refresh() {
   const watch = state.watch || {};
   status.textContent = state.failed ? "Evaluation failed" : state.passed ? "Select 25K passed" : state.killed ? "Killed · not taking trades" : "Select 25K · paper";
   status.className = "pill" + (state.killed || state.failed ? " off" : "");
-  document.getElementById("watch").textContent = watch.note || "Select 25K. Micros only, 10 contract max.";
+  document.getElementById("watch").textContent = watch.note || "Select 25K paper. The watch is the settings on this desk.";
   const profit = Number(state.profit || 0);
   const best = Number(state.bestDay || 0);
   const share = profit > 0 ? Math.round((best / profit) * 100) : 0;
@@ -159,8 +182,11 @@ async function refresh() {
   document.getElementById("risk").textContent = pos ? money(pos.openRisk || 0) : "$0";
   const box = document.getElementById("position");
   if (!pos) {
+    const markets = (state.watchMarkets || ["MES", "MGC", "MYM"]).join(", ");
+    const grade = state.minGrade || "A";
+    const tp = state.tpR ?? 1;
     box.className = "pos";
-    box.innerHTML = "<div class='meta'>Flat. The next A+ setup, 5 contracts, target 2R.</div>";
+    box.innerHTML = `<div class="meta">Flat.</div><div class="meta">Watch ${markets}. Minimum ${grade}. Target ${tp}R. Change those in the settings, not in the script.</div>`;
   } else {
     box.className = "pos live";
     const px = pos.entry == null ? "market" : Number(pos.entry).toFixed(2);
@@ -177,13 +203,21 @@ async function refresh() {
   ).join("");
 }
 
+const field = (id) => document.getElementById(id);
+
 document.getElementById("save").onclick = async () => {
+  const markets = ["MES", "MGC", "MYM"].filter((name) => field("m" + name).checked);
   await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-    maxTrades: Number(maxTrades.value),
-    maxDailyLoss: Number(maxDailyLoss.value),
-    dailyTarget: Number(dailyTarget.value),
-    pointOverride: Number(pointOverride.value),
-    forwardUrl: forwardUrl.value
+    maxTrades: Number(field("maxTrades").value),
+    maxDailyLoss: Number(field("maxDailyLoss").value),
+    dailyTarget: Number(field("dailyTarget").value),
+    pointOverride: Number(field("pointOverride").value),
+    forwardUrl: field("forwardUrl").value,
+    minGrade: field("minGrade").value,
+    tpR: Number(field("tpR").value),
+    qtyA: Number(field("qtyA").value),
+    qtyAplus: Number(field("qtyAplus").value),
+    watchMarkets: markets
   })});
   refresh();
 };
