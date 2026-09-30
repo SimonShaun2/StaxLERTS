@@ -18,7 +18,7 @@ original's exact rules are not public, this README says what this version does i
 
 | Path | Purpose |
 | --- | --- |
-| `breakaway_bot_stax.pine` | The signal. Paste into TradingView's Pine Editor. Build 1.2 shows **Stax v1.2** in the table. |
+| `breakaway_bot_stax.pine` | The signal. Paste the whole file into TradingView's Pine Editor and add it to the chart. The table must read **StaxBot** and **v1.5**. |
 | `bot/execution_bot.py` | The bot that takes the trade. Paper desk at `http://127.0.0.1:8791`. |
 | `docs/strategy-logic.md` | Bar-by-bar description of every rule and setting. |
 | `tools/mock_stax_webhook.py` | Payload checker for the Stax options webhook format. |

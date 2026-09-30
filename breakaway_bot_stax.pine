@@ -1,9 +1,9 @@
 //@version=6
 //@strategy_alert_message {{strategy.order.alert_message}}
 // ============================================================================
-//  MGC A Desk  (build 1.4)
-//  Upload this file to Pine. The script name is MGC A Desk.
-//  Table must read MGC v1.4. Do not save it as Breakaway Bot.
+//  StaxBot  (build 1.5)
+//  Title on the chart is StaxBot. The table header must read StaxBot / v1.5.
+//  Replace the entire Pine editor contents, then Add to chart.
 //  Takes A (3 contracts) and A+ (5 contracts) only.
 //
 //  Open re-implementation of the "Breakaway model":
@@ -20,12 +20,13 @@
 //  Educational software. No guarantee of profit. Backtest, then paper trade,
 //  then decide.
 // ============================================================================
-strategy("MGC A Desk", shorttitle = "MGC A Desk", overlay = true,
+strategy("StaxBot", shorttitle = "StaxBot", overlay = true,
      initial_capital = 50000, default_qty_type = strategy.fixed, default_qty_value = 1, pyramiding = 0,
      margin_long = 1, margin_short = 1,
      calc_on_every_tick = false, calc_on_order_fills = false, process_orders_on_close = false,
      commission_type = strategy.commission.cash_per_contract, commission_value = 0.0, slippage = 0,
-     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+     calc_bars_count = 1000,
+     max_boxes_count = 150, max_lines_count = 150, max_labels_count = 150)
 
 // ────────────────────────────────────────────────────────────────────────────
 //  INPUTS
@@ -634,42 +635,44 @@ bgcolor(showSessBgIn and sessionFilterOn and inSession ? color.new(cloudColorIn,
 
 // ────────────────────────────────────────────────────────────────────────────
 //  7) INFO TABLE
+//  Six rows, tiny type, so it fits a phone. Created on the first calculated
+//  bar and refreshed on every bar after that, including Bar Replay, where
+//  barstate.islast stays false until the replay reaches the end of the data.
+//  calc_bars_count keeps that refresh on the last 1000 bars, so the box is
+//  on screen as soon as the script name is.
 // ────────────────────────────────────────────────────────────────────────────
-var table infoTbl = table.new(position.top_right, 2, 16, bgcolor = color.new(#131722, 0), border_width = 1,
-     border_color = color.new(#2a2e39, 0), frame_color = color.new(#2a2e39, 0), frame_width = 1)
+var table infoTbl = na
 
-f_row(table t, int r, string k, string v, color vcol) =>
-    table.cell(t, 0, r, k, text_color = color.new(#9598a1, 0), text_size = size.small, text_halign = text.align_left,  bgcolor = color.new(#1e222d, 0))
-    table.cell(t, 1, r, v, text_color = vcol,                  text_size = size.small, text_halign = text.align_right, bgcolor = color.new(#131722, 0))
-
-f_head(table t, int r, string l, string rt) =>
-    table.cell(t, 0, r, l,  text_color = color.white, text_size = size.small, text_halign = text.align_left,  bgcolor = color.new(#2962ff, 0))
-    table.cell(t, 1, r, rt, text_color = color.new(#b2b5be, 0), text_size = size.tiny, text_halign = text.align_right, bgcolor = color.new(#1e222d, 0))
+f_cell(table t, int col, int row, string txt, color ink, color bg) =>
+    table.cell(t, col, row, txt, text_color = ink, text_size = size.tiny, text_halign = col == 0 ? text.align_left : text.align_right, bgcolor = bg)
 
 f_money(float v) =>
     (v < 0 ? "-$" : "$") + str.tostring(math.round(math.abs(v)))
 
-// Every bar, not only barstate.islast. In Bar Replay islast stays false until the
-// replay reaches the end of the loaded data, which left the table empty.
+if showTableIn and na(infoTbl)
+    infoTbl := table.new(position.top_right, 2, 6, bgcolor = color.new(#131722, 10), border_width = 1, border_color = color.new(#2a2e39, 0), frame_color = color.new(#2a2e39, 0), frame_width = 1)
+    f_cell(infoTbl, 0, 0, "StaxBot", color.white, color.new(#2962ff, 0))
+    f_cell(infoTbl, 1, 0, "v1.5", color.white, color.new(#2962ff, 0))
+
 if showTableIn
-    white  = color.white
-    tradeTxt = inTrade ? livGrade + " " + (livDir == 1 ? "LONG " : "SHORT ") + str.tostring(livQty) + " @ " + str.tostring(livEntry, format.mintick) :
-         pending ? pendGrade + " " + (pendDir == 1 ? "L rest @ " : "S rest @ ") + str.tostring(pendEntry, format.mintick) : "---"
+    ink   = color.white
+    muted = color.new(#9598a1, 0)
+    rowBg = color.new(#131722, 10)
+    keyBg = color.new(#1e222d, 10)
+    tradeTxt = inTrade ? livGrade + (livDir == 1 ? " L" : " S") + str.tostring(livQty) + " " + str.tostring(livEntry, format.mintick) : pending ? pendGrade + (pendDir == 1 ? " L@" : " S@") + str.tostring(pendEntry, format.mintick) : "---"
     biasTxt = bias == 1 ? "Bull" : bias == -1 ? "Bear" : "Flat"
-    biasCol = bias == 1 ? color.lime : bias == -1 ? color.red : color.new(#b2b5be, 0)
-    f_head(infoTbl, 0, "MGC A DESK", "MGC v1.4")
-    f_head(infoTbl, 1, "SETTINGS", presetIn)
-    f_row(infoTbl, 2,  "TP",       str.tostring(pTp, "0.#") + "R", white)
-    f_row(infoTbl, 3,  "SL",       pSl, white)
-    f_row(infoTbl, 4,  "BE",       beOn ? pBe : trailOn ? "Trail" : "Off", white)
-    f_row(infoTbl, 5,  "Trail",    trailShort, white)
-    f_row(infoTbl, 6,  "Dir",      pDir, white)
-    f_row(infoTbl, 7,  "Session",  sessShort, white)
-    f_row(infoTbl, 8,  "Size",     "A " + str.tostring(qtyAIn) + " / A+ " + str.tostring(qtyAplusIn), white)
-    f_row(infoTbl, 9,  "Vol",      volMult > 0 ? str.tostring(volMult, "0.0") + "x" : "Off", white)
-    f_row(infoTbl, 10, "Pt Val",   f_money(ptVal), white)
-    f_head(infoTbl, 11, "LIVE",    staxMode ? "Stax webhook" : "Generic JSON")
-    f_row(infoTbl, 12, "Trade",    tradeTxt, white)
-    f_row(infoTbl, 13, "Bias",     biasTxt, biasCol)
-    f_row(infoTbl, 14, "Trades",   str.tostring(tradesToday) + "/" + str.tostring(pMaxTrades), lossHit or targetHit ? color.orange : color.yellow)
-    f_row(infoTbl, 15, "Daily P/L", f_money(dailyPL), dailyPL >= 0 ? color.lime : color.red)
+    biasCol = bias == 1 ? color.lime : bias == -1 ? color.red : muted
+    dayCol  = lossHit or targetHit ? color.orange : dailyPL >= 0 ? color.lime : color.red
+    planTxt = str.tostring(pTp, "0.#") + "R " + pSl + " " + pDir
+    f_cell(infoTbl, 0, 0, "StaxBot", ink, color.new(#2962ff, 0))
+    f_cell(infoTbl, 1, 0, "v1.5", ink, color.new(#2962ff, 0))
+    f_cell(infoTbl, 0, 1, "Trade", muted, keyBg)
+    f_cell(infoTbl, 1, 1, tradeTxt, ink, rowBg)
+    f_cell(infoTbl, 0, 2, "Bias", muted, keyBg)
+    f_cell(infoTbl, 1, 2, biasTxt, biasCol, rowBg)
+    f_cell(infoTbl, 0, 3, "Day", muted, keyBg)
+    f_cell(infoTbl, 1, 3, str.tostring(tradesToday) + "/" + str.tostring(pMaxTrades) + "  " + f_money(dailyPL), dayCol, rowBg)
+    f_cell(infoTbl, 0, 4, "Plan", muted, keyBg)
+    f_cell(infoTbl, 1, 4, planTxt, ink, rowBg)
+    f_cell(infoTbl, 0, 5, "Size", muted, keyBg)
+    f_cell(infoTbl, 1, 5, "A" + str.tostring(qtyAIn) + " / A+" + str.tostring(qtyAplusIn), ink, rowBg)

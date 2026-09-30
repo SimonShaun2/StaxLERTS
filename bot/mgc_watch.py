@@ -123,6 +123,8 @@ class Market:
         self.bull_displaced = False
         self.bear_displaced = False
         self.pending = None
+        self.open_trade = None
+        self.last_close = None
 
     def replay(self, bars: list[dict[str, Any]]) -> None:
         self.__init__()
@@ -168,6 +170,11 @@ class Market:
             start = 0 if self.range_high_i is None else max(0, i - 30, self.range_high_i)
             self.bear_leg = max(b["h"] for b in bars[start:i + 1])
             self.bear_displaced = displaced
+
+        if self.open_trade and i > self.open_trade["fill_i"]:
+            actions.extend(self._guard(bars, i, act))
+        if self.open_trade:
+            return actions
 
         if self.pending and i > self.pending["i"]:
             actions.extend(self._manage(bars, i, act))
@@ -257,16 +264,39 @@ class Market:
         if not touched:
             return []
         self.pending = None
-        if not act:
-            return []
         stop_hit = bar["l"] <= pending["stop"] if direction == 1 else bar["h"] >= pending["stop"]
         target_hit = bar["h"] >= pending["target"] if direction == 1 else bar["l"] <= pending["target"]
+        self.open_trade = {**pending, "fill_i": i, "when": bar["t"]}
+        if stop_hit or target_hit:
+            self._finish(pending["stop"] if stop_hit else pending["target"], "SL" if stop_hit else "TP", bar["t"])
+        if not act:
+            return []
         actions = [{"kind": "fill", **pending, "when": bar["t"]}]
         if stop_hit:
             actions.append({"kind": "exit", "price": pending["stop"], "reason": "SL", "when": bar["t"]})
         elif target_hit:
             actions.append({"kind": "exit", "price": pending["target"], "reason": "TP", "when": bar["t"]})
         return actions
+
+    def _guard(self, bars, i, act: bool) -> list[dict[str, Any]]:
+        trade = self.open_trade
+        bar = bars[i]
+        direction = trade["direction"]
+        stop_hit = bar["l"] <= trade["stop"] if direction == 1 else bar["h"] >= trade["stop"]
+        target_hit = bar["h"] >= trade["target"] if direction == 1 else bar["l"] <= trade["target"]
+        if not stop_hit and not target_hit:
+            return []
+        if stop_hit:
+            self._finish(trade["stop"], "SL", bar["t"])
+            return [{"kind": "exit", "price": trade["stop"], "reason": "SL", "when": bar["t"]}] if act else []
+        self._finish(trade["target"], "TP", bar["t"])
+        return [{"kind": "exit", "price": trade["target"], "reason": "TP", "when": bar["t"]}] if act else []
+
+    def _finish(self, price: float, reason: str, when) -> None:
+        trade = self.open_trade
+        if trade:
+            self.last_close = {**trade, "exit_price": price, "exit_reason": reason, "exit_when": when}
+        self.open_trade = None
 
 
 def _bias(bars, i, direction) -> bool:
@@ -342,6 +372,12 @@ def apply_actions(desk, actions: list[dict[str, Any]]) -> None:
 
 def describe(market: Market, bars: list[dict[str, Any]]) -> str:
     last = bars[-1]
+    trade = market.open_trade
+    if trade:
+        return (
+            f"In {trade['grade']} {trade['side']} {trade['qty']} MGC @ {trade['entry']:.2f} "
+            f"stop {trade['stop']:.2f} target {trade['target']:.2f}. Last {last['c']:.1f}"
+        )
     pending = market.pending
     if not pending:
         return f"MGC {last['c']:.1f} flat, no A or A+ setup on the last closed 5m bar"
@@ -363,14 +399,42 @@ def watch_once(desk=None) -> str:
     market = prepare(bars)
     note = describe(market, bars)
     if desk:
-        desk.set_watch({"symbol": "MGC", "price": bars[-1]["c"], "grade": (market.pending or {}).get("grade"), "note": note})
+        desk.set_watch({
+            "symbol": "MGC", "price": bars[-1]["c"],
+            "grade": (market.open_trade or market.pending or {}).get("grade"),
+            "note": note,
+        })
     return note
+
+
+def _same_trade(pos: dict[str, Any] | None, trade: dict[str, Any] | None) -> bool:
+    if not pos or not trade:
+        return False
+    try:
+        return pos.get("side") == trade.get("side") and int(pos.get("qty")) == int(trade.get("qty")) and abs(float(pos.get("entry")) - float(trade.get("entry"))) < 0.05
+    except (TypeError, ValueError):
+        return False
+
+
+def sync_open(desk, market: Market) -> None:
+    """Put the still-open A/A+ trade on the desk, and exit it when the model does."""
+    pos = desk.snapshot().get("position")
+    trade = market.open_trade
+    closed = market.last_close
+    if pos and not _same_trade(pos, trade) and closed and _same_trade(pos, closed):
+        apply_actions(desk, [{
+            "kind": "exit",
+            "price": closed["exit_price"],
+            "reason": closed["exit_reason"],
+            "when": closed["exit_when"],
+        }])
+        pos = None
+    if trade and pos is None:
+        apply_actions(desk, [{"kind": "fill", **trade}])
 
 
 def start_watcher(desk) -> None:
     def loop() -> None:
-        market = None
-        seen = 0
         while True:
             try:
                 bars = fetch_bars()
@@ -379,27 +443,14 @@ def start_watcher(desk) -> None:
                     time.sleep(30)
                     continue
                 enrich(bars)
-                if market is None or seen > len(bars):
-                    market = Market()
-                    market.replay(bars)
-                    seen = len(bars)
-                    desk.set_watch({
-                        "symbol": "MGC", "price": bars[-1]["c"],
-                        "grade": (market.pending or {}).get("grade"),
-                        "note": describe(market, bars),
-                    })
-                elif len(bars) > seen:
-                    for i in range(seen, len(bars)):
-                        actions = market._step(bars, i, act=True)
-                        apply_actions(desk, actions)
-                    seen = len(bars)
-                    desk.set_watch({
-                        "symbol": "MGC", "price": bars[-1]["c"],
-                        "grade": (market.pending or {}).get("grade"),
-                        "note": describe(market, bars),
-                    })
-                else:
-                    desk.set_watch({"symbol": "MGC", "price": bars[-1]["c"], "note": describe(market, bars)})
+                market = Market()
+                market.replay(bars)
+                sync_open(desk, market)
+                desk.set_watch({
+                    "symbol": "MGC", "price": bars[-1]["c"],
+                    "grade": (market.open_trade or market.pending or {}).get("grade"),
+                    "note": describe(market, bars),
+                })
             except Exception as exc:  # keep the watch alive across a bad poll
                 desk.set_watch({"symbol": "MGC", "note": f"MGC feed error: {exc}"})
             time.sleep(30)
