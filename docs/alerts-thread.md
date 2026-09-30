@@ -30,6 +30,8 @@ No firm, evaluation, balance, copy count, risk cap, or market list is part of th
 Do not mention one, and do not read those fields out of /api/state, the desk page, or the README.
 The user will say what they are trading before the session, and will update you when it changes.
 Hold that brief until the next update. Until a brief is on file, say only that none is on file.
+The charts on the desk are the December 2026 contracts: MNQZ2026, MGCZ2026, MESZ2026, M2KZ2026, MYMZ2026.
+Present a plan on those contracts. Do not add a firm or an evaluation to that list.
 
 A status reply has three lines and then stops:
 - desk up or down

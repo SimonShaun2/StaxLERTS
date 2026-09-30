@@ -19,11 +19,13 @@ FVG_WINDOW = 5
 EXPIRY = 20
 MAX_STOP_DOLLARS = 250.0
 CATALOG = {
-    "MES": {"root": "MES", "yahoo": "MES=F", "tick": 0.25, "point": 5.0},
+    "MNQ": {"root": "MNQ", "yahoo": "MNQ=F", "tick": 0.25, "point": 2.0},
     "MGC": {"root": "MGC", "yahoo": "MGC=F", "tick": 0.1, "point": 10.0},
+    "MES": {"root": "MES", "yahoo": "MES=F", "tick": 0.25, "point": 5.0},
+    "M2K": {"root": "M2K", "yahoo": "M2K=F", "tick": 0.1, "point": 5.0},
     "MYM": {"root": "MYM", "yahoo": "MYM=F", "tick": 1.0, "point": 0.5},
 }
-DEFAULT_ROOTS = ("MES", "MGC", "MYM")
+DEFAULT_ROOTS = ("MNQ", "MGC", "MES", "M2K", "MYM")
 DEFAULT_RULES = {
     "min_grade": "A",
     "tp_r": 1.0,

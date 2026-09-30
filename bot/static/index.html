@@ -67,7 +67,7 @@
   button.ghost { background: transparent; border: 1px solid var(--line); color: var(--text); }
   button.danger { background: #3a1d24; color: var(--red); }
   select { width: 100%; background: #0e141c; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
-  .checks { display: flex; gap: 14px; margin-top: 4px; }
+  .checks { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 4px; }
   .check { display: flex; align-items: center; gap: 6px; color: var(--text); margin: 0; }
   .check input { width: auto; }
   .feed { list-style: none; margin: 0; padding: 0; max-height: 280px; overflow: auto; }
@@ -116,9 +116,11 @@
       <h2>WATCH</h2>
       <label>Markets</label>
       <div class="checks">
-        <label class="check"><input id="mMES" type="checkbox" checked /> MES</label>
-        <label class="check"><input id="mMGC" type="checkbox" checked /> MGC</label>
-        <label class="check"><input id="mMYM" type="checkbox" checked /> MYM</label>
+        <label class="check"><input id="mMNQ" type="checkbox" checked /> MNQZ2026</label>
+        <label class="check"><input id="mMGC" type="checkbox" checked /> MGCZ2026</label>
+        <label class="check"><input id="mMES" type="checkbox" checked /> MESZ2026</label>
+        <label class="check"><input id="mM2K" type="checkbox" checked /> M2KZ2026</label>
+        <label class="check"><input id="mMYM" type="checkbox" checked /> MYMZ2026</label>
       </div>
       <label>Risk per trade ($)</label>
       <input id="riskPerTrade" type="number" min="1" max="250" step="1" value="250" />
@@ -172,7 +174,11 @@ async function refresh() {
   document.getElementById("risk").textContent = pos ? money(pos.openRisk || 0) : "$0";
   const box = document.getElementById("position");
   if (!pos) {
-    const markets = (state.watchMarkets || ["MES", "MGC", "MYM"]).join(", ");
+    const markets = (state.contracts || ["MNQZ2026", "MGCZ2026", "MESZ2026", "M2KZ2026", "MYMZ2026"]).join(", ");
+    for (const name of ["MNQ", "MGC", "MES", "M2K", "MYM"]) {
+      const box = document.getElementById("m" + name);
+      if (box && state.watchMarkets) box.checked = state.watchMarkets.includes(name);
+    }
     box.className = "pos";
     const risk = state.riskPerTrade ?? 250;
     const plan = state.plan;
@@ -200,7 +206,7 @@ async function refresh() {
 const field = (id) => document.getElementById(id);
 
 document.getElementById("save").onclick = async () => {
-  const markets = ["MES", "MGC", "MYM"].filter((name) => field("m" + name).checked);
+  const markets = ["MNQ", "MGC", "MES", "M2K", "MYM"].filter((name) => field("m" + name).checked);
   await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
     maxTrades: Number(field("maxTrades").value),
     maxDailyLoss: Number(field("maxDailyLoss").value),

@@ -42,6 +42,8 @@ SELECT_LOCK = 100.0
 SELECT_CONSISTENCY = 0.40
 SELECT_DAY_CAP = SELECT_TARGET * SELECT_CONSISTENCY
 SELECT_MAX_RISK = 250.0
+WATCH_ROOTS = ("MNQ", "MGC", "MES", "M2K", "MYM")
+CONTRACT_MONTH = "Z2026"
 MICROS = {"MNQ", "MES", "MYM", "MGC", "M2K"}
 MINIS = {"NQ", "ES", "YM", "GC", "RTY"}
 POINT_VALUES = {
@@ -82,6 +84,18 @@ def contract_key(root: str) -> str:
         if root.startswith(name):
             return name
     return root
+
+
+def current_contract(root: str) -> str:
+    return f"{contract_key(root)}{CONTRACT_MONTH}"
+
+
+def month_matches(ticker: str, root: str) -> bool:
+    key = contract_key(root)
+    text = (ticker or "").upper().split(":")[-1].strip()
+    if text in {"", key, f"{key}Z2026", f"{key}Z26"}:
+        return True
+    return text.startswith(key) and ("Z2026" in text or text.endswith("Z26"))
 
 
 def allocate_target_contracts(total_qty: int, targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -128,8 +142,14 @@ class Desk:
         self.point_override = 0.0
         self.risk_per_trade = SELECT_MAX_RISK
         self.forward_url = ""
-        self.watch_markets = ["MES", "MGC", "MYM"]
-        self.watch = {"symbol": "", "price": None, "grade": None, "note": "Waiting for a TradingView plan."}
+        self.watch_markets = list(WATCH_ROOTS)
+        self.contract_month = CONTRACT_MONTH
+        self.watch = {
+            "symbol": " ".join(current_contract(name) for name in WATCH_ROOTS),
+            "price": None,
+            "grade": None,
+            "note": "Waiting for a TradingView plan.",
+        }
         self.day = session_date(now_ny())
         self.day_start_equity = self.equity
         self.trades_today = 0
@@ -180,6 +200,8 @@ class Desk:
                 "riskPerTrade": self.risk_per_trade,
                 "forwardUrl": self.forward_url,
                 "planSettingsSource": "TradingView prices and R levels; paper desk sizing settings",
+                "contractMonth": self.contract_month,
+                "contracts": [current_contract(name) for name in self.watch_markets],
                 "watchMarkets": list(self.watch_markets),
                 "killed": self.killed,
                 "watch": dict(self.watch),
@@ -209,10 +231,10 @@ class Desk:
                     names = [part.strip().upper() for part in raw.replace(";", ",").split(",") if part.strip()]
                 else:
                     names = [str(part).strip().upper() for part in raw]
-                chosen = [name for name in ("MES", "MGC", "MYM") if name in names]
+                chosen = [name for name in WATCH_ROOTS if name in names]
                 if chosen:
                     self.watch_markets = chosen
-                    self.watch["symbol"] = " ".join(chosen)
+                    self.watch["symbol"] = " ".join(current_contract(name) for name in chosen)
             if "killed" in body:
                 self.killed = bool(body["killed"])
             self._note("SETTINGS", "Desk settings updated")
@@ -289,9 +311,13 @@ class Desk:
             return self._result(False, "Plan needs setupId, valid side, and positive prices")
         if (side == "long" and stop >= entry) or (side == "short" and stop <= entry):
             return self._result(False, "Stop must be beyond entry in the risk direction")
-        root = str(payload.get("root") or payload.get("ticker") or "MES").rsplit(":", 1)[-1]
-        if contract_key(root) not in self.watch_markets:
-            return self._result(False, f"{root} is not enabled in the desk market allowlist")
+        root = str(payload.get("root") or payload.get("ticker") or "").rsplit(":", 1)[-1]
+        key = contract_key(root)
+        if key not in self.watch_markets:
+            return self._result(False, f"{key or root} is not on the Z2026 watch")
+        ticker = str(payload.get("ticker") or "")
+        if not month_matches(ticker, key):
+            return self._result(False, f"Chart contract must be {current_contract(key)}")
         targets = payload.get("targets")
         if not isinstance(targets, list) or not targets:
             try:
@@ -322,8 +348,8 @@ class Desk:
         plan = {
             "setupId": setup_id,
             "settingsId": str(payload.get("settingsId") or ""),
-            "ticker": str(payload.get("ticker") or root),
-            "root": root,
+            "ticker": ticker or current_contract(key),
+            "root": key,
             "side": side,
             "grade": str(payload.get("grade") or ""),
             "entry": entry,
@@ -335,8 +361,8 @@ class Desk:
         self.plan = plan
         target_text = ", ".join(f"{item['id']} {item['price']:.2f} ({item['allocation']:g}w)" for item in normalized)
         self.watch.update({
-            "symbol": root, "price": entry, "grade": plan["grade"],
-            "note": f"TradingView plan: {side.upper()} {root} @ {entry:.2f} stop {stop:.2f}; {target_text}",
+            "symbol": plan["ticker"], "price": entry, "grade": plan["grade"],
+            "note": f"TradingView plan: {side.upper()} {plan['ticker']} @ {entry:.2f} stop {stop:.2f}; {target_text}",
         })
         self._note("PLAN", self.watch["note"])
         return self._result(True, "Plan received", plan)
@@ -457,12 +483,13 @@ class Desk:
             plan_fp = str(self.plan.get("settingsId") or "")
             if entry_fp and plan_fp and entry_fp != plan_fp:
                 self._note("MISMATCH", "Alert settings differ from the armed plan. Prices stay on the plan.")
-        if contract_key(root) not in self.watch_markets:
-            self._note("REFUSED", f"{root} is not enabled in the desk market allowlist")
-            return self._result(False, "Market is not enabled in the desk allowlist")
-        if contract_key(root) in {"MNQ", "NQ"}:
-            self._note("REFUSED", "That root is outside the desk allowlist.")
-            return self._result(False, "Root is outside the desk allowlist")
+        key = contract_key(root)
+        if key not in self.watch_markets:
+            self._note("REFUSED", f"{key or root} is not on the Z2026 watch")
+            return self._result(False, "Market is not on the Z2026 watch")
+        if not month_matches(str(payload.get("ticker") or ""), key):
+            self._note("REFUSED", f"Chart contract must be {current_contract(key)}")
+            return self._result(False, f"Chart contract must be {current_contract(key)}")
         if (side == "long" and stop >= price) or (side == "short" and stop <= price):
             self._note("REFUSED", "Stop must be beyond entry in the risk direction")
             return self._result(False, "Stop must be beyond entry in the risk direction")
@@ -748,7 +775,8 @@ def selftest() -> int:
         # Desk risk setting sizes each setup to one MES; Pine quantities are absent.
         assert abs(snap["equity"] - 25012.0) < 0.01, snap["equity"]
         assert abs(snap["dailyPnl"] - 12.0) < 0.01, snap["dailyPnl"]
-        assert snap["watchMarkets"] == ["MES", "MGC", "MYM"], snap["watchMarkets"]
+        assert snap["watchMarkets"] == ["MNQ", "MGC", "MES", "M2K", "MYM"], snap["watchMarkets"]
+        assert snap["contracts"] == ["MNQZ2026", "MGCZ2026", "MESZ2026", "M2KZ2026", "MYMZ2026"], snap["contracts"]
         refused = desk.handle(demo_script()[0])
         # max trades default 5, so a third entry is allowed. Hit the cap instead.
         desk.max_trades = 2
@@ -758,11 +786,24 @@ def selftest() -> int:
         desk.max_trades = 5
         stamp = now_ny().strftime("%Y-%m-%dT%H:%M:%S%z")
         blocked_root = desk.handle({
-            "event": "plan", "setupId": "mnq-plan", "side": "long", "root": "MNQ",
+            "event": "plan", "setupId": "nq-plan", "side": "long", "root": "NQ", "ticker": "NQZ2026",
             "entry": 20000.0, "stop": 19900.0, "timestamp": stamp,
             "targets": [{"id": "TP1", "price": 20100.0, "allocation": 1, "r": 1}],
         })
         assert blocked_root["success"] is False, blocked_root
+        wrong_month = desk.handle({
+            "event": "plan", "setupId": "mnq-h", "side": "long", "root": "MNQ", "ticker": "MNQH2027",
+            "entry": 20000.0, "stop": 19900.0, "timestamp": stamp,
+            "targets": [{"id": "TP1", "price": 20100.0, "allocation": 1, "r": 1}],
+        })
+        assert wrong_month["success"] is False, wrong_month
+        mnq = desk.handle({
+            "event": "plan", "setupId": "mnq-plan", "side": "long", "root": "MNQ", "ticker": "MNQZ2026",
+            "entry": 20000.0, "stop": 19900.0, "timestamp": stamp,
+            "targets": [{"id": "TP1", "price": 20100.0, "allocation": 1, "r": 1}],
+        })
+        assert mnq["success"] is True, mnq
+        desk.handle({"event": "plan_cancel", "setupId": "mnq-plan", "timestamp": stamp})
         armed = desk.handle({
             "event": "plan", "setupId": "mes-plan", "settingsId": "fp-a", "side": "long", "root": "MES",
             "ticker": "MESZ2026", "entry": 5800.0, "stop": 5785.6, "grade": "A", "timestamp": stamp,
