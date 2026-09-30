@@ -633,6 +633,27 @@ def claim_scan_id(event_id: str) -> bool:
         return True
 
 
+def release_scan_id(event_id: str) -> None:
+    """Give an id back when the destination did not accept it."""
+    path = seen_path()
+    if not path.exists():
+        return
+    with path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        handle.seek(0)
+        raw = handle.read()
+        try:
+            seen = json.loads(raw) if raw.strip() else []
+        except json.JSONDecodeError:
+            return
+        if not isinstance(seen, list) or event_id not in seen:
+            return
+        seen = [item for item in seen if item != event_id]
+        handle.seek(0)
+        handle.truncate()
+        json.dump(seen, handle)
+
+
 def scan_plan_payload(plan: dict[str, Any]) -> dict[str, Any]:
     root = str(plan.get("root") or "")
     side = str(plan.get("side") or "")
@@ -679,13 +700,23 @@ def watch_once(desk=None) -> tuple[str, list[dict[str, Any]]]:
         parts.append(interval + " " + " · ".join(lines))
         for plan in plans:
             payload = scan_plan_payload(plan)
-            if not claim_scan_id(str(payload["eventId"])):
-                continue
-            # The running desk has no scan endpoint. A newer desk can hold the
-            # plan; this process never books a fill either way.
+            event_id = str(payload["eventId"])
             hold = getattr(desk, "hold_scan_plan", None) if desk is not None else None
+            # The running desk has no hold_scan_plan. Do not consume the id there.
+            # The CLI scan is the destination and claims when it emits SCAN_NEW.
+            if desk is not None and hold is None:
+                continue
+            if not claim_scan_id(event_id):
+                continue
             if hold is not None:
-                hold(payload)
+                try:
+                    accepted = bool(hold(payload))
+                except Exception:
+                    release_scan_id(event_id)
+                    continue
+                if not accepted:
+                    release_scan_id(event_id)
+                    continue
             fresh.append(payload)
     note = " | ".join(parts)
     if desk:
