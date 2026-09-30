@@ -124,7 +124,7 @@ are enforced by the paper desk, not by this plan.
   | Standard | 1.0R | 1.5R → +0.5R | 2.0R → +1.0R | 2.5R → +1.5R |
   | Wide | 1.5R | 2.0R → +0.5R | 2.5R → +1.0R | 3.0R → +1.5R |
 
-* Once the stop moves, the same stop line and STOP tag move to the new price and turn gray. They stay inside the original plan box.
+* Once the stop moves, the stop line and STOP tag move to the new price and turn gray. Entry, stop, and targets stay lines.
 * Optional `Flatten Open Trade At Session End`.
 
 ## 9. On exit

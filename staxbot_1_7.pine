@@ -13,7 +13,7 @@
 //
 //  This build does not call strategy.entry or strategy.exit. Those calls were
 //  drawing the strategy arrows and the SL2 / SL3 order tags, and they treated
-//  allocation weights as contract size. The boxes and labels below are the plan.
+//  allocation weights as contract size. Entry, stop, and targets are lines.
 //
 //  Alerts are alert() calls only. In the alert dialog choose
 //  "alert() function calls only". Do not also enable order fills.
@@ -321,7 +321,6 @@ var float stopPx = na
 var float liveStop = na
 var float riskPx = na
 var float nearPx = na
-var float farPx = na
 var float invPx = na
 var float fvgTop = na
 var float fvgBot = na
@@ -347,8 +346,6 @@ var bool ended = false
 var bool armed = false
 
 var box fvgBox = na
-var box rwBox = na
-var box rkBox = na
 var line lnEn = na
 var line lnSl = na
 var line ln1 = na
@@ -647,7 +644,6 @@ if longSetup or shortSetup
         t2 := entryLvl + side * pTp * 2.0 * riskPts
         t3 := entryLvl + side * pTp * 3.0 * riskPts
         nearPx := on1 ? t1 : on2 ? t2 : t3
-        farPx := on3 ? t3 : on2 ? t2 : t1
         hit1 := false
         hit2 := false
         hit3 := false
@@ -667,8 +663,6 @@ if longSetup or shortSetup
 if armed and showDrawingsIn
     bool destroy = not keepClosedIn
     f_box_end(fvgBox, destroy)
-    f_box_end(rwBox, destroy)
-    f_box_end(rkBox, destroy)
     f_line_end(lnEn, destroy)
     f_line_end(lnSl, destroy)
     f_line_end(ln1, destroy)
@@ -684,8 +678,6 @@ if armed and showDrawingsIn
     f_lab_end(lbFill, destroy)
     f_lab_end(lbExit, destroy)
     fvgBox := na
-    rwBox := na
-    rkBox := na
     lnEn := na
     lnSl := na
     ln1 := na
@@ -706,12 +698,6 @@ if armed and showDrawingsIn
     float zoneBot = math.min(fvgTop, fvgBot)
     color sideInk = dir == 1 ? color.new(#4C8DFF, 0) : color.new(#FF8A3D, 0)
     fvgBox := box.new(bornBar - 2, zoneTop, bornBar, zoneBot, border_color = color.new(sideInk, 0), border_width = 1, border_style = line.style_dashed, bgcolor = color.new(sideInk, 88))
-    float rewardTop = dir == 1 ? farPx : entryPx
-    float rewardBot = dir == 1 ? entryPx : farPx
-    float riskTop = dir == 1 ? entryPx : stopPx
-    float riskBot = dir == 1 ? stopPx : entryPx
-    rwBox := box.new(left, rewardTop, right, rewardBot, border_color = color.new(#3DDC97, 55), border_width = 1, bgcolor = color.new(#3DDC97, 91))
-    rkBox := box.new(left, riskTop, right, riskBot, border_color = color.new(#FF5C6C, 55), border_width = 1, bgcolor = color.new(#FF5C6C, 89))
     lnEn := line.new(left, entryPx, right, entryPx, color = color.new(#E6EAF2, 0), width = 1)
     lnSl := line.new(left, stopPx, right, stopPx, color = color.new(#FF5C6C, 0), width = 2)
     lbEn := f_price_tag(right, entryPx, "ENTRY " + f_num(entryPx), color.new(#E6EAF2, 0))
@@ -731,8 +717,6 @@ if armed and showDrawingsIn
 
 if ended and not armed and showDrawingsIn
     f_box_end(fvgBox, false)
-    f_box_end(rwBox, false)
-    f_box_end(rkBox, false)
     f_line_end(lnEn, false)
     f_line_end(lnSl, false)
     f_line_end(ln1, false)
