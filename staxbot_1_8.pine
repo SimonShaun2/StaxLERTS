@@ -1,9 +1,9 @@
 //@version=6
 // ============================================================================
-//  StaxBot 1.7
-//  Saved script name is StaxBot 1.7, so TradingView can store it beside the
-//  older StaxBot script. The chart legend reads Stax 1.7. The HUD reads
-//  StaxBot 1.7.
+//  StaxBot 1.8
+//  Each update is a new saved script: 1.8, then 1.9, then 2.0.
+//  TradingView will not overwrite the previous name. The chart legend reads
+//  Stax 1.8. The HUD reads StaxBot 1.8.
 //
 //  TradingView presents the plan: direction, entry, stop, and enabled targets.
 //  Targets are price levels at 1×, 2×, and 3× Take Profit (R). R is the
@@ -25,7 +25,7 @@
 //  The paper desk sizes contracts from its own risk setting. It must use the
 //  prices in the alert. This script cannot read the desk.
 // ============================================================================
-strategy("StaxBot 1.7", shorttitle = "Stax 1.7", overlay = true,
+strategy("StaxBot 1.8", shorttitle = "Stax 1.8", overlay = true,
      initial_capital = 50000, default_qty_type = strategy.fixed, default_qty_value = 1, pyramiding = 0,
      margin_long = 1, margin_short = 1,
      calc_on_every_tick = false, calc_on_order_fills = false, process_orders_on_close = false,
@@ -784,7 +784,7 @@ if showTableIn and not na(infoTbl)
     if p == 1
         table.cell(infoTbl, 0, 0, "", bgcolor = color.new(#0B0F19, 100), height = 6)
     if hudSizeIn == "Compact"
-        f_cell(infoTbl, 0, p, "StaxBot 1.7", ink, head, "l")
+        f_cell(infoTbl, 0, p, "StaxBot 1.8", ink, head, "l")
         f_cell(infoTbl, 1, p, "PLAN", ink, head, "l")
         f_cell(infoTbl, 2, p, live ? gradeNow : cloud, ink, head, "r")
         f_cell(infoTbl, 0, p + 1, state + (sideTxt == "" ? "" : " " + sideTxt), ink, keyBg, "l")
@@ -799,7 +799,7 @@ if showTableIn and not na(infoTbl)
         f_cell(infoTbl, 1, p + 3, live ? f_num(liveStop) : foot, ink, rowBg, "r")
         f_cell(infoTbl, 2, p + 3, live ? f_signed(riskPx > 0 ? dir * (liveStop - entryPx) / riskPx : 0.0) : "", muted, rowBg, "r")
     else
-        f_cell(infoTbl, 0, p, "StaxBot 1.7", ink, head, "l")
+        f_cell(infoTbl, 0, p, "StaxBot 1.8", ink, head, "l")
         f_cell(infoTbl, 1, p, "PLAN", ink, head, "r")
         f_cell(infoTbl, 0, p + 1, state + (sideTxt == "" ? "" : "  " + sideTxt), ink, keyBg, "l")
         f_cell(infoTbl, 1, p + 1, live ? gradeNow + "  " + f_signed(openR) : cloud, ink, rowBg, "r")
