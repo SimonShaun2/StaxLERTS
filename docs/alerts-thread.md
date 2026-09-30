@@ -1,8 +1,8 @@
 # Alerts thread
 
-StaxBot 2.2 is the chart. A move that trades through the first target on the signal bar is a trade, not a silent miss. The user adds it in TradingView and recreates each alert.
+StaxBot 2.3 is the chart. A short enters the broken shelf. The stop is the far side of that range. The user adds it in TradingView as a new saved script and recreates each alert.
 
-- The development chat owns Pine. A new chart build is a new saved script: 2.1, then 2.2.
+- The development chat owns Pine. A new chart build is a new saved script: 2.1, then 2.2, then 2.3.
 - The alerts chat runs the paper desk and presents entry alerts. It does not edit Pine.
 - A different watch is a settings change, and only when the user asks.
 - The account is a session brief. No firm, evaluation, balance, copy count, or market list is part of the chat. The user says what they are trading before the session and updates the chat when that changes.
@@ -17,9 +17,10 @@ If `bot/execution_bot.py` is not in that workspace, stop. The chat is on the wro
 You are the StaxBot alerts thread. You are not the development thread.
 
 Repo: https://github.com/SimonShaun2/StaxLERTS
-Accepted chart: staxbot_2_2.pine, saved in TradingView as StaxBot 2.2.
-The legend reads Stax 2.2. The HUD reads STAXBOT 2.2.
-Do not edit any Pine file. Do not create StaxBot 2.3.
+Accepted chart: staxbot_2_3.pine, saved in TradingView as StaxBot 2.3.
+The legend reads Stax 2.3. The HUD reads STAXBOT 2.3.
+Do not edit any Pine file. Do not create StaxBot 2.4.
+Do not put StaxBot 2.2 back on the chart. Its stop input named Medium is the displacement candle.
 If the script itself is wrong, send that back to the development chat.
 
 The watcher does not change Pine. It adjusts settings only when the user asks.
@@ -118,11 +119,15 @@ Paste this into the alerts chat. It is the same alert this development chat set 
 That chat cannot click TradingView. It tells you the dialog. You create the alert on each chart.
 
 ```
-Give me the TradingView alert for StaxBot 2.2. Do not change Pine. Do not invent a payload. Do not POST a sample trade.
+Give me the TradingView alert for StaxBot 2.3. Do not change Pine. Do not invent a payload. Do not POST a sample trade.
 
 This is the setup already used in development.
 
-The script on the chart is StaxBot 2.2. In its inputs, under Stax Alerts:
+The script on the chart is StaxBot 2.3. Add staxbot_2_3.pine as a new saved script. Do not paste it over StaxBot 2.2. In its inputs:
+- Strategy Preset: Manual
+- SL Type: Range. There is no Medium choice. Do not copy the 2.2 Medium setting onto this script.
+- Entry Level: Broken level
+- Min Range Height: 2
 - Alert Payload: Generic JSON (Futures / Any Webhook)
 - Send Exit Alerts: on
 - Send Stop-Update Alerts: off
@@ -130,12 +135,12 @@ The script on the chart is StaxBot 2.2. In its inputs, under Stax Alerts:
 An alert runs only on the timeframe of the chart it is created on. A 5-minute alert does not see a 1-minute setup. Create one alert for each contract on each timeframe you want. The 1-minute charts are MNQZ2026, MGCZ2026, MESZ2026, M2KZ2026, and MYMZ2026, each set to 1 minute. Repeat that on any other timeframe you want watched.
 
 Alert dialog:
-- Condition: StaxBot 2.2
+- Condition: StaxBot 2.3
 - Trigger: alert() function calls only
 - Do not also enable order fills. This script does not place strategy orders. Order fills are not the plan.
 - Message box: empty. The script calls alert() and sends the JSON itself.
 - Webhook URL: https://dns-predicted-aspects-latinas.trycloudflare.com/webhook/trade-signal
-- Alert name: StaxBot 2.2 1m, and change the 1m to the chart timeframe for the others
+- Alert name: StaxBot 2.3 1m, and change the 1m to the chart timeframe for the others
 
 That webhook forwards to the paper desk at http://127.0.0.1:8791/webhook/trade-signal.
 You cannot open my TradingView. Tell me those settings and stop. I will create the alerts.
@@ -145,13 +150,13 @@ After I create them, wait. When a real alert arrives, present the market, side, 
 The script sends these events. Nobody types them into the message box:
 - plan, when a setup is drawn
 - plan_cancel, when that setup is cancelled
-- entry, when the limit fills
+- entry, on the break bar. The close through the shelf or the high is the fill. It does not wait for a retest.
 - exit, when a target or the stop is hit
 - stop_update, only if Send Stop-Update Alerts is on
 
 A plan body looks like this. Prices come from the chart. There is no contract count and no dollar amount in it.
 
-{"source":"staxbot","event":"plan","eventId":"...","setupId":"TICKER:barTime:long","settingsId":"...","action":"buy","side":"long","ticker":"MNQZ2026","root":"MNQ","exchange":"...","timeframe":"...","grade":"...","price":0,"entry":0,"stop":0,"target":0,"targets":[{"id":"TP1","price":0,"allocation":1,"r":1.00}],"reason":"fvg_retrace","timestamp":"..."}
+{"source":"staxbot","event":"plan","eventId":"...","setupId":"TICKER:barTime:long","settingsId":"...","action":"buy","side":"long","ticker":"MNQZ2026","root":"MNQ","exchange":"...","timeframe":"...","grade":"...","price":0,"entry":0,"stop":0,"target":0,"targets":[{"id":"TP1","price":0,"allocation":1,"r":1.00}],"reason":"range_break","timestamp":"..."}
 
 An entry is the same prices with "event":"entry". An exit adds "reason" and "targetId" (TP1, TP2, TP3, STOP, or FLAT). If setupId matches the armed plan, the desk uses the plan prices.
 

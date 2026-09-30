@@ -211,11 +211,13 @@ class Market:
         actions: list[dict[str, Any]] = []
         ph = self._pivot(bars, i, "h")
         pl = self._pivot(bars, i, "l")
-        if ph is not None:
+        # A lower high does not replace the rally high. A higher low does not
+        # replace the shelf. Otherwise the stop collapses onto a minor pivot.
+        if ph is not None and (self.range_high is None or self.high_broken or bars[ph]["h"] > self.range_high):
             self.range_high = bars[ph]["h"]
             self.range_high_i = ph
             self.high_broken = False
-        if pl is not None:
+        if pl is not None and (self.range_low is None or self.low_broken or bars[pl]["l"] < self.range_low):
             self.range_low = bars[pl]["l"]
             self.range_low_i = pl
             self.low_broken = False
@@ -223,18 +225,16 @@ class Market:
         bar = bars[i]
         atr = bar.get("atr")
         displaced = atr is not None and abs(bar["c"] - bar["o"]) >= atr
-        # A displaced close through the same extreme is a new break. Otherwise the
-        # first small break uses up the flag and the obvious continuation never alerts.
-        if self.range_high is not None and bar["c"] > self.range_high and (not self.high_broken or displaced):
+        if self.range_high is not None and self.range_low is not None and bar["c"] > self.range_high and not self.high_broken:
             self.high_broken = True
             self.bull_bos_i = i
-            start = 0 if self.range_low_i is None else max(0, i - 30, self.range_low_i)
+            start = 0 if self.range_low_i is None else max(0, self.range_low_i)
             self.bull_leg = min(b["l"] for b in bars[start:i + 1])
             self.bull_displaced = displaced
-        if self.range_low is not None and bar["c"] < self.range_low and (not self.low_broken or displaced):
+        if self.range_high is not None and self.range_low is not None and bar["c"] < self.range_low and not self.low_broken:
             self.low_broken = True
             self.bear_bos_i = i
-            start = 0 if self.range_high_i is None else max(0, i - 30, self.range_high_i)
+            start = 0 if self.range_high_i is None else max(0, self.range_high_i)
             self.bear_leg = max(b["h"] for b in bars[start:i + 1])
             self.bear_displaced = displaced
 
@@ -249,34 +249,50 @@ class Market:
         if i >= 2 and self.pending is None:
             setup = self._maybe_setup(bars, i)
             if setup and setup.get("grade"):
-                self.pending = setup
-                if act:
-                    actions.append({"kind": "rest", **setup})
+                self._fill_break(setup, bar, actions, act)
             elif setup and act:
-                why = "stop risks more than $250" if setup.get("wide") else f"below {self.rules['min_grade']}"
+                why = "range is smaller than 2 ATR" if setup.get("small") else f"below {self.rules['min_grade']}"
                 actions.append({"kind": "skip", "side": setup.get("side", ""), "why": why})
         return actions
 
+    def _fill_break(self, setup: dict[str, Any], bar: dict[str, Any], actions: list[dict[str, Any]], act: bool) -> None:
+        direction = setup["direction"]
+        self.open_trade = {**setup, "fill_i": setup["i"], "when": bar["t"], "remaining_qty": setup["qty"]}
+        self.trade_events.append({
+            "kind": "fill", "event_id": f"{setup['setup_id']}:ENTRY", "setup": dict(setup), "when": bar["t"],
+        })
+        stop_hit = _stop_hit(bar, direction, setup["stop"], self.spec["tick"])
+        if stop_hit:
+            exits = [self._exit_event(self.open_trade, setup["stop"], "SL", bar["t"], setup["qty"], "STOP")]
+            self._finish(setup["stop"], "SL", bar["t"])
+        else:
+            exits = self._targets_hit(self.open_trade, bar, bar["t"])
+        if not act:
+            return
+        actions.append({"kind": "fill", **setup, "when": bar["t"]})
+        actions.extend({"kind": "exit", **event} for event in exits)
+
     def _maybe_setup(self, bars, i) -> dict[str, Any] | None:
         bar = bars[i]
-        mid = bars[i - 1]
-        bull_fvg = bar["l"] > bars[i - 2]["h"] and mid["c"] > mid["o"]
-        bear_fvg = bar["h"] < bars[i - 2]["l"] and mid["c"] < mid["o"]
-        if bull_fvg and self.bull_bos_i is not None and 0 <= i - self.bull_bos_i <= FVG_WINDOW:
+        if self.bull_bos_i == i and self.range_high is not None and self.range_low is not None:
             direction = 1
-        elif bear_fvg and self.bear_bos_i is not None and 0 <= i - self.bear_bos_i <= FVG_WINDOW:
+        elif self.bear_bos_i == i and self.range_high is not None and self.range_low is not None:
             direction = -1
         else:
             return None
-        bos_i = self.bull_bos_i if direction == 1 else self.bear_bos_i
-        fvg_top = bar["l"] if direction == 1 else bars[i - 2]["l"]
-        fvg_bot = bars[i - 2]["h"] if direction == 1 else bar["h"]
-        entry = fvg_top if direction == 1 else fvg_bot
-        far = fvg_bot if direction == 1 else fvg_top
+        bos_i = i
+        span = self.range_high - self.range_low
+        atr = bar.get("atr")
+        if atr and span < 2 * atr:
+            return {"i": i, "grade": None, "small": True, "side": "long" if direction == 1 else "short"}
+        entry = self.range_high if direction == 1 else self.range_low
         leg = self.bull_leg if direction == 1 else self.bear_leg
+        raw = self.range_low if direction == 1 else self.range_high
+        if leg is not None:
+            raw = min(raw, leg) if direction == 1 else max(raw, leg)
+        far = raw
         tick = self.spec["tick"]
         buffer = 2 * tick
-        raw = min(leg, mid["l"]) if direction == 1 else max(leg, mid["h"])
         stop = raw - buffer if direction == 1 else raw + buffer
         risk = (entry - stop) if direction == 1 else (stop - entry)
         if risk < 8 * tick:
@@ -284,7 +300,7 @@ class Market:
         flags = {
             "displacement": bool(self.bull_displaced if direction == 1 else self.bear_displaced),
             "bias": _bias(bars, i, direction),
-            "volume": mid["v"] > (bar.get("vol_avg") or 0),
+            "volume": bar["v"] > (bar.get("vol_avg") or 0),
             "session": _in_session(bar["t"]),
             "timing": i - bos_i <= 3,
         }

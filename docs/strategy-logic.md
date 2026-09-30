@@ -74,26 +74,23 @@ The FVG counts only if a same-direction BOS happened within
 
 | Element | Long | Short |
 | --- | --- | --- |
-| Near edge | FVG top (`low`) | FVG bottom (`high`) |
-| Far edge | FVG bottom (`high[2]`) | FVG top (`low[2]`) |
-| Entry (`Entry Level`) | near edge / midpoint / far edge | same |
-| SL `Tight` | far edge − buffer | far edge + buffer |
-| SL `Medium` | `low[1]` − buffer | `high[1]` + buffer |
-| SL `Large` | min(leg low, `low[1]`) − buffer | max(leg high, `high[1]`) + buffer |
+| Entry | the broken high (`rangeHigh`) | the broken shelf (`rangeLow`) |
+| Stop | below the shelf, or the leg low if that is lower, minus the buffer | above the rally high, or the leg high if that is higher, plus the buffer |
 | TP1 / TP2 / TP3 | entry + n × TP(R) × risk, n = 1, 2, 3, only if that target is on | entry − the same distance |
-| Invalidation (`FVG Line Check`) | Strict: far edge, Relaxed: stop | same |
+| When it arms | the bar that closes through the level | the same bar, which is also the fill |
+
+StaxBot 2.3 does not enter on the fair-value-gap edge. A minor pivot high does not replace the rally high, and a minor pivot low does not replace the shelf. A range smaller than Min Range Height (default 2 ATR) does not arm and does not increment the daily trade count. The break bar draws the plan and sends the entry. A target that this bar has not reached stays open, so the lines remain on the chart while the trade is live.
 
 `buffer = SL Buffer (ticks) × mintick`. The setup is skipped if the stop distance is below
 `Min Stop Distance (ticks)` or above `Max Stop Distance (points)`, or if every target toggle
 is off. Weights do not change the prices. A disabled target is omitted from the drawing,
 the HUD, and the alert.
 
-The plan is drawn when the setup qualifies. No `strategy.entry` or `strategy.exit` is sent,
-so TradingView does not add order arrows or per-target fill tags. A limit fill is simulated
-on a later bar. The same bar cannot be both the signal and the fill. If that later bar
-trades through the entry and the stop, the stop wins. If it trades through the stop and a
-target, the stop wins. The setup id is `ticker + bar time + side`, and the prices plus a
-`settingsId` are frozen at that bar.
+The plan is drawn on the break bar. No `strategy.entry` or `strategy.exit` is sent,
+so TradingView does not add order arrows or per-target fill tags. That same bar is the fill,
+because the close is already through the broken level. If that bar trades through the stop,
+the stop wins. A target is marked only when price actually trades there. The setup id is
+`ticker + bar time + side`, and the prices plus a `settingsId` are frozen at that bar.
 
 ## 7. While the order rests
 

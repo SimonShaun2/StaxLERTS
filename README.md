@@ -18,7 +18,8 @@ original's exact rules are not public, this README says what this version does i
 
 | Path | Purpose |
 | --- | --- |
-| `staxbot_2_2.pine` | The plan. Saved in TradingView as **StaxBot 2.2**. The legend reads **Stax 2.2**. The HUD reads **StaxBot 2.2**. |
+| `staxbot_2_3.pine` | The plan. Saved in TradingView as **StaxBot 2.3**. The legend reads **Stax 2.3**. The HUD reads **StaxBot 2.3**. A short enters the broken shelf and the stop is the far side of that range. |
+| `staxbot_2_2.pine` | Previous chart. Its Medium stop is the displacement candle, and that is the script that filled the day at 5/5. |
 | `bot/execution_bot.py` | The paper desk at `http://127.0.0.1:8791`. It sizes contracts from its own risk setting and uses the prices in the alert. |
 | `bot/watch.py` | Mirrors the TradingView plan on the desk. It does not invent entry, stop, or target prices. |
 | `docs/strategy-logic.md` | Bar-by-bar description of every rule and setting. |
@@ -193,9 +194,8 @@ printed with the decoded contract, and the response mirrors Stax's success / err
 
 ## Running it
 
-Paste `staxbot_2_0.pine` into a new Pine Editor tab and save it. The script name is
-**StaxBot 2.0**. Pasting into the previous StaxBot tab keeps the old saved name, so
-TradingView will not store this update. Each later update is the next number: StaxBot 2.1,
-then StaxBot 2.2, then StaxBot 2.3, each as its own file. The legend reads **Stax 2.0**
-and the HUD reads **StaxBot 2.0**.
+Paste `staxbot_2_3.pine` into a new Pine Editor tab and save it. The script name is
+**StaxBot 2.3**. Pasting into the StaxBot 2.2 tab keeps the old saved name, so
+TradingView will not store this update. The legend reads **Stax 2.3**
+and the HUD reads **StaxBot 2.3**. Leave SL Type on Range.
 The strategy tester will not show order arrows: the plan is the drawing, not a broker fill.
