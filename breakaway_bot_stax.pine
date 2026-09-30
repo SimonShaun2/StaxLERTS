@@ -1,0 +1,644 @@
+//@version=6
+// ============================================================================
+//  Breakaway Bot — Stax Edition
+//
+//  Open re-implementation of the "Breakaway model":
+//     1. A valid market range (last confirmed swing high / swing low)
+//     2. A strong break of structure (bar closes through the range)
+//     3. A Fair Value Gap printed by the displacement leg
+//     4. Price retraces back into the FVG -> resting limit entry
+//     5. Candle-based stop, R-multiple target, optional breakeven / trail ladder
+//     6. Coach filters: direction, session, volume, max trades, daily loss/profit caps
+//
+//  Alerts are formatted for the StaxInvesting webhook
+//  (https://staxinvesting.com/docs/webhook) or as generic JSON for any receiver.
+//
+//  Educational software. No guarantee of profit. Backtest, then paper trade,
+//  then decide.
+// ============================================================================
+strategy("Breakaway Bot (Stax Edition)", shorttitle = "Breakaway | Stax", overlay = true,
+     initial_capital = 50000, default_qty_type = strategy.fixed, default_qty_value = 1, pyramiding = 0,
+     calc_on_every_tick = false, calc_on_order_fills = false, process_orders_on_close = false,
+     commission_type = strategy.commission.cash_per_contract, commission_value = 0.0, slippage = 0,
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+// ────────────────────────────────────────────────────────────────────────────
+//  INPUTS
+// ────────────────────────────────────────────────────────────────────────────
+G_PRESET  = "Preset"
+G_COACH   = "Coach & Execution Filters"
+G_STRUCT  = "Structure & Fair Value Gap"
+G_TP      = "Take Profit"
+G_SL      = "Stop Loss"
+G_BE      = "Breakeven"
+G_TRAIL   = "Trailing Stop"
+G_VOL     = "Volume Filter"
+G_BIAS    = "EMA Bias"
+G_STAX    = "Stax Alerts"
+G_DISPLAY = "Display"
+
+presetIn = input.string("Manual", "Strategy Preset", group = G_PRESET,
+     options = ["Manual", "NY AM Scalper", "NY AM Standard", "London Breakout", "Overnight Conservative"],
+     tooltip = "Manual uses every input below as-is. A preset overrides Direction, Session, Take Profit, SL Type, Breakeven, Trailing Stop and Max Trades Per Day; everything else still comes from the inputs.")
+
+dirIn            = input.string("Both", "Allowed Direction", options = ["Both", "Longs Only", "Shorts Only"], group = G_COACH)
+sessIn           = input.string("24/5 (No Filter)", "Session Preset", group = G_COACH,
+     options = ["24/5 (No Filter)", "NY AM (09:30-12:00)", "NY PM (13:00-16:00)", "London (03:00-06:00)", "Asia (20:00-00:00)", "Overnight (18:00-03:00)", "Custom"])
+customSessIn     = input.session("2000-2130", "Custom Session (If Custom Selected)", group = G_COACH)
+tzIn             = input.string("America/New_York", "Timezone", group = G_COACH, tooltip = "IANA timezone used for sessions, the daily reset and alert timestamps.")
+maxTradesIn      = input.int(5, "Max Trades Per Day", minval = 1, group = G_COACH)
+maxDailyLossIn   = input.float(0, "Max Daily Loss ($, 0 = off)", minval = 0, step = 50, group = G_COACH, tooltip = "Realized P/L. Once hit, pending setups are cancelled and no new setups are taken until the next day. Keep a broker-level daily loss limit as well.")
+dailyTargetIn    = input.float(0, "Daily Profit Target ($, 0 = off)", minval = 0, step = 50, group = G_COACH, tooltip = "Realized P/L. Once hit, the bot stops taking new setups for the day.")
+ptValOverrideIn  = input.float(0, "Point Value Override ($ per 1.00 move, 0 = auto)", minval = 0, group = G_COACH, tooltip = "Leave 0 to use the exchange point value (MNQ = $2, NQ = $20, MES = $5, ES = $50). Override for CFDs or spread-bet accounts.")
+riskUsdIn        = input.float(100, "Risk Per Trade ($)", minval = 1, step = 25, group = G_COACH)
+minQtyOkIn       = input.bool(true, "Take 1 Contract When Risk Budget Is Too Small", group = G_COACH, tooltip = "Off = skip setups where a single contract already risks more than Risk Per Trade.")
+flatAtSessEndIn  = input.bool(false, "Flatten Open Trade At Session End", group = G_COACH)
+
+swingLenIn       = input.int(5, "Swing Length (Range Structure)", minval = 2, group = G_STRUCT, tooltip = "Bars on each side needed to confirm a swing high / low. The last confirmed swing high and swing low define the range.")
+minRangeAtrIn    = input.float(0.0, "Min Range Height (ATR x, 0 = off)", minval = 0, step = 0.1, group = G_STRUCT)
+dispAtrIn        = input.float(0.0, "Min Break Candle Body (ATR x, 0 = off)", minval = 0, step = 0.1, group = G_STRUCT, tooltip = "Require the break-of-structure candle to have displacement (body >= x ATR).")
+fvgWindowIn      = input.int(5, "FVG Must Form Within N Bars Of The Break", minval = 1, group = G_STRUCT)
+setupExpiryIn    = input.int(20, "Setup Expires After N Bars", minval = 1, group = G_STRUCT, tooltip = "Resting limit order is cancelled if not filled within N bars.")
+entryLevelIn     = input.string("FVG Near Edge (Aggressive)", "Entry Level", group = G_STRUCT,
+     options = ["FVG Near Edge (Aggressive)", "FVG Midpoint (CE)", "FVG Far Edge (Deep)"])
+
+tpRIn            = input.float(1.0, "Take Profit (R)", minval = 0.1, maxval = 5, step = 0.1, group = G_TP)
+
+fvgCheckIn       = input.string("Strict", "FVG Line Check", options = ["Strict", "Relaxed"], group = G_SL,
+     tooltip = "Strict: the setup is cancelled as soon as a candle CLOSES through the far edge of the FVG before the fill (the gap must hold). Relaxed: only a close beyond the stop level cancels it.")
+slTypeIn         = input.string("Large", "SL Type", options = ["Tight", "Medium", "Large"], group = G_SL,
+     tooltip = "Tight = far edge of the FVG. Medium = low/high of the displacement candle. Large = origin of the leg (last swing low/high that started the move).")
+slBufferTicksIn  = input.int(2, "SL Buffer (ticks)", minval = 0, group = G_SL)
+legLookbackIn    = input.int(30, "Large SL: Max Leg Lookback (bars)", minval = 3, group = G_SL)
+minStopTicksIn   = input.int(8, "Min Stop Distance (ticks)", minval = 1, group = G_SL)
+maxStopPtsIn     = input.float(0, "Max Stop Distance (points, 0 = off)", minval = 0, group = G_SL)
+
+beIn             = input.string("Off", "Breakeven", options = ["Off", "At 0.5R", "At 0.75R", "At 1R", "At 1.5R"], group = G_BE, tooltip = "Ignored while a Trailing Stop preset is active (the trail already includes breakeven as its first step).")
+beTickIn         = input.bool(false, "BE +1 Tick Buffer", group = G_BE)
+
+trailIn          = input.string("Off", "Trailing Stop", group = G_TRAIL,
+     options = ["Off", "Aggressive (BE 0.75R)", "Standard (BE 1R)", "Wide (BE 1.5R)"],
+     tooltip = "Aggressive: BE@0.75R, +0.25R@1R, +0.5R@1.25R, +0.75R@1.5R.\nStandard: BE@1R, +0.5R@1.5R, +1R@2R, +1.5R@2.5R.\nWide: BE@1.5R, +0.5R@2R, +1R@2.5R, +1.5R@3R.\nThe stop never moves backwards.")
+
+volIn            = input.string("Off", "Volume Filter", options = ["Off", "Above Average (1.0x)", "Strong (1.5x)"], group = G_VOL, tooltip = "Measured on the displacement candle that created the FVG.")
+volLenIn         = input.int(20, "Volume Average Length", minval = 2, group = G_VOL)
+
+emaFastIn        = input.int(9, "EMA Cloud Fast", minval = 1, group = G_BIAS)
+emaSlowIn        = input.int(21, "EMA Cloud Slow", minval = 1, group = G_BIAS)
+biasFilterIn     = input.bool(false, "Only Trade With EMA Bias", group = G_BIAS, tooltip = "Longs need price above a rising cloud, shorts need price below a falling cloud. Off by default (matches the original: bias is informational).")
+
+payloadModeIn    = input.string("Stax Options Webhook", "Alert Payload", group = G_STAX,
+     options = ["Stax Options Webhook", "Generic JSON (Futures / Any Webhook)"],
+     tooltip = "Stax Options Webhook: {timestamp, unmodifiedTicker} where the ticker is SYMBOL+YYMMDD+C/P+STRIKE (long = call, short = put). Only ENTRIES are sent — Stax manages the exit with its own strategy rules.\nGeneric JSON: full entry / exit / stop-update payloads for any receiver.")
+alertViaIn       = input.string("Order fills (strategy alert_message)", "Deliver Alerts Via", group = G_STAX,
+     options = ["Order fills (strategy alert_message)", "alert() calls at bar close"],
+     tooltip = "Order fills: fires the instant the limit fills; create the alert with 'Order fills only' and message {{strategy.order.alert_message}}.\nalert() calls: fires at the close of the fill bar; create the alert with 'alert() function calls only'.")
+tickerOverrideIn = input.string("", "Underlying Symbol Override (blank = chart root)", group = G_STAX)
+dteIn            = input.int(0, "Days To Expiration (0 = 0DTE)", minval = 0, maxval = 60, group = G_STAX)
+strikesOtmIn     = input.int(0, "Strikes OTM", minval = 0, group = G_STAX)
+strikeStepIn     = input.float(1.0, "Strike Step", minval = 0.5, step = 0.5, group = G_STAX, tooltip = "SPY / QQQ = 1, SPX = 5.")
+sendExitAlertsIn = input.bool(true, "Send Exit Alerts (Generic JSON only)", group = G_STAX)
+sendStopUpdIn    = input.bool(false, "Send Stop-Update Alerts via alert() (Generic JSON only)", group = G_STAX)
+
+showTableIn      = input.bool(true, "Show Info Table (top-right)", group = G_DISPLAY)
+showDrawingsIn   = input.bool(true, "Show Chart Drawings", group = G_DISPLAY)
+showSessBgIn     = input.bool(true, "Shade Active Session", group = G_DISPLAY)
+cloudColorIn     = input.color(#00c8ff, "EMA Cloud Color", group = G_DISPLAY)
+
+// ────────────────────────────────────────────────────────────────────────────
+//  PRESET RESOLUTION
+// ────────────────────────────────────────────────────────────────────────────
+pDir = switch presetIn
+    "NY AM Scalper"          => "Both"
+    "NY AM Standard"         => "Both"
+    "London Breakout"        => "Both"
+    "Overnight Conservative" => "Both"
+    => dirIn
+pSess = presetIn == "NY AM Scalper" or presetIn == "NY AM Standard" ? "NY AM (09:30-12:00)" :
+     presetIn == "London Breakout" ? "London (03:00-06:00)" :
+     presetIn == "Overnight Conservative" ? "Overnight (18:00-03:00)" : sessIn
+pTp = switch presetIn
+    "NY AM Scalper"          => 1.0
+    "NY AM Standard"         => 2.0
+    "London Breakout"        => 1.5
+    "Overnight Conservative" => 1.0
+    => tpRIn
+pSl = switch presetIn
+    "NY AM Scalper"          => "Medium"
+    "NY AM Standard"         => "Large"
+    "London Breakout"        => "Medium"
+    "Overnight Conservative" => "Large"
+    => slTypeIn
+pBe = switch presetIn
+    "NY AM Scalper"          => "Off"
+    "NY AM Standard"         => "Off"
+    "London Breakout"        => "Off"
+    "Overnight Conservative" => "At 1R"
+    => beIn
+pTrail = switch presetIn
+    "NY AM Scalper"          => "Aggressive (BE 0.75R)"
+    "NY AM Standard"         => "Standard (BE 1R)"
+    "London Breakout"        => "Standard (BE 1R)"
+    "Overnight Conservative" => "Off"
+    => trailIn
+pMaxTrades = switch presetIn
+    "NY AM Scalper"          => 3
+    "NY AM Standard"         => 3
+    "London Breakout"        => 2
+    "Overnight Conservative" => 2
+    => maxTradesIn
+
+// ────────────────────────────────────────────────────────────────────────────
+//  DERIVED SETTINGS
+// ────────────────────────────────────────────────────────────────────────────
+// Ternaries (not switch) so the session string keeps the "simple" qualifier required by time()
+sessStr = pSess == "NY AM (09:30-12:00)" ? "0930-1200" :
+     pSess == "NY PM (13:00-16:00)" ? "1300-1600" :
+     pSess == "London (03:00-06:00)" ? "0300-0600" :
+     pSess == "Asia (20:00-00:00)" ? "2000-0000" :
+     pSess == "Overnight (18:00-03:00)" ? "1800-0300" :
+     pSess == "Custom" ? customSessIn : ""
+sessShort = pSess == "NY AM (09:30-12:00)" ? "NY AM" :
+     pSess == "NY PM (13:00-16:00)" ? "NY PM" :
+     pSess == "London (03:00-06:00)" ? "London" :
+     pSess == "Asia (20:00-00:00)" ? "Asia" :
+     pSess == "Overnight (18:00-03:00)" ? "Overnight" :
+     pSess == "Custom" ? customSessIn : "24/5"
+sessionFilterOn = sessStr != ""
+sessArg         = sessionFilterOn ? sessStr : "0000-0000:1234567"
+inSession       = not na(time(timeframe.period, sessArg, tzIn))
+sessionEnded    = sessionFilterOn and inSession[1] and not inSession
+
+dayStamp = dayofmonth(time, tzIn)
+newDay   = dayStamp != dayStamp[1]
+
+tick  = syminfo.mintick
+ptVal = ptValOverrideIn > 0 ? ptValOverrideIn : syminfo.pointvalue
+
+longsOk  = pDir != "Shorts Only"
+shortsOk = pDir != "Longs Only"
+
+trailOn = pTrail != "Off"
+beOn    = not trailOn and pBe != "Off"
+beR = switch pBe
+    "At 0.5R"  => 0.5
+    "At 0.75R" => 0.75
+    "At 1R"    => 1.0
+    "At 1.5R"  => 1.5
+    => 0.0
+// Trail ladder: breakeven trigger, then three (trigger R -> lock R) steps
+trailBe = switch pTrail
+    "Aggressive (BE 0.75R)" => 0.75
+    "Standard (BE 1R)"      => 1.0
+    "Wide (BE 1.5R)"        => 1.5
+    => 0.0
+trailT1 = switch pTrail
+    "Aggressive (BE 0.75R)" => 1.0
+    "Standard (BE 1R)"      => 1.5
+    "Wide (BE 1.5R)"        => 2.0
+    => 0.0
+trailO1 = switch pTrail
+    "Aggressive (BE 0.75R)" => 0.25
+    "Standard (BE 1R)"      => 0.5
+    "Wide (BE 1.5R)"        => 0.5
+    => 0.0
+trailT2 = switch pTrail
+    "Aggressive (BE 0.75R)" => 1.25
+    "Standard (BE 1R)"      => 2.0
+    "Wide (BE 1.5R)"        => 2.5
+    => 0.0
+trailO2 = switch pTrail
+    "Aggressive (BE 0.75R)" => 0.5
+    "Standard (BE 1R)"      => 1.0
+    "Wide (BE 1.5R)"        => 1.0
+    => 0.0
+trailT3 = switch pTrail
+    "Aggressive (BE 0.75R)" => 1.5
+    "Standard (BE 1R)"      => 2.5
+    "Wide (BE 1.5R)"        => 3.0
+    => 0.0
+trailO3 = switch pTrail
+    "Aggressive (BE 0.75R)" => 0.75
+    "Standard (BE 1R)"      => 1.5
+    "Wide (BE 1.5R)"        => 1.5
+    => 0.0
+trailShort = switch pTrail
+    "Aggressive (BE 0.75R)" => "Aggr @0.75R"
+    "Standard (BE 1R)"      => "Std @1R"
+    "Wide (BE 1.5R)"        => "Wide @1.5R"
+    => "Off"
+
+volMult = switch volIn
+    "Above Average (1.0x)" => 1.0
+    "Strong (1.5x)"        => 1.5
+    => 0.0
+
+staxMode      = payloadModeIn == "Stax Options Webhook"
+useFillAlerts = alertViaIn == "Order fills (strategy alert_message)"
+
+BUY_COLOR  = color.new(#2962ff, 0)
+SELL_COLOR = color.new(#e040fb, 0)
+
+// ────────────────────────────────────────────────────────────────────────────
+//  INDICATORS
+// ────────────────────────────────────────────────────────────────────────────
+emaFast = ta.ema(close, emaFastIn)
+emaSlow = ta.ema(close, emaSlowIn)
+bias    = close > emaFast and emaFast > emaSlow ? 1 : close < emaFast and emaFast < emaSlow ? -1 : 0
+atr     = ta.atr(14)
+volSma  = ta.sma(volume, volLenIn)
+
+// ────────────────────────────────────────────────────────────────────────────
+//  RANGE STRUCTURE  (last confirmed swing high / swing low)
+// ────────────────────────────────────────────────────────────────────────────
+ph = ta.pivothigh(high, swingLenIn, swingLenIn)
+pl = ta.pivotlow(low, swingLenIn, swingLenIn)
+
+var float rangeHigh    = na
+var float rangeLow     = na
+var int   rangeHighBar = na
+var int   rangeLowBar  = na
+var bool  highBroken   = false
+var bool  lowBroken    = false
+
+if not na(ph)
+    rangeHigh    := ph
+    rangeHighBar := bar_index - swingLenIn
+    highBroken   := false
+if not na(pl)
+    rangeLow    := pl
+    rangeLowBar := bar_index - swingLenIn
+    lowBroken   := false
+
+// Origin of the current leg (for the "Large" stop): lowest low / highest high since the last swing, capped
+lowLegLen  = na(rangeLowBar)  ? legLookbackIn : math.max(1, math.min(legLookbackIn, bar_index - rangeLowBar + 1))
+highLegLen = na(rangeHighBar) ? legLookbackIn : math.max(1, math.min(legLookbackIn, bar_index - rangeHighBar + 1))
+legLowNow  = ta.lowest(low, lowLegLen)
+legHighNow = ta.highest(high, highLegLen)
+
+// ────────────────────────────────────────────────────────────────────────────
+//  BREAK OF STRUCTURE
+// ────────────────────────────────────────────────────────────────────────────
+rangeOk   = not na(rangeHigh) and not na(rangeLow) and rangeHigh > rangeLow and (minRangeAtrIn <= 0 or rangeHigh - rangeLow >= minRangeAtrIn * atr)
+displaced = dispAtrIn <= 0 or math.abs(close - open) >= dispAtrIn * atr
+bullBos   = rangeOk and not highBroken and close > rangeHigh and displaced
+bearBos   = rangeOk and not lowBroken  and close < rangeLow  and displaced
+
+var int   bullBosBar = na
+var int   bearBosBar = na
+var float bullLegLow  = na
+var float bearLegHigh = na
+
+if bullBos
+    highBroken := true
+    bullBosBar := bar_index
+    bullLegLow := legLowNow
+if bearBos
+    lowBroken   := true
+    bearBosBar  := bar_index
+    bearLegHigh := legHighNow
+
+// ────────────────────────────────────────────────────────────────────────────
+//  FAIR VALUE GAP  (3-candle imbalance; bar[1] is the displacement candle)
+// ────────────────────────────────────────────────────────────────────────────
+bullFvg   = low > high[2] and close[1] > open[1]
+bearFvg   = high < low[2] and close[1] < open[1]
+bullArmed = not na(bullBosBar) and bar_index - bullBosBar >= 0 and bar_index - bullBosBar <= fvgWindowIn
+bearArmed = not na(bearBosBar) and bar_index - bearBosBar >= 0 and bar_index - bearBosBar <= fvgWindowIn
+volOkPrev = volMult <= 0 or volume[1] > volSma[1] * volMult
+
+// ────────────────────────────────────────────────────────────────────────────
+//  DAILY BOOK-KEEPING
+// ────────────────────────────────────────────────────────────────────────────
+var int   tradesToday = 0
+var float dayStartNet = 0.0
+if newDay
+    tradesToday := 0
+    dayStartNet := strategy.netprofit
+dailyPL   = strategy.netprofit - dayStartNet
+lossHit   = maxDailyLossIn > 0 and dailyPL <= -maxDailyLossIn
+targetHit = dailyTargetIn  > 0 and dailyPL >=  dailyTargetIn
+
+// ────────────────────────────────────────────────────────────────────────────
+//  ALERT PAYLOAD HELPERS
+// ────────────────────────────────────────────────────────────────────────────
+f_ts() =>
+    str.format_time(timenow, "yyyy-MM-dd'T'HH:mm:ssZ", tzIn)
+
+f_num(float v) =>
+    na(v) ? "null" : str.tostring(v, format.mintick)
+
+f_pad2(int v) =>
+    (v < 10 ? "0" : "") + str.tostring(v)
+
+f_expiryYYMMDD() =>
+    base = timestamp(tzIn, year(time, tzIn), month(time, tzIn), dayofmonth(time, tzIn), 12, 0, 0) + dteIn * 86400000
+    dow  = dayofweek(base, tzIn)
+    adj  = dow == dayofweek.saturday ? base + 2 * 86400000 : dow == dayofweek.sunday ? base + 86400000 : base
+    str.substring(str.tostring(year(adj, tzIn)), 2, 4) + f_pad2(month(adj, tzIn)) + f_pad2(dayofmonth(adj, tzIn))
+
+f_strike(int dir) =>
+    step = strikeStepIn
+    raw  = dir == 1 ? math.ceil(close / step) * step + strikesOtmIn * step : math.floor(close / step) * step - strikesOtmIn * step
+    frac = raw - math.floor(raw)
+    frac == 0 ? str.tostring(math.round(raw)) + ".0" : str.tostring(raw)
+
+f_staxMsg(int dir, float entry, float sl, float tp, int qty) =>
+    root = tickerOverrideIn != "" ? tickerOverrideIn : syminfo.root
+    tkr  = root + f_expiryYYMMDD() + (dir == 1 ? "C" : "P") + f_strike(dir)
+    '{"timestamp":"' + f_ts() + '","unmodifiedTicker":"' + tkr + '","source":"breakaway-bot","side":"' + (dir == 1 ? "long" : "short") +
+     '","underlying":"' + syminfo.ticker + '","underlyingEntry":' + f_num(entry) + ',"underlyingStop":' + f_num(sl) +
+     ',"underlyingTarget":' + f_num(tp) + ',"contracts":' + str.tostring(qty) + '}'
+
+f_genMsg(string event, int dir, float px, float sl, float tp, int qty, string reason, float rr) =>
+    action = event == "entry" ? (dir == 1 ? "buy" : "sell") : (dir == 1 ? "sell" : "buy")
+    '{"source":"breakaway-bot","event":"' + event + '","action":"' + action + '","side":"' + (dir == 1 ? "long" : "short") +
+     '","ticker":"' + syminfo.ticker + '","root":"' + syminfo.root + '","exchange":"' + syminfo.prefix +
+     '","qty":' + str.tostring(qty) + ',"orderType":"' + (event == "entry" ? "limit" : "market") +
+     '","price":' + f_num(px) + ',"stop":' + f_num(sl) + ',"target":' + f_num(tp) +
+     ',"reason":"' + reason + '","realizedR":' + (na(rr) ? "null" : str.tostring(rr, "0.00")) +
+     ',"timestamp":"' + f_ts() + '"}'
+
+f_entryMsg(int dir, float entry, float sl, float tp, int qty) =>
+    staxMode ? f_staxMsg(dir, entry, sl, tp, qty) : f_genMsg("entry", dir, entry, sl, tp, qty, "fvg_retrace", na)
+
+// ────────────────────────────────────────────────────────────────────────────
+//  STATE
+// ────────────────────────────────────────────────────────────────────────────
+var bool  pending     = false
+var int   pendDir     = 0
+var int   pendId      = 0
+var int   pendBar     = na
+var int   pendQty     = 0
+var float pendEntry   = na
+var float pendSl      = na
+var float pendTp      = na
+var float pendInvalid = na
+var float pendFvgTop  = na
+var float pendFvgBot  = na
+var box   pendBox     = na
+var line  pendEntryLn = na
+var line  pendSlLn    = na
+var line  pendTpLn    = na
+
+var bool  inTrade     = false
+var int   livDir      = 0
+var int   livId       = 0
+var int   livQty      = 0
+var float livEntry    = na
+var float livSl       = na
+var float livTp       = na
+var float livRisk     = na
+var float livStop     = na
+var line  livStopLn   = na
+var bool  flatRequest = false
+
+// ────────────────────────────────────────────────────────────────────────────
+//  DRAWING HELPERS
+// ────────────────────────────────────────────────────────────────────────────
+f_entryLabel(int dir, int id, int qty, float y) =>
+    txt = (dir == 1 ? "L_" : "S_") + str.tostring(id) + (dir == 1 ? " +" : " -") + str.tostring(qty)
+    label.new(bar_index, y, txt, style = dir == 1 ? label.style_label_up : label.style_label_down,
+         color = dir == 1 ? BUY_COLOR : SELL_COLOR, textcolor = color.white, size = size.small)
+
+f_exitLabel(int dir, int id, int qty, float y, string tag) =>
+    txt = "X_" + (dir == 1 ? "L_" : "S_") + str.tostring(id) + (dir == 1 ? " -" : " +") + str.tostring(qty) + "\n" + tag
+    label.new(bar_index, y, txt, style = dir == 1 ? label.style_label_down : label.style_label_up,
+         color = dir == 1 ? SELL_COLOR : BUY_COLOR, textcolor = color.white, size = size.small)
+
+f_signedR(float r) =>
+    (r >= 0 ? "+" : "") + str.tostring(r, "0.0") + "R"
+
+// ────────────────────────────────────────────────────────────────────────────
+//  1) FILL DETECTION  (orders from earlier bars filled on this bar)
+// ────────────────────────────────────────────────────────────────────────────
+openedNow = strategy.opentrades   > strategy.opentrades[1]
+closedNow = strategy.closedtrades > strategy.closedtrades[1]
+
+if openedNow
+    inTrade    := true
+    livDir     := strategy.position_size > 0 ? 1 : -1
+    livEntry   := strategy.opentrades.entry_price(0)
+    livQty     := math.abs(math.round(strategy.position_size))
+    livSl      := pendSl
+    livTp      := pendTp
+    livRisk    := math.abs(pendEntry - pendSl)
+    livStop    := pendSl
+    livId      := pendId
+    pending    := false
+    flatRequest := false
+    tradesToday += 1
+    if showDrawingsIn
+        f_entryLabel(livDir, livId, livQty, livDir == 1 ? low : high)
+    if not useFillAlerts
+        alert(f_entryMsg(livDir, livEntry, livSl, livTp, livQty), alert.freq_once_per_bar_close)
+
+if closedNow
+    idx     = strategy.closedtrades - 1
+    exitPx  = strategy.closedtrades.exit_price(idx)
+    entryPx = strategy.closedtrades.entry_price(idx)
+    sz      = strategy.closedtrades.size(idx)
+    if not inTrade
+        // Filled and closed inside the same bar
+        livDir   := sz > 0 ? 1 : -1
+        livEntry := entryPx
+        livQty   := math.abs(math.round(sz))
+        livSl    := pendSl
+        livTp    := pendTp
+        livRisk  := math.abs(pendEntry - pendSl)
+        livStop  := pendSl
+        livId    := pendId
+        pending  := false
+        tradesToday += 1
+        if showDrawingsIn
+            f_entryLabel(livDir, livId, livQty, livDir == 1 ? low : high)
+        if not useFillAlerts
+            alert(f_entryMsg(livDir, livEntry, livSl, livTp, livQty), alert.freq_once_per_bar_close)
+    realizedR = livRisk > 0 ? livDir * (exitPx - livEntry) / livRisk : 0.0
+    stopMoved = livStop != livSl
+    reason = flatRequest ? "FLAT" : realizedR >= pTp - 0.1 ? "TP" : stopMoved and math.abs(realizedR) < 0.1 ? "BE" : stopMoved ? "TRAILED" : "SL"
+    tag    = reason + " " + f_signedR(realizedR)
+    if showDrawingsIn
+        f_exitLabel(livDir, livId, livQty, livDir == 1 ? high : low, tag)
+    if not useFillAlerts and not staxMode and sendExitAlertsIn
+        alert(f_genMsg("exit", livDir, exitPx, livStop, livTp, livQty, reason, realizedR), alert.freq_once_per_bar_close)
+    inTrade     := false
+    flatRequest := false
+    livStopLn   := na
+
+// ────────────────────────────────────────────────────────────────────────────
+//  2) OPEN-TRADE MANAGEMENT  (breakeven / trail ladder; stop only moves forward)
+// ────────────────────────────────────────────────────────────────────────────
+if inTrade and strategy.position_size != 0 and not openedNow
+    favR = livDir == 1 ? (high - livEntry) / livRisk : (livEntry - low) / livRisk
+    float offR = na
+    if trailOn
+        offR := favR >= trailT3 ? trailO3 : favR >= trailT2 ? trailO2 : favR >= trailT1 ? trailO1 : favR >= trailBe ? 0.0 : na
+    else if beOn
+        offR := favR >= beR ? 0.0 : na
+    if not na(offR)
+        buffer = offR == 0 and beTickIn ? livDir * tick : 0.0
+        cand   = livEntry + livDir * offR * livRisk + buffer
+        newStop = livDir == 1 ? math.max(livStop, cand) : math.min(livStop, cand)
+        if newStop != livStop
+            livStop := newStop
+            if sendStopUpdIn and not staxMode
+                alert(f_genMsg("stop_update", livDir, livStop, livStop, livTp, livQty, "trail", offR), alert.freq_once_per_bar_close)
+    if sessionEnded and flatAtSessEndIn
+        flatRequest := true
+        strategy.close_all(comment = "Session end")
+
+// ────────────────────────────────────────────────────────────────────────────
+//  3) PENDING SETUP MAINTENANCE  (cancel rules while the limit rests)
+// ────────────────────────────────────────────────────────────────────────────
+if pending and not inTrade and strategy.position_size == 0
+    expired     = bar_index - pendBar > setupExpiryIn
+    invalidated = pendDir == 1 ? close < pendInvalid : close > pendInvalid
+    missed      = pendDir == 1 ? high >= pendTp : low <= pendTp
+    flipped     = pendDir == 1 ? bearBos : bullBos
+    blocked     = sessionEnded or lossHit or targetHit
+    if expired or invalidated or missed or flipped or blocked
+        strategy.cancel(pendDir == 1 ? "L" : "S")
+        strategy.cancel(pendDir == 1 ? "XL" : "XS")
+        pending := false
+        if not na(pendBox)
+            box.set_bgcolor(pendBox, color.new(color.gray, 88))
+            box.set_border_color(pendBox, color.new(color.gray, 60))
+        if not na(pendEntryLn)
+            line.delete(pendEntryLn)
+        if not na(pendSlLn)
+            line.delete(pendSlLn)
+        if not na(pendTpLn)
+            line.delete(pendTpLn)
+
+// ────────────────────────────────────────────────────────────────────────────
+//  4) NEW SETUP  (BOS armed + FVG printed + coach filters)
+// ────────────────────────────────────────────────────────────────────────────
+canTrade   = inSession and not lossHit and not targetHit and tradesToday < pMaxTrades and strategy.position_size == 0 and not inTrade and not pending
+longSetup  = canTrade and longsOk  and bullFvg and bullArmed and volOkPrev and (not biasFilterIn or bias == 1)
+shortSetup = canTrade and shortsOk and bearFvg and bearArmed and volOkPrev and (not biasFilterIn or bias == -1)
+
+if longSetup or shortSetup
+    dir    = longSetup ? 1 : -1
+    fvgTop = dir == 1 ? low : low[2]
+    fvgBot = dir == 1 ? high[2] : high
+    nearEdge = dir == 1 ? fvgTop : fvgBot
+    farEdge  = dir == 1 ? fvgBot : fvgTop
+    entryLvl = switch entryLevelIn
+        "FVG Midpoint (CE)"    => (fvgTop + fvgBot) / 2
+        "FVG Far Edge (Deep)"  => farEdge
+        => nearEdge
+    slRaw = switch pSl
+        "Tight"  => farEdge
+        "Medium" => dir == 1 ? low[1] : high[1]
+        => dir == 1 ? math.min(nz(bullLegLow, low[1]), low[1]) : math.max(nz(bearLegHigh, high[1]), high[1])
+    slBuffer = slBufferTicksIn * tick
+    sl       = dir == 1 ? slRaw - slBuffer : slRaw + slBuffer
+    riskPts  = dir == 1 ? entryLvl - sl : sl - entryLvl
+    valid    = riskPts >= minStopTicksIn * tick and (maxStopPtsIn <= 0 or riskPts <= maxStopPtsIn)
+    if valid
+        rawQty = math.floor(riskUsdIn / (riskPts * ptVal))
+        qty    = rawQty >= 1 ? rawQty : minQtyOkIn ? 1 : 0
+        if qty > 0
+            pending     := true
+            pendDir     := dir
+            pendId      := bar_index
+            pendBar     := bar_index
+            pendQty     := qty
+            pendEntry   := entryLvl
+            pendSl      := sl
+            pendTp      := entryLvl + dir * pTp * riskPts
+            pendInvalid := fvgCheckIn == "Strict" ? farEdge : sl
+            pendFvgTop  := fvgTop
+            pendFvgBot  := fvgBot
+            if dir == 1
+                bullBosBar := na
+            else
+                bearBosBar := na
+            if showDrawingsIn
+                boxColor    = dir == 1 ? color.teal : color.red
+                pendBox     := box.new(bar_index - 2, fvgTop, bar_index + 1, fvgBot, border_color = color.new(boxColor, 30), bgcolor = color.new(boxColor, 75), border_width = 1)
+                pendEntryLn := line.new(bar_index, entryLvl, bar_index + 1, entryLvl, color = color.new(color.white, 20), style = line.style_dotted)
+                pendSlLn    := line.new(bar_index, sl, bar_index + 1, sl, color = color.new(color.red, 0), width = 1)
+                pendTpLn    := line.new(bar_index, pendTp, bar_index + 1, pendTp, color = color.new(color.green, 0), width = 1)
+
+// ────────────────────────────────────────────────────────────────────────────
+//  5) ORDERS  (re-issued every bar so the payload timestamp / stop are current)
+// ────────────────────────────────────────────────────────────────────────────
+if pending and not inTrade
+    strategy.entry(pendDir == 1 ? "L" : "S", pendDir == 1 ? strategy.long : strategy.short, qty = pendQty, limit = pendEntry,
+         alert_message = f_entryMsg(pendDir, pendEntry, pendSl, pendTp, pendQty), disable_alert = not useFillAlerts)
+
+if pending or (inTrade and strategy.position_size != 0)
+    xDir  = inTrade ? livDir : pendDir
+    xStop = inTrade ? livStop : pendSl
+    xTp   = inTrade ? livTp : pendTp
+    xQty  = inTrade ? livQty : pendQty
+    strategy.exit(xDir == 1 ? "XL" : "XS", from_entry = xDir == 1 ? "L" : "S", stop = xStop, limit = xTp,
+         alert_message = f_genMsg("exit", xDir, xStop, xStop, xTp, xQty, "stop_or_target", na),
+         disable_alert = not useFillAlerts or staxMode or not sendExitAlertsIn)
+
+// ────────────────────────────────────────────────────────────────────────────
+//  6) DRAWINGS UPKEEP
+// ────────────────────────────────────────────────────────────────────────────
+if showDrawingsIn and (pending or inTrade)
+    if not na(pendBox)
+        box.set_right(pendBox, bar_index)
+    if not na(pendEntryLn)
+        line.set_x2(pendEntryLn, bar_index)
+    if not na(pendSlLn)
+        line.set_x2(pendSlLn, bar_index)
+    if not na(pendTpLn)
+        line.set_x2(pendTpLn, bar_index)
+    if inTrade and livStop != livSl
+        if na(livStopLn)
+            livStopLn := line.new(bar_index - 1, livStop, bar_index, livStop, color = color.new(color.yellow, 0), width = 2)
+        else
+            line.set_y1(livStopLn, livStop)
+            line.set_y2(livStopLn, livStop)
+            line.set_x2(livStopLn, bar_index)
+
+pF = plot(emaFast, "EMA Fast", color = color.new(cloudColorIn, 40), linewidth = 1)
+pS = plot(emaSlow, "EMA Slow", color = color.new(cloudColorIn, 60), linewidth = 1)
+fill(pF, pS, color = color.new(cloudColorIn, 80), title = "EMA Cloud")
+bgcolor(showSessBgIn and sessionFilterOn and inSession ? color.new(cloudColorIn, 93) : na, title = "Session")
+
+// ────────────────────────────────────────────────────────────────────────────
+//  7) INFO TABLE
+// ────────────────────────────────────────────────────────────────────────────
+var table infoTbl = table.new(position.top_right, 2, 16, bgcolor = color.new(#131722, 0), border_width = 1,
+     border_color = color.new(#2a2e39, 0), frame_color = color.new(#2a2e39, 0), frame_width = 1)
+
+f_row(table t, int r, string k, string v, color vcol) =>
+    table.cell(t, 0, r, k, text_color = color.new(#9598a1, 0), text_size = size.small, text_halign = text.align_left,  bgcolor = color.new(#1e222d, 0))
+    table.cell(t, 1, r, v, text_color = vcol,                  text_size = size.small, text_halign = text.align_right, bgcolor = color.new(#131722, 0))
+
+f_head(table t, int r, string l, string rt) =>
+    table.cell(t, 0, r, l,  text_color = color.white, text_size = size.small, text_halign = text.align_left,  bgcolor = color.new(#2962ff, 0))
+    table.cell(t, 1, r, rt, text_color = color.new(#b2b5be, 0), text_size = size.tiny, text_halign = text.align_right, bgcolor = color.new(#1e222d, 0))
+
+f_money(float v) =>
+    (v < 0 ? "-$" : "$") + str.tostring(math.abs(v), "#")
+
+if showTableIn and barstate.islast
+    white  = color.white
+    tradeTxt = inTrade ? (livDir == 1 ? "LONG " : "SHORT ") + str.tostring(livQty) + " @ " + str.tostring(livEntry, format.mintick) :
+         pending ? (pendDir == 1 ? "L rest @ " : "S rest @ ") + str.tostring(pendEntry, format.mintick) : "---"
+    biasTxt = bias == 1 ? "Bull" : bias == -1 ? "Bear" : "Flat"
+    biasCol = bias == 1 ? color.lime : bias == -1 ? color.red : color.new(#b2b5be, 0)
+    f_head(infoTbl, 0, "BREAKAWAY BOT", "Stax v1.0")
+    f_head(infoTbl, 1, "SETTINGS", presetIn)
+    f_row(infoTbl, 2,  "TP",       str.tostring(pTp, "0.#") + "R", white)
+    f_row(infoTbl, 3,  "SL",       pSl, white)
+    f_row(infoTbl, 4,  "BE",       beOn ? pBe : trailOn ? "Trail" : "Off", white)
+    f_row(infoTbl, 5,  "Trail",    trailShort, white)
+    f_row(infoTbl, 6,  "Dir",      pDir, white)
+    f_row(infoTbl, 7,  "Session",  sessShort, white)
+    f_row(infoTbl, 8,  "Risk",     f_money(riskUsdIn), white)
+    f_row(infoTbl, 9,  "Vol",      volMult > 0 ? str.tostring(volMult, "0.0") + "x" : "Off", white)
+    f_row(infoTbl, 10, "Pt Val",   f_money(ptVal), white)
+    f_head(infoTbl, 11, "LIVE",    staxMode ? "Stax webhook" : "Generic JSON")
+    f_row(infoTbl, 12, "Trade",    tradeTxt, white)
+    f_row(infoTbl, 13, "Bias",     biasTxt, biasCol)
+    f_row(infoTbl, 14, "Trades",   str.tostring(tradesToday) + "/" + str.tostring(pMaxTrades), lossHit or targetHit ? color.orange : color.yellow)
+    f_row(infoTbl, 15, "Daily P/L", f_money(dailyPL), dailyPL >= 0 ? color.lime : color.red)

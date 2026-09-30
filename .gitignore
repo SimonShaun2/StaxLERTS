@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+agent-tools/
+terminals/
+.DS_Store
