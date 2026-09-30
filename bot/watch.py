@@ -518,29 +518,31 @@ def _target_text(items: list[dict[str, Any]]) -> str:
     return ", ".join(parts)
 
 
+# A plan is new only when it was armed on the latest closed bar.
+# Older replay state, including a replayed fill, is not an alert.
+FRESH_PLAN_BARS = 0
+
+
+def fresh_plan(market: Market, bars: list[dict[str, Any]]) -> dict[str, Any] | None:
+    pending = market.pending
+    if not pending or not pending.get("grade") or not bars:
+        return None
+    age = len(bars) - 1 - int(pending.get("i", -10**9))
+    if age < 0 or age > FRESH_PLAN_BARS:
+        return None
+    return pending
+
+
 def describe(market: Market, bars: list[dict[str, Any]]) -> str:
     root = market.spec["root"]
     last = bars[-1]["c"]
-    trade = market.open_trade
-    if trade:
+    pending = fresh_plan(market, bars)
+    if pending:
         return (
-            f"{root} {trade['grade']} {trade['side']} {trade.get('remaining_qty', trade['qty'])}/{trade['qty']} @ {trade['entry']:.2f} "
-            f"stop {trade['stop']:.2f} targets " + _target_text(trade.get("remaining_targets", trade["targets"]))
-        )
-    pending = market.pending
-    if pending and pending.get("grade"):
-        return (
-            f"{root} resting {pending['grade']} {pending['side']} {pending['qty']} "
+            f"{root} fresh {pending['grade']} {pending['side']} {pending['qty']} "
             f"@ {pending['entry']:.2f} stop {pending['stop']:.2f} targets " + _target_text(pending.get("targets") or [])
         )
-    signaled = market.last_signal
-    if signaled and signaled.get("grade") and len(bars) - 1 - int(signaled["i"]) <= 30:
-        return (
-            f"{root} {signaled['grade']} {signaled['side']} {signaled['qty']} "
-            f"@ {signaled['entry']:.2f} stop {signaled['stop']:.2f} target {signaled['target']:.2f} "
-            f"unfilled, last {last:.1f}"
-        )
-    return f"{root} {last:.1f} flat"
+    return f"{root} {last:.1f} replay"
 
 
 def rules_from(desk) -> dict[str, Any]:
@@ -589,8 +591,8 @@ def scan(desk, rules: dict[str, Any], live_from: datetime | None, interval: str 
             enrich(bars)
             market = Market(spec, rules)
             market.replay(bars, None)
-            pending = market.pending
-            if pending and pending.get("grade"):
+            pending = fresh_plan(market, bars)
+            if pending:
                 plans.append({**pending, "interval": interval})
             lines.append(describe(market, bars))
             shown = _shown_grade(market, None)
