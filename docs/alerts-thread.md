@@ -47,8 +47,9 @@ python3 bot/execution_bot.py --selftest
 python3 bot/execution_bot.py --port 8791
 
 The desk is http://127.0.0.1:8791. TradingView is the plan source.
-bot/watch.py mirrors the webhook plan. Do not run the Yahoo scanner.
-One channel only, or the same setup can fill twice.
+Each check, run python3 bot/watch.py from the repo root and print that line.
+It names each market. Flat means no setup. A setup line names the grade, side, size, entry, stop, and targets.
+That line is the watch report. Do not send it to Sam and do not book it on the desk.
 
 Order is alert, then this chat, then Sam. The desk holds each accepted alert in
 /api/state under inbox. It does not call Sam when the webhook arrives.
@@ -79,13 +80,11 @@ The desk is already running with Sam’s URL and sender key in memory. Do not pu
 ```
 You are live across the futures day. Do not pull. Do not restart the desk. Do not change Pine. Do not POST a sample trade or a ping. Do not stop the timer at 5:00 PM New York.
 
-The halt is 3:00 PM to 5:00 PM Central, on the America/Chicago clock. During the halt, keep the one-minute check, say the desk is in the halt, and do not shut down. At 5:00 PM Central, Globex is open. Then Asia, then London, then the NY session. The NY session runs until the next 3:00 PM Central halt.
+Each one-minute check, from the repo root, run python3 bot/watch.py and print that line here first. That is what you are watching. Flat means no setup. When a market has a setup, the line names the grade, side, size, entry, stop, and targets. Do not send that line to Sam.
 
-Real TradingView alerts only, on MNQZ2026, MGCZ2026, MESZ2026, M2KZ2026, and MYMZ2026. Order is alert, then this chat, then Sam.
+Then read http://127.0.0.1:8791/api/state. If inbox has a TradingView alert, present that setup and POST http://127.0.0.1:8791/api/release with its eventId. A watch line is not an inbox alert.
 
-On each one-minute check, read http://127.0.0.1:8791/api/state. If inbox has an alert, present it here first: market, side, grade, entry, stop, each target with its R, and the contract count. Then POST http://127.0.0.1:8791/api/release with that eventId. If inbox is empty outside the halt, say the desk is waiting. Arm the next check either way.
-
-End this turn with the three-line status.
+The halt is 3:00 PM to 5:00 PM Central, on the America/Chicago clock. During the halt, keep the check and say the desk is in the halt. At 5:00 PM Central, Globex is open. Then Asia, then London, then the NY session. Arm the next check either way.
 ```
 
 ## Connect the desk to Sam

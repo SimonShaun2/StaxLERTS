@@ -615,25 +615,26 @@ def sync_events(desk, events: list[dict[str, Any]]) -> None:
 
 
 def start_watcher(desk) -> None:
-    """Mirror the plan received at the webhook; do not make an independent plan."""
+    """Report what each market is doing. A TradingView plan is added beside that. This does not book a trade."""
     def loop() -> None:
         while True:
             try:
+                note = watch_once(desk)
                 plan = desk.snapshot().get("plan")
                 if plan:
                     targets = ", ".join(
-                        f"{item['id']} {item['price']:.2f} (w{item.get('allocation', 1):g})" for item in plan["targets"]
+                        f"{item['id']} {item['price']:.2f}" for item in plan.get("targets") or []
                     )
-                    status = str(plan.get("status") or "PLAN")
+                    ticker = plan.get("ticker") or plan.get("root")
                     desk.set_watch({
-                        "symbol": plan["root"], "price": plan["entry"], "grade": plan["grade"],
-                        "note": f"{status}: {plan['side'].upper()} {plan['root']} @ {plan['entry']:.2f} stop {plan['stop']:.2f}; {targets}",
+                        "symbol": ticker,
+                        "price": plan.get("entry"),
+                        "grade": plan.get("grade"),
+                        "note": f"{note} · TradingView {str(plan.get('side') or '').upper()} {ticker} @ {float(plan['entry']):.2f} stop {float(plan['stop']):.2f}; {targets}",
                     })
-                else:
-                    desk.set_watch({"grade": None, "note": "Waiting for a TradingView plan"})
             except Exception as exc:
                 desk.set_watch({"note": f"Watch error: {exc}"})
-            time.sleep(1)
+            time.sleep(60)
 
     threading.Thread(target=loop, name="stax-watch", daemon=True).start()
 
