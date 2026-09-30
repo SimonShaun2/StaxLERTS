@@ -3,14 +3,15 @@
 //  StaxBot 2.3
 //  Each update is a new saved script: 2.0, then 2.1, then 2.2, then 2.3.
 //  TradingView will not overwrite the previous name. The chart legend reads
-//  Stax 2.3. The HUD reads StaxBot 2.3.
-//  2.2 used the fair-value-gap edge as the entry and, on Medium, the
-//  displacement candle as the stop. A 4-point gap then counted as a finished
-//  trade, the day filled at 5/5, and the real break never drew.
-//  2.3 arms on the break. A short enters the broken shelf. The stop is the
-//  other side of that same range, above the rally high. Targets sit below.
-//  A minor pivot does not replace that high or that shelf. A range smaller
-//  than Min Range Height does not arm and does not use a trade.
+//  Stax 2.3. The HUD reads STAXBOT 2.3.
+//
+//  A close through the range arms a plan. It does not fill.
+//  Short: entry is the broken shelf, stop is the rally high plus the buffer,
+//  targets are below. Long: entry is the broken high, stop is the shelf.
+//  The HUD says ARMED while that limit rests. A later bar that trades back to
+//  the entry, and does not trade the stop, is the entry. The HUD then says
+//  LIVE. Exit checks start the bar after the fill. The break bar never sends
+//  an entry, and it never resolves a stop or a target.
 //
 //  TradingView presents the plan: direction, entry, stop, and enabled targets.
 //  Targets are price levels at 1×, 2×, and 3× Take Profit (R). R is the
@@ -21,6 +22,7 @@
 //  This build does not call strategy.entry or strategy.exit. Those calls were
 //  drawing the strategy arrows and the SL2 / SL3 order tags, and they treated
 //  allocation weights as contract size. Entry, stop, and targets are lines.
+//  The Strategy Tester has no orders to report. The plan on the chart is the record.
 //
 //  Alerts are alert() calls only. In the alert dialog choose
 //  "alert() function calls only". Do not also enable order fills.
@@ -53,7 +55,7 @@ G_DISPLAY = "Display"
 
 presetIn = input.string("Manual", "Strategy Preset", group = G_PRESET,
      options = ["Manual", "NY AM Scalper", "NY AM Standard", "London Breakout", "Overnight Conservative"],
-     tooltip = "Manual uses every input below as-is. A preset overrides Direction, Session, Take Profit (R), SL Type, Breakeven, Trailing Stop, and Max Trades Per Day. Target toggles and weights always come from the inputs.")
+     tooltip = "Manual uses every input below as-is. A preset overrides Direction, Session, Breakeven, Trailing Stop, and Max Trades Per Day. Take Profit (R), the Range stop, target toggles, and weights always come from the inputs. A preset does not turn 1R into 2R, 4R, and 6R.")
 
 dirIn            = input.string("Both", "Allowed Direction", options = ["Both", "Longs Only", "Shorts Only"], group = G_COACH)
 sessIn           = input.string("24/5 (No Filter)", "Session Preset", group = G_COACH,
@@ -63,18 +65,19 @@ tzIn             = input.string("America/New_York", "Timezone", group = G_COACH,
 maxTradesIn      = input.int(5, "Max Trades Per Day", minval = 1, group = G_COACH)
 flatAtSessEndIn  = input.bool(false, "Flatten Open Trade At Session End", group = G_COACH)
 minGradeIn       = input.string("Off", "Minimum Grade", options = ["Off", "A", "A+"], group = G_COACH,
-     tooltip = "Off takes every Breakaway setup. A keeps A and A+. A+ keeps A+ only. A+ needs all five: displacement, EMA bias, above-average volume, London 03:00-06:00 or New York 08:20-11:30, and the gap within 3 bars of the break. A is four of those five, and one must be displacement or the session.")
+     tooltip = "Off takes every range break. A keeps A and A+. A+ keeps A+ only. A+ needs all five: displacement, EMA bias, above-average volume, London 03:00-06:00 or New York 08:20-11:30, and the broken swing inside Break Within N Bars Of The Swing. A is four of those five, and one must be displacement or the session.")
 
-swingLenIn       = input.int(5, "Swing Length (Range Structure)", minval = 2, group = G_STRUCT)
+swingLenIn       = input.int(5, "Swing Length (Range Structure)", minval = 2, group = G_STRUCT,
+     tooltip = "A swing is confirmed only after this many bars print on its right. The break can show up that many bars after the high or the shelf.")
 minRangeAtrIn    = input.float(2.0, "Min Range Height (ATR x, 0 = off)", minval = 0, step = 0.1, group = G_STRUCT,
-     tooltip = "The broken shelf and the far side of the range must be at least this many ATR apart. A 4-point gap does not arm.")
+     tooltip = "A range shorter than this multiple of ATR does not arm and does not count as a trade. 0 turns the filter off.")
 dispAtrIn        = input.float(0.0, "Min Break Candle Body (ATR x, 0 = off)", minval = 0, step = 0.1, group = G_STRUCT)
-fvgWindowIn      = input.int(5, "FVG Must Form Within N Bars Of The Break", minval = 1, group = G_STRUCT,
-     tooltip = "Display only. 2.3 does not wait for a fair value gap and does not enter on the gap edge.")
+breakWindowIn    = input.int(5, "Break Within N Bars Of The Swing", minval = 1, group = G_STRUCT,
+     tooltip = "Grade timing only. The broken swing must be this many bars old or newer. This is not a fair-value-gap check, and it does not block a plan when Minimum Grade is Off.")
 setupExpiryIn    = input.int(20, "Setup Expires After N Bars", minval = 1, group = G_STRUCT)
 entryLevelIn     = input.string("Broken level", "Entry Level", group = G_STRUCT,
      options = ["Broken level"],
-     tooltip = "Entry is the swing that just broke. A short enters the shelf. A long enters the broken high.")
+     tooltip = "A short rests on the broken shelf. A long rests on the broken high. The close through that level arms the plan. A later bar is the fill.")
 
 tpRIn = input.float(1.0, "Take Profit (R)", minval = 0.1, maxval = 5, step = 0.1, group = G_TP,
      tooltip = "TP1 is this many R from entry. TP2 is twice that. TP3 is three times that. R is the entry-to-stop distance in price. This is not a dollar target.")
@@ -85,12 +88,9 @@ tp1WIn  = input.int(1, "TP1 weight", minval = 1, maxval = 100, group = G_TP, too
 tp2WIn  = input.int(1, "TP2 weight", minval = 1, maxval = 100, group = G_TP)
 tp3WIn  = input.int(1, "TP3 weight", minval = 1, maxval = 100, group = G_TP)
 
-fvgCheckIn = input.string("Strict", "FVG Line Check", options = ["Strict", "Relaxed"], group = G_SL,
-     tooltip = "2.3 fills on the break, so this does not move the stop. A close through the stop cancels a plan that is still resting.")
 slTypeIn   = input.string("Range", "SL Type", options = ["Range"], group = G_SL,
-     tooltip = "Stop is the far side of the range that broke, plus the buffer. A short stop sits above the rally high. A long stop sits below the swing low. This is not the 2.2 displacement-candle stop.")
+     tooltip = "The stop is the far side of the range, plus the buffer. A short stops above the rally high. A long stops below the shelf. There is no displacement-candle stop.")
 slBufferTicksIn = input.int(2, "SL Buffer (ticks)", minval = 0, group = G_SL)
-legLookbackIn   = input.int(30, "Large SL: Max Leg Lookback (bars)", minval = 3, group = G_SL)
 minStopTicksIn  = input.int(8, "Min Stop Distance (ticks)", minval = 1, group = G_SL)
 maxStopPtsIn    = input.float(0, "Max Stop Distance (points, 0 = off)", minval = 0, group = G_SL)
 
@@ -134,12 +134,7 @@ pDir = switch presetIn
     "Overnight Conservative" => "Both"
     => dirIn
 pSess = presetIn == "NY AM Scalper" or presetIn == "NY AM Standard" ? "NY AM (09:30-12:00)" : presetIn == "London Breakout" ? "London (03:00-06:00)" : presetIn == "Overnight Conservative" ? "Overnight (18:00-03:00)" : sessIn
-pTp = switch presetIn
-    "NY AM Scalper"          => 1.0
-    "NY AM Standard"         => 2.0
-    "London Breakout"        => 1.5
-    "Overnight Conservative" => 1.0
-    => tpRIn
+pTp = tpRIn
 pSl = slTypeIn
 pBe = switch presetIn
     "NY AM Scalper"          => "Off"
@@ -245,38 +240,27 @@ var int rangeHighBar = na
 var int rangeLowBar = na
 var bool highBroken = false
 var bool lowBroken = false
-// A lower high does not replace the rally high. A higher low does not
-// replace the shelf. That is what put the short stop on the displacement
-// candle instead of above the high of the range.
-if not na(ph) and (na(rangeHigh) or highBroken or ph > rangeHigh)
-    rangeHigh := ph
-    rangeHighBar := bar_index - swingLenIn
-    highBroken := false
-if not na(pl) and (na(rangeLow) or lowBroken or pl < rangeLow)
-    rangeLow := pl
-    rangeLowBar := bar_index - swingLenIn
-    lowBroken := false
-lowLegLen = na(rangeLowBar) ? legLookbackIn : math.max(1, math.min(legLookbackIn, bar_index - rangeLowBar + 1))
-highLegLen = na(rangeHighBar) ? legLookbackIn : math.max(1, math.min(legLookbackIn, bar_index - rangeHighBar + 1))
-legLowNow = ta.lowest(low, lowLegLen)
-legHighNow = ta.highest(high, highLegLen)
+// A lower high does not replace the rally high. A higher low does not replace
+// the shelf. Otherwise the stop collapses onto a minor pivot.
+if not na(ph)
+    if na(rangeHigh) or highBroken or ph > rangeHigh
+        rangeHigh := ph
+        rangeHighBar := bar_index - swingLenIn
+        highBroken := false
+if not na(pl)
+    if na(rangeLow) or lowBroken or pl < rangeLow
+        rangeLow := pl
+        rangeLowBar := bar_index - swingLenIn
+        lowBroken := false
 rangeOk = not na(rangeHigh) and not na(rangeLow) and rangeHigh > rangeLow and (minRangeAtrIn <= 0 or rangeHigh - rangeLow >= minRangeAtrIn * atr)
 displaced = dispAtrIn <= 0 or math.abs(close - open) >= dispAtrIn * atr
 bullBos = rangeOk and not highBroken and close > rangeHigh and displaced
 bearBos = rangeOk and not lowBroken and close < rangeLow and displaced
-var float bullLegLow = na
-var float bearLegHigh = na
-var bool bullDisp = false
-var bool bearDisp = false
 if bullBos
     highBroken := true
-    bullLegLow := legLowNow
-    bullDisp := math.abs(close - open) >= atr
 if bearBos
     lowBroken := true
-    bearLegHigh := legHighNow
-    bearDisp := math.abs(close - open) >= atr
-volOk = volMult <= 0 or volume > volSma * volMult
+barVolOk = volMult <= 0 or volume > volSma * volMult
 
 var int tradesToday = 0
 if newDay
@@ -305,7 +289,7 @@ f_fp() =>
     string a = (tp1OnIn ? "1" : "0") + ":" + str.tostring(tp1WIn)
     string b = (tp2OnIn ? "1" : "0") + ":" + str.tostring(tp2WIn)
     string c = (tp3OnIn ? "1" : "0") + ":" + str.tostring(tp3WIn)
-    str.tostring(pTp, "0.00") + "|" + a + "|" + b + "|" + c + "|" + pSl + "|" + minGradeIn + "|" + entryLevelIn + "|" + fvgCheckIn + "|" + pBe + "|" + pTrail + "|" + pDir + "|" + sessShort
+    str.tostring(pTp, "0.00") + "|" + a + "|" + b + "|" + c + "|" + pSl + "|" + minGradeIn + "|" + entryLevelIn + "|" + pBe + "|" + pTrail + "|" + pDir + "|" + sessShort + "|" + str.tostring(swingLenIn) + "|" + str.tostring(minRangeAtrIn, "0.0") + "|" + str.tostring(dispAtrIn, "0.0") + "|" + str.tostring(breakWindowIn) + "|" + str.tostring(slBufferTicksIn) + "|" + str.tostring(minStopTicksIn) + "|" + str.tostring(maxStopPtsIn, "0.0")
 f_signed(float r) =>
     (r >= 0 ? "+" : "") + str.tostring(r, "0.0") + "R"
 
@@ -321,9 +305,10 @@ var float stopPx = na
 var float liveStop = na
 var float riskPx = na
 var float nearPx = na
-var float invPx = na
-var float fvgTop = na
-var float fvgBot = na
+var float zoneHi = na
+var float zoneLo = na
+var int zoneFrom = na
+var string levelReason = "range_break"
 var bool on1 = false
 var bool on2 = false
 var bool on3 = false
@@ -345,7 +330,7 @@ var string footNow = ""
 var bool ended = false
 var bool armed = false
 
-var box fvgBox = na
+var box rangeBox = na
 var line lnEn = na
 var line lnSl = na
 var line ln1 = na
@@ -357,7 +342,7 @@ var label lb1 = na
 var label lb2 = na
 var label lb3 = na
 var label lbBos = na
-var label lbFvg = na
+var label lbRange = na
 var label lbFill = na
 var label lbExit = na
 
@@ -402,7 +387,7 @@ f_core(string event, string eventId, string extra) =>
     '{"source":"staxbot","event":"' + event + '","eventId":"' + eventId + '","setupId":"' + setupId + '","settingsId":"' + fpNow + '","action":"' + action + '","side":"' + (dir == 1 ? "long" : "short") + '","ticker":"' + syminfo.ticker + '","root":"' + syminfo.root + '","exchange":"' + syminfo.prefix + '","timeframe":"' + timeframe.period + '","grade":"' + gradeNow + '","settings":' + setJson + extra + ',"timestamp":"' + f_ts() + '"}'
 
 f_levels() =>
-    ',"price":' + f_num(entryPx) + ',"entry":' + f_num(entryPx) + ',"stop":' + f_num(stopPx) + ',"target":' + f_num(nearPx) + ',"targets":' + f_targets() + ',"reason":"range_break"'
+    ',"price":' + f_num(entryPx) + ',"entry":' + f_num(entryPx) + ',"stop":' + f_num(stopPx) + ',"target":' + f_num(nearPx) + ',"targets":' + f_targets() + ',"reason":"' + levelReason + '"'
 
 f_stax(int side) =>
     string root = tickerOverrideIn != "" ? tickerOverrideIn : syminfo.root
@@ -443,12 +428,19 @@ f_tag_x(label l, int at) =>
 f_done() =>
     (not on1 or hit1) and (not on2 or hit2) and (not on3 or hit3)
 
-// 2.3 fills on the break bar. This block only runs if a plan is still resting.
+// The break bar only arms the plan. A later bar that trades the broken level,
+// and does not trade the stop, is the entry. Stop and target checks start the
+// bar after that fill. A bar that reaches the target without tagging the entry
+// leaves the plan on the chart.
 if pending and not inTrade and bar_index > bornBar
     bool touched = dir == 1 ? low <= entryPx : high >= entryPx
-    bool stopped = dir == 1 ? low <= stopPx : high >= stopPx
-    bool ran = dir == 1 ? high >= nearPx : low <= nearPx
-    if touched
+    bool throughStop = dir == 1 ? low <= stopPx : high >= stopPx
+    if touched and throughStop
+        if not staxMode
+            alert(f_core("plan_cancel", setupId + ":CANCEL", ',"reason":"ambiguous"'), alert.freq_once_per_bar_close)
+        pending := false
+        ended := true
+    else if touched
         inTrade := true
         pending := false
         fillBar := bar_index
@@ -457,9 +449,10 @@ if pending and not inTrade and bar_index > bornBar
         hit2 := false
         hit3 := false
         tradesToday += 1
+        levelReason := "range_retest"
         if showDrawingsIn
-            if not na(fvgBox)
-                box.set_right(fvgBox, bar_index)
+            if not na(rangeBox)
+                box.set_right(rangeBox, bar_index)
             if not na(lbFill)
                 label.delete(lbFill)
             lbFill := f_fill_mark()
@@ -467,59 +460,9 @@ if pending and not inTrade and bar_index > bornBar
             alert(f_core("entry", setupId + ":ENTRY", f_levels()), alert.freq_once_per_bar_close)
         else
             alert(f_stax(dir), alert.freq_once_per_bar_close)
-        if stopped
-            float rr = riskPx > 0 ? dir * (stopPx - entryPx) / riskPx : 0.0
-            if showDrawingsIn
-                if not na(lbExit)
-                    label.delete(lbExit)
-                lbExit := f_exit_mark(dir == 1 ? high : low, "SL " + f_signed(rr), color.new(#FF5C6C, 0))
-            if not staxMode and sendExitAlertsIn
-                string extra = ',"price":' + f_num(stopPx) + ',"stop":' + f_num(stopPx) + ',"target":' + f_num(nearPx) + ',"reason":"SL","targetId":"STOP","realizedR":' + str.tostring(rr, "0.00")
-                alert(f_core("exit", setupId + ":EXIT:STOP", extra), alert.freq_once_per_bar_close)
-            inTrade := false
-            ended := true
-        else
-            if on1 and not hit1 and (dir == 1 ? high >= t1 : low <= t1)
-                hit1 := true
-                float rr1 = riskPx > 0 ? dir * (t1 - entryPx) / riskPx : 0.0
-                if showDrawingsIn
-                    if not na(lbExit)
-                        label.delete(lbExit)
-                    lbExit := f_exit_mark(dir == 1 ? high : low, "TP1 " + f_signed(rr1), color.new(#3DDC97, 0))
-                if not staxMode and sendExitAlertsIn
-                    string extra1 = ',"price":' + f_num(t1) + ',"stop":' + f_num(liveStop) + ',"target":' + f_num(t1) + ',"reason":"TP","targetId":"TP1","realizedR":' + str.tostring(rr1, "0.00")
-                    alert(f_core("exit", setupId + ":EXIT:TP1", extra1), alert.freq_once_per_bar_close)
-            if on2 and not hit2 and (dir == 1 ? high >= t2 : low <= t2)
-                hit2 := true
-                float rr2 = riskPx > 0 ? dir * (t2 - entryPx) / riskPx : 0.0
-                if showDrawingsIn
-                    if not na(lbExit)
-                        label.delete(lbExit)
-                    lbExit := f_exit_mark(dir == 1 ? high : low, "TP2 " + f_signed(rr2), color.new(#3DDC97, 0))
-                if not staxMode and sendExitAlertsIn
-                    string extra2 = ',"price":' + f_num(t2) + ',"stop":' + f_num(liveStop) + ',"target":' + f_num(t2) + ',"reason":"TP","targetId":"TP2","realizedR":' + str.tostring(rr2, "0.00")
-                    alert(f_core("exit", setupId + ":EXIT:TP2", extra2), alert.freq_once_per_bar_close)
-            if on3 and not hit3 and (dir == 1 ? high >= t3 : low <= t3)
-                hit3 := true
-                float rr3 = riskPx > 0 ? dir * (t3 - entryPx) / riskPx : 0.0
-                if showDrawingsIn
-                    if not na(lbExit)
-                        label.delete(lbExit)
-                    lbExit := f_exit_mark(dir == 1 ? high : low, "TP3 " + f_signed(rr3), color.new(#147A4E, 0))
-                if not staxMode and sendExitAlertsIn
-                    string extra3 = ',"price":' + f_num(t3) + ',"stop":' + f_num(liveStop) + ',"target":' + f_num(t3) + ',"reason":"TP","targetId":"TP3","realizedR":' + str.tostring(rr3, "0.00")
-                    alert(f_core("exit", setupId + ":EXIT:TP3", extra3), alert.freq_once_per_bar_close)
-            if f_done()
-                inTrade := false
-                ended := true
-    else if ran
-        if not staxMode
-            alert(f_core("plan_cancel", setupId + ":CANCEL", ',"reason":"missed"'), alert.freq_once_per_bar_close)
-        pending := false
-        ended := true
     else
         bool expired = bar_index - bornBar > setupExpiryIn
-        bool invalidated = dir == 1 ? close < invPx : close > invPx
+        bool invalidated = dir == 1 ? close < stopPx : close > stopPx
         bool flipped = dir == 1 ? bearBos : bullBos
         string why = expired ? "expired" : invalidated ? "invalidated" : flipped ? "flipped" : sessionEnded ? "session" : ""
         if why != ""
@@ -615,36 +558,37 @@ if inTrade and sessionEnded and flatAtSessEndIn
     ended := true
 
 canTrade = inSession and targetsOk and tradesToday < pMaxTrades and not inTrade and not pending
-bool breakLong = canTrade and longsOk and bullBos and volOk and (not biasFilterIn or bias == 1)
-bool breakShort = canTrade and shortsOk and bearBos and not breakLong and volOk and (not biasFilterIn or bias == -1)
-if breakLong or breakShort
-    int side = breakLong ? 1 : -1
+longSetup = canTrade and longsOk and bullBos and barVolOk and (not biasFilterIn or bias == 1)
+shortSetup = canTrade and shortsOk and bearBos and barVolOk and (not biasFilterIn or bias == -1)
+if longSetup or shortSetup
+    int side = longSetup ? 1 : -1
     float entryLvl = side == 1 ? rangeHigh : rangeLow
-    float slRaw = side == 1 ? math.min(rangeLow, nz(bullLegLow, rangeLow)) : math.max(rangeHigh, nz(bearLegHigh, rangeHigh))
+    float slRaw = side == 1 ? rangeLow : rangeHigh
     float sl = side == 1 ? slRaw - slBufferTicksIn * tick : slRaw + slBufferTicksIn * tick
     float riskPts = side == 1 ? entryLvl - sl : sl - entryLvl
     bool valid = riskPts >= minStopTicksIn * tick and (maxStopPtsIn <= 0 or riskPts <= maxStopPtsIn)
-    int bosBar = bar_index
+    int swingBar = side == 1 ? rangeHighBar : rangeLowBar
     int clock = hour(time, tzIn) * 60 + minute(time, tzIn)
     bool gradeSess = (clock >= 180 and clock < 360) or (clock >= 500 and clock < 690)
-    string grade = f_grade(side == 1 ? bullDisp : bearDisp, side == 1 ? bias == 1 : bias == -1, volume > volSma, gradeSess, bar_index - bosBar <= fvgWindowIn)
+    bool timeOk = not na(swingBar) and bar_index - swingBar <= breakWindowIn
+    string grade = f_grade(math.abs(close - open) >= atr, side == 1 ? bias == 1 : bias == -1, volume > volSma, gradeSess, timeOk)
     bool takeGrade = minGradeIn == "Off" or grade == "A+" or (minGradeIn == "A" and grade == "A")
     if valid and takeGrade
+        pending := true
         armed := true
-        pending := false
-        inTrade := true
+        inTrade := false
         dir := side
         bornBar := bar_index
-        fillBar := bar_index
-        bosAt := bosBar
+        fillBar := na
+        bosAt := bar_index
         bosPx := entryLvl
         entryPx := entryLvl
         stopPx := sl
         liveStop := sl
         riskPx := riskPts
-        invPx := sl
-        fvgTop := math.max(rangeHigh, rangeLow)
-        fvgBot := math.min(rangeHigh, rangeLow)
+        zoneHi := rangeHigh
+        zoneLo := rangeLow
+        zoneFrom := math.min(na(rangeHighBar) ? bar_index : rangeHighBar, na(rangeLowBar) ? bar_index : rangeLowBar)
         on1 := tp1OnIn
         on2 := tp2OnIn
         on3 := tp3OnIn
@@ -661,43 +605,17 @@ if breakLong or breakShort
         hit3 := false
         gradeNow := grade
         fpNow := f_fp()
+        levelReason := "range_break"
         setJson := '{"tpR":' + str.tostring(pTp, "0.00") + ',"slType":"' + pSl + '","minGrade":"' + minGradeIn + '","entryLevel":"' + entryLevelIn + '","direction":"' + pDir + '","breakeven":"' + pBe + '","trail":"' + pTrail + '","tp1":' + (on1 ? "true" : "false") + ',"tp2":' + (on2 ? "true" : "false") + ',"tp3":' + (on3 ? "true" : "false") + ',"w1":' + str.tostring(w1) + ',"w2":' + str.tostring(w2) + ',"w3":' + str.tostring(w3) + '}'
         footNow := str.tostring(pTp, "0.#") + "R · " + pSl + " · " + (trailOn ? "Trail" : beOn ? "BE" : "BE off") + " · " + sessShort
         setupId := syminfo.ticker + ":" + str.tostring(time) + ":" + (side == 1 ? "long" : "short")
-        tradesToday += 1
         if not staxMode
             alert(f_core("plan", setupId + ":PLAN", f_levels()), alert.freq_once_per_bar_close)
-            alert(f_core("entry", setupId + ":ENTRY", f_levels()), alert.freq_once_per_bar_close)
-        else
-            alert(f_stax(side), alert.freq_once_per_bar_close)
-        bool stoppedNow = side == 1 ? low <= sl : high >= sl
-        if stoppedNow
-            inTrade := false
-            ended := true
-            if not staxMode and sendExitAlertsIn
-                alert(f_core("exit", setupId + ":EXIT:SL", ',"price":' + f_num(sl) + ',"stop":' + f_num(sl) + ',"target":' + f_num(nearPx) + ',"reason":"SL","targetId":"STOP","realizedR":"-1.00"'), alert.freq_once_per_bar_close)
-        else
-            if on1 and (side == 1 ? high >= t1 : low <= t1)
-                hit1 := true
-            if on2 and (side == 1 ? high >= t2 : low <= t2)
-                hit2 := true
-            if on3 and (side == 1 ? high >= t3 : low <= t3)
-                hit3 := true
-            if not staxMode and sendExitAlertsIn
-                if hit1
-                    alert(f_core("exit", setupId + ":EXIT:TP1", ',"price":' + f_num(t1) + ',"stop":' + f_num(liveStop) + ',"target":' + f_num(t1) + ',"reason":"TP","targetId":"TP1","realizedR":' + str.tostring(pTp, "0.00")), alert.freq_once_per_bar_close)
-                if hit2
-                    alert(f_core("exit", setupId + ":EXIT:TP2", ',"price":' + f_num(t2) + ',"stop":' + f_num(liveStop) + ',"target":' + f_num(t2) + ',"reason":"TP","targetId":"TP2","realizedR":' + str.tostring(pTp * 2.0, "0.00")), alert.freq_once_per_bar_close)
-                if hit3
-                    alert(f_core("exit", setupId + ":EXIT:TP3", ',"price":' + f_num(t3) + ',"stop":' + f_num(liveStop) + ',"target":' + f_num(t3) + ',"reason":"TP","targetId":"TP3","realizedR":' + str.tostring(pTp * 3.0, "0.00")), alert.freq_once_per_bar_close)
-            if f_done()
-                inTrade := false
-                ended := true
 
 // Retire the previous drawing set before the new one is created.
 if armed and showDrawingsIn
     bool destroy = not keepClosedIn
-    f_box_end(fvgBox, destroy)
+    f_box_end(rangeBox, destroy)
     f_line_end(lnEn, destroy)
     f_line_end(lnSl, destroy)
     f_line_end(ln1, destroy)
@@ -709,10 +627,10 @@ if armed and showDrawingsIn
     f_lab_end(lb2, destroy)
     f_lab_end(lb3, destroy)
     f_lab_end(lbBos, destroy)
-    f_lab_end(lbFvg, destroy)
+    f_lab_end(lbRange, destroy)
     f_lab_end(lbFill, destroy)
     f_lab_end(lbExit, destroy)
-    fvgBox := na
+    rangeBox := na
     lnEn := na
     lnSl := na
     ln1 := na
@@ -724,15 +642,15 @@ if armed and showDrawingsIn
     lb2 := na
     lb3 := na
     lbBos := na
-    lbFvg := na
+    lbRange := na
     lbFill := na
     lbExit := na
     int left = math.max(0, bornBar - 24)
     int right = bar_index
-    float zoneTop = math.max(fvgTop, fvgBot)
-    float zoneBot = math.min(fvgTop, fvgBot)
+    float zoneTop = math.max(zoneHi, zoneLo)
+    float zoneBot = math.min(zoneHi, zoneLo)
     color sideInk = dir == 1 ? color.new(#4C8DFF, 0) : color.new(#FF8A3D, 0)
-    fvgBox := box.new(math.max(0, bornBar - 2), zoneTop, bornBar, zoneBot, border_color = color.new(sideInk, 0), border_width = 2, border_style = line.style_solid, bgcolor = color.new(sideInk, 70))
+    rangeBox := box.new(math.max(0, zoneFrom), zoneTop, bornBar, zoneBot, border_color = color.new(sideInk, 0), border_width = 2, border_style = line.style_solid, bgcolor = color.new(sideInk, 70))
     lnEn := line.new(left, entryPx, right, entryPx, color = color.new(#E6EAF2, 0), style = line.style_solid, width = 2)
     lnSl := line.new(left, stopPx, right, stopPx, color = color.new(#FF5C6C, 0), style = line.style_solid, width = 3)
     lbEn := f_price_tag(right, entryPx, "ENTRY  " + f_num(entryPx), color.new(#E6EAF2, 0))
@@ -746,9 +664,8 @@ if armed and showDrawingsIn
     if on3
         ln3 := line.new(left, t3, right, t3, color = color.new(#147A4E, 0), style = line.style_solid, width = 3)
         lb3 := f_price_tag(right, t3, "TP3  " + f_num(t3) + "   " + str.tostring(rUnit * 3.0, "0.#") + "R", color.new(#147A4E, 0))
-    lbBos := f_note(bosAt, bosPx, "BOS")
-    lbFvg := f_note(bornBar, dir == 1 ? low : high, "RANGE")
-    lbFill := f_fill_mark()
+    lbBos := f_note(bosAt, bosPx, "BREAK")
+    lbRange := f_note(zoneFrom, (zoneHi + zoneLo) / 2.0, "RANGE")
 
 if showDrawingsIn and not na(lnEn) and (pending or inTrade or ended)
     int left = math.max(0, bornBar - 24)
@@ -765,7 +682,7 @@ if showDrawingsIn and not na(lnEn) and (pending or inTrade or ended)
     f_tag_x(lb3, right)
 
 if ended and not armed and showDrawingsIn
-    f_box_end(fvgBox, false)
+    f_box_end(rangeBox, false)
     f_line_end(lnEn, false)
     f_line_end(lnSl, false)
     f_line_end(ln1, false)
@@ -777,7 +694,7 @@ if ended and not armed and showDrawingsIn
     f_lab_end(lb2, false)
     f_lab_end(lb3, false)
     f_lab_end(lbBos, false)
-    f_lab_end(lbFvg, false)
+    f_lab_end(lbRange, false)
     f_lab_end(lbFill, false)
     f_lab_end(lbExit, false)
 ended := false
@@ -861,7 +778,7 @@ if showTableIn and not na(infoTbl)
         array.push(hudLab, "Trades")
         array.push(hudVal, str.tostring(tradesToday) + " / " + str.tostring(pMaxTrades))
         array.push(hudLab, "Watching")
-        array.push(hudVal, "BOS")
+        array.push(hudVal, "range")
     int p = hudPad
     if p == 1
         table.cell(infoTbl, 0, 0, "", bgcolor = color.new(#0B0F19, 100), height = 6)

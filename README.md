@@ -1,7 +1,9 @@
 # Breakaway Bot — Stax Edition
 
-An open Pine Script v6 re-implementation of the Breakaway model (range → break of
-structure → fair value gap → retrace entry) with alerts formatted for the
+An open Pine Script v6 re-implementation of the Breakaway model. StaxBot 2.3 arms a
+plan when a bar closes through a swing range. A short rests on the broken shelf and
+the stop sits above the rally high. A later bar that trades back to that shelf is the
+entry. Alerts are formatted for the
 [StaxInvesting](https://staxinvesting.com) webhook, so Stax can execute what the
 strategy signals.
 
@@ -18,7 +20,7 @@ original's exact rules are not public, this README says what this version does i
 
 | Path | Purpose |
 | --- | --- |
-| `staxbot_2_3.pine` | The plan. Saved in TradingView as **StaxBot 2.3**. The legend reads **Stax 2.3**. The HUD reads **StaxBot 2.3**. A short enters the broken shelf and the stop is the far side of that range. |
+| `staxbot_2_3.pine` | The plan. Saved in TradingView as **StaxBot 2.3**. The legend reads **Stax 2.3**. The HUD reads **STAXBOT 2.3**. A short rests on the broken shelf. The stop is the far side of that range. The break is the plan, and a later retest is the entry. |
 | `staxbot_2_2.pine` | Previous chart. Its Medium stop is the displacement candle, and that is the script that filled the day at 5/5. |
 | `bot/execution_bot.py` | The paper desk at `http://127.0.0.1:8791`. It sizes contracts from its own risk setting and uses the prices in the alert. |
 | `bot/watch.py` | Mirrors the TradingView plan on the desk. It does not invent entry, stop, or target prices. |
@@ -52,27 +54,25 @@ TradingView copies the script inputs into an alert when the alert is created. Ed
 ## How the strategy trades
 
 1. **Range** — the last confirmed swing high and swing low (`Swing Length` bars each side).
-2. **Break of structure** — a bar *closes* through the range high (bullish) or range low
-   (bearish). Optional displacement filter (`Min Break Candle Body`).
-3. **Fair value gap** — within `FVG Must Form Within N Bars Of The Break`, a three-candle
-   imbalance prints in the direction of the break (bull: `low > high[2]`, bear: `high < low[2]`).
-4. **Entry** — one resting **limit order** at the FVG near edge (default), midpoint (CE), or far edge.
-5. **Stop** — `Tight` (far edge of the FVG), `Medium` (displacement candle low/high), or
-   `Large` (origin of the leg: last swing that started the move), plus a tick buffer.
+   A minor lower high does not replace the rally high. A minor higher low does not replace the shelf.
+2. **Break** — a bar *closes* through the range high (bullish) or range low (bearish).
+   Optional displacement filter (`Min Break Candle Body`). A range under Min Range Height (default 2 ATR) does not arm.
+3. **Plan** — that close arms a resting limit. A short rests on the broken shelf with the stop above the rally high. A long rests on the broken high with the stop below the shelf. The HUD says ARMED. The alert is `plan` only.
+4. **Entry** — a later bar that trades back to that level, and does not trade the stop. The HUD then says LIVE, and the alert is `entry`. The break bar is not a fill.
+5. **Stop** — the far side of the range, plus the tick buffer. SL Type is Range.
 6. **Targets** — TP1, TP2, and TP3 are 1×, 2×, and 3× `Take Profit (R)` times the stop
    distance. Only enabled targets are drawn and alerted. Weights are allocation shares.
+   A preset does not change Take Profit (R).
 7. **Size** — not calculated on the chart. The paper desk sizes from its own risk setting
    after the alert arrives.
 8. **Management** — optional breakeven or a trailing ladder (Aggressive / Standard / Wide,
    same steps as the original's v1.9 release notes). The stop never moves backwards.
-   The new stop is active from the next bar.
+   Stop and target checks start the bar after the fill.
 9. **Coach filters** — direction, session preset (NY AM / NY PM / London / Asia / Overnight /
-   Custom / 24-5), volume on the displacement candle, max trades per day, minimum grade.
+   Custom / 24-5), volume on the break bar, max trades per day, minimum grade.
    Dollar loss and dollar profit are desk limits, not plan filters.
 
-The setup is cancelled if it expires, if the FVG fails the `FVG Line Check` (Strict: a close
-through the far edge of the gap; Relaxed: a close through the stop), if price reaches the
-target without filling, if structure flips the other way, or if the session/daily caps close.
+The resting plan stays while price runs to a target without tagging the entry. It is cancelled if it expires, if a bar closes beyond the stop, if a bar trades both the entry and the stop, if structure flips, or if the session ends.
 
 Everything is evaluated **once per bar on closed data**, structure only uses confirmed
 swings, and the bot holds at most **one resting order and one open position** — the same
@@ -96,8 +96,8 @@ and the input in this script that carries each one:
 | Point Value Override | 0 (auto) | Desk input. The chart does not price from it |
 | Risk Per Trade | $100 | Desk **Risk per trade**. It does not move chart prices |
 | Take Profit (R) | 1 | `Take Profit (R) = 1.0`, TP1 on, TP2 off, TP3 off |
-| FVG Line Check | Strict | `FVG Line Check = Strict` |
-| SL Type | Large | `SL Type = Large` |
+| FVG Line Check | Strict | Not in StaxBot 2.3. A close beyond the stop cancels a resting plan |
+| SL Type | Large | `SL Type = Range`. The stop is the far side of the range |
 | Breakeven / +1 Tick | Off / unchecked | `Breakeven = Off`, `BE +1 Tick Buffer = off` |
 | Trailing Stop | Off | `Trailing Stop = Off` |
 | Volume Filter | Off | `Volume Filter = Off` |
@@ -188,14 +188,13 @@ printed with the decoded contract, and the response mirrors Stax's success / err
 * **Exit alerts to Stax** — not sent, because the public webhook has no exit action.
   Generic JSON mode sends them.
 * **Daily reset** — at midnight in the selected timezone (original behaviour unknown).
-* **Extra inputs** — entry level (near edge / CE / far edge), min/max stop distance, EMA bias
-  filter (off by default), flatten at session end. They default to values that reproduce the
-  replay behaviour.
+* **Extra inputs** — entry is the broken level, stop is the far side of the range, min/max
+  stop distance, EMA bias filter (off by default), flatten at session end.
 
 ## Running it
 
 Paste `staxbot_2_3.pine` into a new Pine Editor tab and save it. The script name is
 **StaxBot 2.3**. Pasting into the StaxBot 2.2 tab keeps the old saved name, so
 TradingView will not store this update. The legend reads **Stax 2.3**
-and the HUD reads **StaxBot 2.3**. Leave SL Type on Range.
+and the HUD reads **STAXBOT 2.3**. Leave SL Type on Range. Entry Level stays Broken level.
 The strategy tester will not show order arrows: the plan is the drawing, not a broker fill.

@@ -245,32 +245,21 @@ class Market:
 
         if self.pending and i > self.pending["i"]:
             actions.extend(self._manage(bars, i, act))
+        if self.open_trade:
+            return actions
 
         if i >= 2 and self.pending is None:
             setup = self._maybe_setup(bars, i)
             if setup and setup.get("grade"):
-                self._fill_break(setup, bar, actions, act)
+                # The break arms a resting plan. It is not a fill, and this bar
+                # does not resolve the stop or a target.
+                self.pending = setup
+                if act:
+                    actions.append({"kind": "plan", **setup, "when": bar["t"]})
             elif setup and act:
                 why = "range is smaller than 2 ATR" if setup.get("small") else f"below {self.rules['min_grade']}"
                 actions.append({"kind": "skip", "side": setup.get("side", ""), "why": why})
         return actions
-
-    def _fill_break(self, setup: dict[str, Any], bar: dict[str, Any], actions: list[dict[str, Any]], act: bool) -> None:
-        direction = setup["direction"]
-        self.open_trade = {**setup, "fill_i": setup["i"], "when": bar["t"], "remaining_qty": setup["qty"]}
-        self.trade_events.append({
-            "kind": "fill", "event_id": f"{setup['setup_id']}:ENTRY", "setup": dict(setup), "when": bar["t"],
-        })
-        stop_hit = _stop_hit(bar, direction, setup["stop"], self.spec["tick"])
-        if stop_hit:
-            exits = [self._exit_event(self.open_trade, setup["stop"], "SL", bar["t"], setup["qty"], "STOP")]
-            self._finish(setup["stop"], "SL", bar["t"])
-        else:
-            exits = self._targets_hit(self.open_trade, bar, bar["t"])
-        if not act:
-            return
-        actions.append({"kind": "fill", **setup, "when": bar["t"]})
-        actions.extend({"kind": "exit", **event} for event in exits)
 
     def _maybe_setup(self, bars, i) -> dict[str, Any] | None:
         bar = bars[i]
@@ -280,7 +269,6 @@ class Market:
             direction = -1
         else:
             return None
-        bos_i = i
         span = self.range_high - self.range_low
         atr = bar.get("atr")
         if atr and span < 2 * atr:
@@ -297,12 +285,13 @@ class Market:
         risk = (entry - stop) if direction == 1 else (stop - entry)
         if risk < 8 * tick:
             return None
+        pivot_i = self.range_high_i if direction == 1 else self.range_low_i
         flags = {
             "displacement": bool(self.bull_displaced if direction == 1 else self.bear_displaced),
             "bias": _bias(bars, i, direction),
             "volume": bar["v"] > (bar.get("vol_avg") or 0),
             "session": _in_session(bar["t"]),
-            "timing": i - bos_i <= 3,
+            "timing": pivot_i is not None and i - pivot_i <= FVG_WINDOW,
         }
         setup_grade = grade_setup(flags)
         side = "long" if direction == 1 else "short"
@@ -356,33 +345,29 @@ class Market:
             self.pending = None
             return [{"kind": "cancel", "why": "expired"}] if act else []
         direction = pending["direction"]
-        invalid = bar["c"] < pending["far"] if direction == 1 else bar["c"] > pending["far"]
+        stop_level = pending["stop"]
+        invalid = bar["c"] < stop_level if direction == 1 else bar["c"] > stop_level
         if invalid:
             self.pending = None
-            return [{"kind": "cancel", "why": "gap failed"}] if act else []
+            self.last_signal = None
+            return [{"kind": "cancel", "why": "invalidated"}] if act else []
         touched = bar["l"] <= pending["entry"] if direction == 1 else bar["h"] >= pending["entry"]
-        ran = bar["h"] >= pending["target"] if direction == 1 else bar["l"] <= pending["target"]
-        if not touched and ran:
-            self.pending = None
-            return [{"kind": "cancel", "why": "missed"}] if act else []
         if not touched:
             return []
+        stop_hit = _stop_hit(bar, direction, stop_level, self.spec["tick"])
+        if stop_hit:
+            self.pending = None
+            self.last_signal = None
+            return [{"kind": "cancel", "why": "ambiguous"}] if act else []
         self.pending = None
-        stop_hit = _stop_hit(bar, direction, pending["stop"], self.spec["tick"])
+        self.last_signal = None
         self.open_trade = {**pending, "fill_i": i, "when": bar["t"], "remaining_qty": pending["qty"]}
         self.trade_events.append({
             "kind": "fill", "event_id": f"{pending['setup_id']}:ENTRY", "setup": dict(pending), "when": bar["t"],
         })
-        if stop_hit:
-            exits = [self._exit_event(self.open_trade, pending["stop"], "SL", bar["t"], pending["qty"], "STOP")]
-            self._finish(pending["stop"], "SL", bar["t"])
-        else:
-            exits = self._targets_hit(self.open_trade, bar, bar["t"])
         if not act:
             return []
-        actions = [{"kind": "fill", **pending, "when": bar["t"]}]
-        actions.extend({"kind": "exit", **event} for event in exits)
-        return actions
+        return [{"kind": "fill", **pending, "when": bar["t"]}]
 
     def _guard(self, bars, i, act: bool) -> list[dict[str, Any]]:
         trade = self.open_trade
@@ -505,7 +490,7 @@ def apply_actions(desk, actions: list[dict[str, Any]]) -> None:
         elif action["kind"] == "skip":
             desk.set_watch({"grade": None, "note": f"Skipped {action['side']} ({action['why']})"})
         elif action["kind"] == "fill":
-            desk.handle(payload_from(action, "entry", action["entry"], "fvg_retrace", action["when"]))
+            desk.handle(payload_from(action, "entry", action["entry"], "range_retest", action["when"]))
         elif action["kind"] == "exit":
             setup = action.get("setup") or action
             desk.handle({
@@ -642,7 +627,7 @@ def sync_events(desk, events: list[dict[str, Any]]) -> None:
     for event in events:
         if event["kind"] == "fill":
             setup = event["setup"]
-            payload = payload_from(setup, "entry", setup["entry"], "fvg_retrace", event["when"])
+            payload = payload_from(setup, "entry", setup["entry"], "range_retest", event["when"])
             payload["eventId"] = event["event_id"]
             desk.handle(payload)
             continue

@@ -128,6 +128,7 @@ The script on the chart is StaxBot 2.3. Add staxbot_2_3.pine as a new saved scri
 - SL Type: Range. There is no Medium choice. Do not copy the 2.2 Medium setting onto this script.
 - Entry Level: Broken level
 - Min Range Height: 2
+- Take Profit (R): 1. A preset does not change this. TP1 is 1R, TP2 is 2R, TP3 is 3R when those targets are on.
 - Alert Payload: Generic JSON (Futures / Any Webhook)
 - Send Exit Alerts: on
 - Send Stop-Update Alerts: off
@@ -148,17 +149,17 @@ You cannot open my TradingView. Tell me those settings and stop. I will create t
 After I create them, wait. When a real alert arrives, present the market, side, grade, entry, stop, and each target with its R. Do not recompute the prices.
 
 The script sends these events. Nobody types them into the message box:
-- plan, when a setup is drawn
-- plan_cancel, when that setup is cancelled
-- entry, on the break bar. The close through the shelf or the high is the fill. It does not wait for a retest.
-- exit, when a target or the stop is hit
+- plan, when a close breaks the range. The HUD says ARMED. This is not a fill.
+- plan_cancel, when that resting plan expires, a bar closes beyond the stop, a bar trades both the entry and the stop, structure flips, or the session ends
+- entry, on a later bar that trades back to the broken level and does not trade the stop. The HUD then says LIVE. The break bar does not send this.
+- exit, on a bar after the fill, when a target or the stop is hit
 - stop_update, only if Send Stop-Update Alerts is on
 
 A plan body looks like this. Prices come from the chart. There is no contract count and no dollar amount in it.
 
 {"source":"staxbot","event":"plan","eventId":"...","setupId":"TICKER:barTime:long","settingsId":"...","action":"buy","side":"long","ticker":"MNQZ2026","root":"MNQ","exchange":"...","timeframe":"...","grade":"...","price":0,"entry":0,"stop":0,"target":0,"targets":[{"id":"TP1","price":0,"allocation":1,"r":1.00}],"reason":"range_break","timestamp":"..."}
 
-An entry is the same prices with "event":"entry". An exit adds "reason" and "targetId" (TP1, TP2, TP3, STOP, or FLAT). If setupId matches the armed plan, the desk uses the plan prices.
+An entry is the same prices with "event":"entry" and "reason":"range_retest". It arrives on a later bar. An exit adds "reason" and "targetId" (TP1, TP2, TP3, STOP, or FLAT). If setupId matches the armed plan, the desk uses the plan prices.
 
 Changing the chart inputs does not change an alert that is already running. If inputs change, the HUD says INPUTS CHANGED. Delete that alert and create it again.
 

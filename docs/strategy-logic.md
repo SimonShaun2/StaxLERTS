@@ -6,8 +6,8 @@ TradingView's alert-server copy agree.
 
 ## 0. Settings resolution
 
-* A **Strategy Preset** other than `Manual` overrides Direction, Session, TP (R), SL Type,
-  Breakeven, Trailing Stop and Max Trades Per Day. All other inputs are always honoured.
+* A **Strategy Preset** other than `Manual` overrides Direction, Session, Breakeven,
+  Trailing Stop and Max Trades Per Day. Take Profit (R) and the Range stop stay on the inputs.
 * If a **Trailing Stop** preset is on, **Breakeven** is ignored — the ladder's first step is
   breakeven. (The original's rule: "Trail ON? Breakeven OFF.")
 * **Point value and dollar risk** are not chart inputs. The paper desk owns contract size.
@@ -45,17 +45,11 @@ Optional: `Min Range Height (ATR x)` rejects ranges that are too tight.
 * Bearish BOS: `close < rangeLow` and the low side is not yet broken.
 * Optional displacement filter: `|close - open| >= Min Break Candle Body × ATR`.
 
-On a BOS the bot records the bar and the **leg origin**: the lowest low (bullish) / highest
-high (bearish) since the swing that started the move, capped at `Large SL: Max Leg Lookback`.
+On a break the bot snapshots the shelf and the rally high. Those prices are the plan. A later pivot does not move them.
 
-## 4. Fair value gap
+## 4. No fair value gap
 
-* Bullish FVG on this bar: `low > high[2]` with a bullish middle candle (`close[1] > open[1]`).
-  Gap = `high[2]` (bottom) … `low` (top).
-* Bearish FVG: `high < low[2]` with a bearish middle candle. Gap = `high` (bottom) … `low[2]` (top).
-
-The FVG counts only if a same-direction BOS happened within
-`FVG Must Form Within N Bars Of The Break` bars, and only the first FVG after a BOS is used.
+StaxBot 2.3 does not detect a fair value gap and does not draw one. The broken swing is the entry. Grade timing is the age of that swing (`Break Within N Bars Of The Swing`), not the age of a gap. When Minimum Grade is Off, that timing point does not block the plan.
 
 ## 5. Coach filters (checked before a setup is created)
 
@@ -66,7 +60,7 @@ The FVG counts only if a same-direction BOS happened within
 | Max Trades Per Day | filled trades today `<` the limit |
 | Minimum Grade | Off, A (A and A+), or A+ only |
 | Enabled targets | at least one of TP1, TP2, TP3 is on |
-| Volume Filter | displacement candle volume `>` SMA × 1.0 (Above Average) or × 1.5 (Strong) |
+| Volume Filter | break-bar volume `>` SMA × 1.0 (Above Average) or × 1.5 (Strong) |
 | EMA bias | optional, see §1 |
 | One at a time | no open position and no resting order |
 
@@ -74,33 +68,38 @@ The FVG counts only if a same-direction BOS happened within
 
 | Element | Long | Short |
 | --- | --- | --- |
-| Entry | the broken high (`rangeHigh`) | the broken shelf (`rangeLow`) |
-| Stop | below the shelf, or the leg low if that is lower, minus the buffer | above the rally high, or the leg high if that is higher, plus the buffer |
+| Entry | the broken high (`rangeHigh`), as a resting limit | the broken shelf (`rangeLow`), as a resting limit |
+| Stop | below the shelf, minus the buffer | above the rally high, plus the buffer |
 | TP1 / TP2 / TP3 | entry + n × TP(R) × risk, n = 1, 2, 3, only if that target is on | entry − the same distance |
-| When it arms | the bar that closes through the level | the same bar, which is also the fill |
+| Plan | the bar that closes through the level. HUD says ARMED. Alert is `plan` only | the same |
+| Entry | a later bar that trades the broken level and does not trade the stop. HUD says LIVE | the same |
 
-StaxBot 2.3 does not enter on the fair-value-gap edge. A minor pivot high does not replace the rally high, and a minor pivot low does not replace the shelf. A range smaller than Min Range Height (default 2 ATR) does not arm and does not increment the daily trade count. The break bar draws the plan and sends the entry. A target that this bar has not reached stays open, so the lines remain on the chart while the trade is live.
+A minor pivot high does not replace the rally high, and a minor pivot low does not replace the shelf. A range smaller than Min Range Height (default 2 ATR) does not arm and does not increment the daily trade count. The break bar draws the plan and leaves it there. It does not set the trade live, and it does not send an entry. Take Profit (R) always comes from that input. A preset does not change it, so TP1 stays at that R, TP2 at twice that, and TP3 at three times that.
 
 `buffer = SL Buffer (ticks) × mintick`. The setup is skipped if the stop distance is below
 `Min Stop Distance (ticks)` or above `Max Stop Distance (points)`, or if every target toggle
 is off. Weights do not change the prices. A disabled target is omitted from the drawing,
 the HUD, and the alert.
 
-The plan is drawn on the break bar. No `strategy.entry` or `strategy.exit` is sent,
-so TradingView does not add order arrows or per-target fill tags. That same bar is the fill,
-because the close is already through the broken level. If that bar trades through the stop,
-the stop wins. A target is marked only when price actually trades there. The setup id is
-`ticker + bar time + side`, and the prices plus a `settingsId` are frozen at that bar.
+No `strategy.entry` or `strategy.exit` is sent, so TradingView does not add order arrows
+or per-target fill tags, and the Strategy Tester has no orders to report. The lines are the
+plan. The setup id is `ticker + bar time + side`, and the prices plus a `settingsId` are
+frozen when the plan arms. The settings fingerprint also includes swing length, minimum
+range, the break window, the stop buffer, and the stop-distance limits.
 
 ## 7. While the order rests
 
-Cancel the order when any of these happen:
+The plan stays on the chart while price runs to a target without tagging the entry. That is still ARMED, not a fill, and it does not use a daily trade.
+
+Cancel the resting plan when any of these happen:
 
 * `Setup Expires After N Bars` elapsed
-* a bar **closes** beyond the invalidation level (Strict = through the gap, Relaxed = through the stop)
-* price reaches the target without filling (missed trade)
-* an opposite BOS prints (structure flipped)
+* a bar **closes** beyond the stop
+* a later bar trades both the entry and the stop (the path is unknown, so there is no fill)
+* an opposite break prints
 * the session ended
+
+A later bar that trades the entry and does not trade the stop fills. That bar sends `entry` and nothing else. Stop and target checks start on the next bar.
 
 The plan drawing fades when it is cancelled or closed. Dollar loss and dollar profit caps
 are enforced by the paper desk, not by this plan.
@@ -147,8 +146,9 @@ The exit mark carries the result tag:
 Delivery is `alert()` at bar close. Create the alert with **alert() function calls only**.
 There is no order-fill message. Changing an input after the alert exists does not change
 that alert; the HUD shows `INPUTS CHANGED` and the already drawn prices stay put.
-`plan_cancel` is sent if the resting plan expires, the gap fails, price runs to the nearest
-target without filling, structure flips, or the session ends.
+`plan_cancel` is sent if the resting plan expires, a bar closes beyond the stop, a bar
+trades both the entry and the stop, structure flips, or the session ends. A run to the
+target without a retest does not cancel it and does not send an entry.
 
 Option contract encoding (Stax mode): `root + YYMMDD + C/P + strike`. Expiration is today +
 `Days To Expiration`, rolled forward off weekends. Strike is `close` rounded up (calls) or down
