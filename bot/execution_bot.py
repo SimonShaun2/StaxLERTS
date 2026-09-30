@@ -32,7 +32,11 @@ from zoneinfo import ZoneInfo
 
 NY = ZoneInfo("America/New_York")
 STATIC = Path(__file__).resolve().parent / "static" / "index.html"
-POINT_VALUES = {"MNQ": 2.0, "NQ": 20.0, "MES": 5.0, "ES": 50.0, "MYM": 0.5, "YM": 5.0, "M2K": 5.0, "RTY": 50.0}
+POINT_VALUES = {
+    "MNQ": 2.0, "NQ": 20.0, "MES": 5.0, "ES": 50.0, "MYM": 0.5, "YM": 5.0, "M2K": 5.0, "RTY": 50.0,
+    "MGC": 10.0, "GC": 100.0,
+}
+ALLOWED_GRADES = {"A", "A+"}
 
 
 def now_ny() -> datetime:
@@ -68,10 +72,11 @@ class Desk:
         self.starting_equity = 50_000.0
         self.equity = 50_000.0
         self.max_trades = 5
-        self.max_daily_loss = 300.0
+        self.max_daily_loss = 750.0
         self.daily_target = 0.0
         self.point_override = 0.0
         self.forward_url = ""
+        self.watch = {"symbol": "MGC", "price": None, "grade": None, "note": "Starting the MGC watch"}
         self.day = now_ny().date()
         self.day_start_equity = self.equity
         self.trades_today = 0
@@ -99,6 +104,7 @@ class Desk:
                 "pointOverride": self.point_override,
                 "forwardUrl": self.forward_url,
                 "killed": self.killed,
+                "watch": dict(self.watch),
                 "position": pos,
                 "fills": list(reversed(self.fills[-30:])),
                 "activity": list(reversed(self.activity[-40:])),
@@ -138,6 +144,10 @@ class Desk:
             self.activity.clear()
             self.killed = False
             self._note("RESET", "Paper book reset to $50,000")
+
+    def set_watch(self, info: dict[str, Any]) -> None:
+        with self.lock:
+            self.watch.update(info)
 
     def handle(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
@@ -196,6 +206,10 @@ class Desk:
         if side not in ("long", "short"):
             self._note("REFUSED", "Side must be long or short")
             return self._result(False, "Side must be long or short")
+        grade = payload.get("grade")
+        if grade and grade not in ALLOWED_GRADES:
+            self._note("SKIPPED", f"{grade} is below A. Only A (3) and A+ (5) are taken.")
+            return self._result(False, "Grade below A")
         root = str(payload.get("root") or payload.get("ticker") or "MNQ")
         pv = point_value(root[:3] if root[:3] in POINT_VALUES else root, self.point_override)
         risk_pts = abs(price - stop)
@@ -215,11 +229,13 @@ class Desk:
             "riskDollars": risk_pts * qty * pv,
             "openedAt": when.isoformat(),
             "reason": payload.get("reason") or "fvg_retrace",
+            "grade": grade or "",
         }
         self.trades_today += 1
+        tag = f"{grade} " if grade else ""
         self._note(
             "TAKEN",
-            f"{side.upper()} {qty} {ticker} @ {price:.2f}  stop {stop:.2f}  target {target:.2f}",
+            f"{tag}{side.upper()} {qty} {ticker} @ {price:.2f}  stop {stop:.2f}  target {target:.2f}",
         )
         self._forward(payload)
         return self._result(True, "Trade taken", self.position)
@@ -481,7 +497,9 @@ def main() -> int:
         return selftest()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.demo_running = False
-    print(f"Breakaway execution bot listening on http://127.0.0.1:{args.port}")
+    from mgc_watch import start_watcher
+    start_watcher(DESK)
+    print(f"Breakaway execution bot listening on http://127.0.0.1:{args.port}  (watching MGC, A=3 A+=5)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

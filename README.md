@@ -40,7 +40,9 @@ Open the desk, then in TradingView set **Alert Payload** to **Generic JSON** and
 
 An entry alert opens the paper position at the signal price with the stop and target from the strategy. An exit alert closes it and books P/L using the contract point value (MNQ = $2). The desk refuses a new trade when the daily loss cap, the profit target, or the max-trades count is hit, or when a position is already open.
 
-**Take sample trades** on the desk runs two MNQ round-trips so you can see a fill without waiting for the chart. Leave the forward URL blank for MNQ. Stax's webhook expects an options ticker (`SPY260930C660.0`), not a futures root. Paste that URL only when the chart is the underlying and the payload is **Stax Options Webhook**.
+**Take sample trades** on the desk runs two MNQ round-trips so you can see a fill without waiting for the chart. Leave the forward URL blank for futures. Stax's webhook expects an options ticker (`SPY260930C660.0`), not a futures root. Paste that URL only when the chart is the underlying and the payload is **Stax Options Webhook**.
+
+The desk also watches Micro Gold itself (`MGC=F`, 5-minute bars) and takes only A and A+ Breakaway setups. A is 3 contracts. A+ is 5. MGC is $10 per point. A setup that needs a stop wider than the $750 daily loss cap is skipped. A+ requires displacement, EMA bias, above-average volume, a London (03:00–06:00) or NY gold (08:20–11:30) session, and a gap within 3 bars of the break. A is four of those five, and one of the four has to be displacement or the session.
 
 ## How the strategy trades
 

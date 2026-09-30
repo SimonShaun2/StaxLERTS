@@ -81,7 +81,7 @@
 <header>
   <div>
     <h1>Breakaway desk</h1>
-    <div class="sub">This process takes the trade. The chart only sends the setup.</div>
+    <div class="sub" id="watch">Watching MGC. A takes 3 contracts, A+ takes 5.</div>
   </div>
   <div class="pill" id="status">Paper · starting</div>
 </header>
@@ -112,10 +112,10 @@
       <label>Max trades per day</label>
       <input id="maxTrades" type="number" min="1" value="5" />
       <label>Max daily loss ($ , 0 = off)</label>
-      <input id="maxDailyLoss" type="number" min="0" value="300" />
+      <input id="maxDailyLoss" type="number" min="0" value="750" />
       <label>Daily profit target ($ , 0 = off)</label>
       <input id="dailyTarget" type="number" min="0" value="0" />
-      <label>Point value override (0 = MNQ $2)</label>
+      <label>Point value override (0 = MGC $10)</label>
       <input id="pointOverride" type="number" min="0" step="0.5" value="0" />
       <label>Forward entries to this URL (blank = paper only)</label>
       <input id="forwardUrl" placeholder="https://api.staxinvesting.com/webhook/trade-signal" />
@@ -138,8 +138,11 @@ const cls = (n) => n > 0 ? "up" : n < 0 ? "down" : "";
 async function refresh() {
   const state = await (await fetch("/api/state")).json();
   const status = document.getElementById("status");
-  status.textContent = state.killed ? "Killed · not taking trades" : "Paper · taking trades";
+  const watch = state.watch || {};
+  status.textContent = state.killed ? "Killed · not taking trades" : "MGC · paper · A and A+";
   status.className = "pill" + (state.killed ? " off" : "");
+  const price = watch.price ? " · " + Number(watch.price).toFixed(1) : "";
+  document.getElementById("watch").textContent = (watch.note || "Watching MGC. A takes 3, A+ takes 5.") + price;
   document.getElementById("equity").textContent = money(state.equity);
   const daily = document.getElementById("daily");
   daily.textContent = money(state.dailyPnl);
@@ -154,7 +157,8 @@ async function refresh() {
   } else {
     box.className = "pos live";
     const px = pos.entry == null ? "market" : Number(pos.entry).toFixed(2);
-    box.innerHTML = `<h3>${pos.side.toUpperCase()} ${pos.qty} ${pos.ticker}</h3>
+    const grade = pos.grade ? pos.grade + " " : "";
+    box.innerHTML = `<h3>${grade}${pos.side.toUpperCase()} ${pos.qty} ${pos.ticker}</h3>
       <div class="meta">Taken ${pos.openedAt}</div>
       <div class="row"><div>Entry ${px}</div><div>Stop ${pos.stop ?? "—"}</div><div>Target ${pos.target ?? "—"}</div></div>`;
   }
