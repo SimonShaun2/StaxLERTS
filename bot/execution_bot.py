@@ -24,7 +24,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -32,6 +32,18 @@ from zoneinfo import ZoneInfo
 
 NY = ZoneInfo("America/New_York")
 STATIC = Path(__file__).resolve().parent / "static" / "index.html"
+# Tradeify Select 25K evaluation. The trail updates at 5:00 PM New York
+# and is enforced the moment equity touches it. One day cannot be more
+# than 40% of total profit, so the day stops at 40% of the $1,500 target.
+SELECT_START = 25_000.0
+SELECT_TARGET = 1_500.0
+SELECT_TRAIL = 1_000.0
+SELECT_LOCK = 100.0
+SELECT_CONSISTENCY = 0.40
+SELECT_DAY_CAP = SELECT_TARGET * SELECT_CONSISTENCY
+SELECT_MAX_RISK = 250.0
+MICROS = {"MNQ", "MES", "MYM", "MGC", "M2K"}
+MINIS = {"NQ", "ES", "YM", "GC", "RTY"}
 POINT_VALUES = {
     "MNQ": 2.0, "NQ": 20.0, "MES": 5.0, "ES": 50.0, "MYM": 0.5, "YM": 5.0, "M2K": 5.0, "RTY": 50.0,
     "MGC": 10.0, "GC": 100.0,
@@ -61,23 +73,48 @@ def parse_time(value: Any) -> datetime:
 def point_value(root: str, override: float) -> float:
     if override > 0:
         return override
-    return POINT_VALUES.get((root or "").upper(), 2.0)
+    return POINT_VALUES.get(contract_key(root), 2.0)
+
+
+def contract_key(root: str) -> str:
+    root = (root or "").upper()
+    for name in ("MNQ", "MES", "MYM", "MGC", "M2K", "RTY", "NQ", "ES", "YM", "GC"):
+        if root.startswith(name):
+            return name
+    return root
+
+
+def session_date(when: datetime) -> datetime.date:
+    """Tradeify's session ends at 5:00 PM New York. After that, it is the next day."""
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=NY)
+    else:
+        when = when.astimezone(NY)
+    if (when.hour, when.minute) >= (17, 0):
+        return when.date() + timedelta(days=1)
+    return when.date()
 
 
 class Desk:
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        self.starting_equity = 50_000.0
-        self.equity = 50_000.0
+        self.starting_equity = SELECT_START
+        self.equity = SELECT_START
         self.max_trades = 5
-        self.max_daily_loss = 750.0
-        self.daily_target = 0.0
+        self.max_daily_loss = 0.0
+        self.daily_target = SELECT_DAY_CAP
         self.point_override = 0.0
         self.forward_url = ""
-        self.watch = {"symbol": "MNQ MES MGC MYM", "price": None, "grade": None, "note": "Watching MNQ, MES, MGC, and MYM for A+ setups. Target is 2R."}
-        self.day = now_ny().date()
+        self.watch = {"symbol": "MNQ MES MGC MYM", "price": None, "grade": None, "note": "Select 25K. Micros only, 10 contract max. Day stops at $600."}
+        self.day = session_date(now_ny())
         self.day_start_equity = self.equity
         self.trades_today = 0
+        self.days_traded = 0
+        self.day_pnls: dict[Any, float] = {}
+        self.peak_eod = SELECT_START
+        self.floor = SELECT_START - SELECT_TRAIL
+        self.floor_locked = False
+        self.failed = False
         self.position: dict[str, Any] | None = None
         self.fills: list[dict[str, Any]] = []
         self.activity: list[dict[str, Any]] = []
@@ -90,11 +127,25 @@ class Desk:
             pos = dict(self.position) if self.position else None
             if pos:
                 pos["openRisk"] = round(pos["riskDollars"], 2)
+            profit = self.equity - self.starting_equity
+            best = max(self.day_pnls.values(), default=0.0)
+            share = (best / profit) if profit > 0 else 0.0
+            passed = (not self.failed) and profit >= SELECT_TARGET and self.days_traded >= 3 and best <= profit * SELECT_CONSISTENCY + 0.01
             return {
                 "mode": "paper",
+                "account": "Tradeify Select 25K",
                 "listening": not self.killed,
                 "equity": round(self.equity, 2),
                 "dailyPnl": round(daily, 2),
+                "profit": round(profit, 2),
+                "passTarget": SELECT_TARGET,
+                "floor": round(self.floor, 2),
+                "floorLocked": self.floor_locked,
+                "failed": self.failed,
+                "passed": passed,
+                "bestDay": round(best, 2),
+                "consistency": round(share, 4),
+                "daysTraded": self.days_traded,
                 "tradesToday": self.trades_today,
                 "maxTrades": self.max_trades,
                 "maxDailyLoss": self.max_daily_loss,
@@ -134,14 +185,20 @@ class Desk:
     def reset_book(self) -> None:
         with self.lock:
             self.equity = self.starting_equity
-            self.day = now_ny().date()
+            self.day = session_date(now_ny())
             self.day_start_equity = self.equity
             self.trades_today = 0
             self.position = None
             self.fills.clear()
             self.activity.clear()
             self.killed = False
-            self._note("RESET", "Paper book reset to $50,000")
+            self.days_traded = 0
+            self.day_pnls = {}
+            self.peak_eod = SELECT_START
+            self.floor = SELECT_START - SELECT_TRAIL
+            self.floor_locked = False
+            self.failed = False
+            self._note("RESET", "Paper book reset to the $25,000 Select evaluation")
 
     def set_watch(self, info: dict[str, Any]) -> None:
         with self.lock:
@@ -165,12 +222,31 @@ class Desk:
             return self._result(False, f"Unknown event {event!r}")
 
     def _roll_day(self, when: datetime) -> None:
-        if when.date() != self.day:
-            self.day = when.date()
+        session = session_date(when)
+        if session != self.day:
+            self._apply_eod()
+            self.day = session
             self.day_start_equity = self.equity
             self.trades_today = 0
 
+    def _apply_eod(self) -> None:
+        if self.equity > self.peak_eod:
+            self.peak_eod = self.equity
+        if self.peak_eod >= self.starting_equity + SELECT_TRAIL + SELECT_LOCK:
+            self.floor = self.starting_equity + SELECT_LOCK
+            self.floor_locked = True
+        else:
+            self.floor = max(self.floor, self.peak_eod - SELECT_TRAIL)
+
+    def _check_bust(self) -> None:
+        if self.equity <= self.floor:
+            self.failed = True
+            self.killed = True
+            self._note("FAILED", f"Trailing drawdown hit at {self.floor:.0f}. The evaluation is over.")
+
     def _blocked(self) -> str | None:
+        if self.failed:
+            return "Select evaluation failed. Trailing drawdown was hit."
         if self.killed:
             return "Kill switch is on"
         daily = self.equity - self.day_start_equity
@@ -211,6 +287,18 @@ class Desk:
         if risk_pts <= 0:
             self._note("REFUSED", "Stop is on top of the entry")
             return self._result(False, "Stop is on top of the entry")
+        key = contract_key(root)
+        if key in MICROS and qty > 10:
+            self._note("REFUSED", f"{qty} micros is over the Select cap of 10.")
+            return self._result(False, "Over the 10 micro contract cap")
+        if key in MINIS and qty > 1:
+            self._note("REFUSED", f"{qty} minis is over the Select cap of 1.")
+            return self._result(False, "Over the 1 mini contract cap")
+        risk_dollars = risk_pts * qty * pv
+        room = self.equity - self.floor
+        if risk_dollars > SELECT_MAX_RISK or risk_dollars >= room:
+            self._note("REFUSED", f"Stop risks ${risk_dollars:.0f}. The trail has ${room:.0f} left, and one trade is capped at ${SELECT_MAX_RISK:.0f}.")
+            return self._result(False, "Stop risks more than the trailing drawdown allows")
         ticker = str(payload.get("ticker") or root)
         self.position = {
             "ticker": ticker,
@@ -226,6 +314,8 @@ class Desk:
             "reason": payload.get("reason") or "fvg_retrace",
             "grade": grade or "",
         }
+        if self.trades_today == 0:
+            self.days_traded += 1
         self.trades_today += 1
         tag = f"{grade} " if grade else ""
         self._note(
@@ -301,6 +391,8 @@ class Desk:
         risk = pos["riskDollars"] or 0
         realized_r = pnl / risk if risk else None
         self.equity += pnl
+        self.day_pnls[self.day] = self.day_pnls.get(self.day, 0.0) + pnl
+        self._check_bust()
         fill = {
             "ticker": pos["ticker"],
             "side": pos["side"],
@@ -399,7 +491,7 @@ def selftest() -> int:
         assert snap["position"] is None, snap["position"]
         assert snap["tradesToday"] == 2, snap["tradesToday"]
         # Long 2 MNQ, 36 points * $2 * 2 = +144. Short 1 MNQ, -30 points * $2 = -60. Net +84.
-        assert abs(snap["equity"] - 50084.0) < 0.01, snap["equity"]
+        assert abs(snap["equity"] - 25084.0) < 0.01, snap["equity"]
         assert abs(snap["dailyPnl"] - 84.0) < 0.01, snap["dailyPnl"]
         refused = desk.handle(demo_script()[0])
         # max trades default 5, so a third entry is allowed. Hit the cap instead.

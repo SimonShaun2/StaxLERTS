@@ -28,8 +28,9 @@ FVG_WINDOW = 5
 EXPIRY = 20
 QTY_APLUS = 5
 REWARD = 2.0
-# One full stop on 5 contracts has to fit under the desk's daily loss cap.
-MAX_STOP_DOLLARS = 750.0
+# One full stop has to leave the Select 25K $1,000 trail intact.
+# The desk caps a single trade at $250.
+MAX_STOP_DOLLARS = 250.0
 MARKETS = (
     {"root": "MNQ", "yahoo": "MNQ=F", "tick": 0.25, "point": 2.0},
     {"root": "MES", "yahoo": "MES=F", "tick": 0.25, "point": 5.0},
@@ -204,7 +205,7 @@ class Market:
                 if act:
                     actions.append({"kind": "rest", **setup})
             elif setup and act:
-                why = "stop wider than the $750 daily cap" if setup.get("wide") else "below A+"
+                why = "stop risks more than $250" if setup.get("wide") else "below A+"
                 actions.append({"kind": "skip", "side": setup.get("side", ""), "why": why})
         return actions
 
