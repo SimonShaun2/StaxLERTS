@@ -299,7 +299,9 @@ class Desk:
                 result = self._take_option(payload, when)
             else:
                 event = payload.get("event") or "entry"
-                if event == "entry":
+                if event == "ping":
+                    result = self._result(True, "Connection test. Not a trade.")
+                elif event == "entry":
                     result = self._take_future(payload, when)
                 elif event == "exit":
                     result = self._on_exit(payload, when)
@@ -771,6 +773,9 @@ class Desk:
             try:
                 with urllib.request.urlopen(req, timeout=5) as resp:
                     note = f"Sam accepted ({resp.status})"
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", "replace")[:160].replace("\n", " ")
+                note = f"Sam forward failed: HTTP {exc.code} {detail}"
             except (urllib.error.URLError, TimeoutError) as exc:
                 note = f"Sam forward failed: {exc}"
             with self.lock:
@@ -919,6 +924,12 @@ def selftest() -> int:
         assert desk.inbox == []
         missing = desk.release_to_sam("missing")
         assert missing["data"]["released"] == 0, missing
+        plan_before = desk.plan
+        position_before = desk.position
+        ping = desk.handle({"source": "staxbot", "event": "ping", "eventId": "ping-1", "note": "Connection test. Not a trade."})
+        assert ping["success"] is True, ping
+        assert desk.plan is plan_before
+        assert desk.position is position_before
         print("selftest: PASS", snap["equity"], snap["dailyPnl"])
         return 0
     except AssertionError as exc:

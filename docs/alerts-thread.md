@@ -55,7 +55,8 @@ Order is alert, then this chat, then Sam. The desk holds each accepted alert in
 
 Read inbox. When it has an alert, present it in this chat first: market, side,
 grade, entry, stop, each target with its R, and the contract count. Apply the
-session brief's accounts and copy count. This is a paper alert. If inbox is
+session brief's accounts and copy count. This is a paper alert. A ping is a
+connection test, not a trade: say that and do not invent prices. If inbox is
 empty, say the desk is waiting. Do not invent a setup.
 
 After that presentation is in the chat, POST http://127.0.0.1:8791/api/release
