@@ -1,4 +1,6 @@
-"""Watch MNQ, MES, MGC, and MYM 5-minute bars and take only A+ Breakaway setups.
+"""Watch MES, MGC, and MYM 5-minute bars and take only A+ Breakaway setups.
+
+MNQ is left off the watch. It is too expensive for the Select 25K account.
 
 A setup is a close through the last confirmed swing, then a fair value gap in
 that direction. Five checks grade it:
@@ -32,7 +34,6 @@ REWARD = 2.0
 # The desk caps a single trade at $250.
 MAX_STOP_DOLLARS = 250.0
 MARKETS = (
-    {"root": "MNQ", "yahoo": "MNQ=F", "tick": 0.25, "point": 2.0},
     {"root": "MES", "yahoo": "MES=F", "tick": 0.25, "point": 5.0},
     {"root": "MGC", "yahoo": "MGC=F", "tick": 0.1, "point": 10.0},
     {"root": "MYM", "yahoo": "MYM=F", "tick": 1.0, "point": 0.5},
@@ -430,7 +431,7 @@ def watch_once(desk=None) -> str:
             print(spec["root"], exc)
     note = " · ".join(lines)
     if desk:
-        desk.set_watch({"symbol": "MNQ", "grade": grade, "note": note})
+        desk.set_watch({"symbol": "MES MGC MYM", "grade": grade, "note": note})
     return note
 
 
@@ -500,9 +501,9 @@ def start_watcher(desk) -> None:
                     except Exception as exc:
                         lines.append(f"{spec['root']} feed error")
                         print(spec["root"], exc)
-                desk.set_watch({"symbol": "MNQ MES MGC MYM", "grade": grade, "note": " · ".join(lines)})
+                desk.set_watch({"symbol": "MES MGC MYM", "grade": grade, "note": " · ".join(lines)})
             except Exception as exc:
-                desk.set_watch({"symbol": "MNQ MES MGC MYM", "note": f"Watch error: {exc}"})
+                desk.set_watch({"symbol": "MES MGC MYM", "note": f"Watch error: {exc}"})
             time.sleep(30)
 
     threading.Thread(target=loop, name="mgc-watch", daemon=True).start()

@@ -40,7 +40,7 @@ Open the desk, then in TradingView set **Alert Payload** to **Generic JSON** and
 
 An entry alert opens the paper position at the signal price with the stop and target from the strategy. An exit alert closes it and books P/L using the contract point value (MNQ = $2). The desk refuses a new trade when the daily loss cap, the profit target, or the max-trades count is hit, or when a position is already open.
 
-**Take sample trades** on the desk runs two MNQ round-trips so you can see a fill without waiting for the chart. Leave the forward URL blank for futures. Stax's webhook expects an options ticker (`SPY260930C660.0`), not a futures root. Paste that URL only when the chart is the underlying and the payload is **Stax Options Webhook**.
+**Take sample trades** on the desk runs two MES round-trips so you can see a fill without waiting for the chart. MNQ is not on the watch. Leave the forward URL blank for futures. Stax's webhook expects an options ticker (`SPY260930C660.0`), not a futures root. Paste that URL only when the chart is the underlying and the payload is **Stax Options Webhook**.
 
 StaxBot is one script. Another watch is a change to Minimum Grade and Take Profit on the chart, not a new file. The paper desk is a Tradeify Select 25K evaluation: $25,000 start, $1,500 profit target, $1,000 end-of-day trailing drawdown enforced in real time, no daily loss limit, and a 40% consistency rule. The day stops at $600 so the best day can still be 40% of the $1,500 target. Max size is 1 mini or 10 micros. One trade is capped at $250 of stop risk so a single stop cannot spend the trail. An alert from the chart is taken with the grade and target in that alert.
 

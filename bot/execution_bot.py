@@ -105,7 +105,7 @@ class Desk:
         self.daily_target = SELECT_DAY_CAP
         self.point_override = 0.0
         self.forward_url = ""
-        self.watch = {"symbol": "MNQ MES MGC MYM", "price": None, "grade": None, "note": "Select 25K. Micros only, 10 contract max. Day stops at $600."}
+        self.watch = {"symbol": "MES MGC MYM", "price": None, "grade": None, "note": "Select 25K. Watching MES, MGC, and MYM. MNQ is excluded."}
         self.day = session_date(now_ny())
         self.day_start_equity = self.equity
         self.trades_today = 0
@@ -281,7 +281,10 @@ class Desk:
             self._note("REFUSED", "Side must be long or short")
             return self._result(False, "Side must be long or short")
         grade = payload.get("grade")
-        root = str(payload.get("root") or payload.get("ticker") or "MNQ")
+        root = str(payload.get("root") or payload.get("ticker") or "MES")
+        if contract_key(root) in {"MNQ", "NQ"}:
+            self._note("REFUSED", "MNQ is off the watch. It is too expensive for this Select account.")
+            return self._result(False, "MNQ is excluded")
         pv = point_value(root[:3] if root[:3] in POINT_VALUES else root, self.point_override)
         risk_pts = abs(price - stop)
         if risk_pts <= 0:
@@ -444,30 +447,30 @@ def demo_script() -> list[dict[str, Any]]:
     stamp = now_ny().strftime("%Y-%m-%dT%H:%M:%S%z")
     long_entry = {
         "source": "breakaway-bot", "event": "entry", "action": "buy", "side": "long",
-        "ticker": "MNQZ2026", "root": "MNQ", "exchange": "CME", "qty": 2,
-        "orderType": "limit", "price": 30441.0, "stop": 30405.0, "target": 30477.0,
+        "ticker": "MESZ2026", "root": "MES", "exchange": "CME", "qty": 2,
+        "orderType": "limit", "price": 5800.0, "stop": 5785.6, "target": 5814.4,
         "reason": "fvg_retrace", "timestamp": stamp,
     }
     stop_move = {
         "source": "breakaway-bot", "event": "stop_update", "action": "sell", "side": "long",
-        "ticker": "MNQZ2026", "root": "MNQ", "qty": 2, "price": 30441.0, "stop": 30441.0,
-        "target": 30477.0, "reason": "trail", "timestamp": stamp,
+        "ticker": "MESZ2026", "root": "MES", "qty": 2, "price": 5800.0, "stop": 5800.0,
+        "target": 5814.4, "reason": "trail", "timestamp": stamp,
     }
     long_exit = {
         "source": "breakaway-bot", "event": "exit", "action": "sell", "side": "long",
-        "ticker": "MNQZ2026", "root": "MNQ", "qty": 2, "price": 30477.0, "stop": 30441.0,
-        "target": 30477.0, "reason": "TP", "timestamp": stamp,
+        "ticker": "MESZ2026", "root": "MES", "qty": 2, "price": 5814.4, "stop": 5800.0,
+        "target": 5814.4, "reason": "TP", "timestamp": stamp,
     }
     short_entry = {
         "source": "breakaway-bot", "event": "entry", "action": "sell", "side": "short",
-        "ticker": "MNQZ2026", "root": "MNQ", "exchange": "CME", "qty": 1,
-        "orderType": "limit", "price": 30390.0, "stop": 30420.0, "target": 30360.0,
+        "ticker": "MESZ2026", "root": "MES", "exchange": "CME", "qty": 1,
+        "orderType": "limit", "price": 5800.0, "stop": 5812.0, "target": 5776.0,
         "reason": "fvg_retrace", "timestamp": stamp,
     }
     short_exit = {
         "source": "breakaway-bot", "event": "exit", "action": "buy", "side": "short",
-        "ticker": "MNQZ2026", "root": "MNQ", "qty": 1, "price": 30420.0, "stop": 30420.0,
-        "target": 30360.0, "reason": "SL", "timestamp": stamp,
+        "ticker": "MESZ2026", "root": "MES", "qty": 1, "price": 5812.0, "stop": 5812.0,
+        "target": 5776.0, "reason": "SL", "timestamp": stamp,
     }
     return [long_entry, stop_move, long_exit, short_entry, short_exit]
 
@@ -490,7 +493,7 @@ def selftest() -> int:
         snap = desk.snapshot()
         assert snap["position"] is None, snap["position"]
         assert snap["tradesToday"] == 2, snap["tradesToday"]
-        # Long 2 MNQ, 36 points * $2 * 2 = +144. Short 1 MNQ, -30 points * $2 = -60. Net +84.
+        # Long 2 MES, 14.4 points * $5 * 2 = +144. Short 1 MES, 12 points * $5 = -60. Net +84.
         assert abs(snap["equity"] - 25084.0) < 0.01, snap["equity"]
         assert abs(snap["dailyPnl"] - 84.0) < 0.01, snap["dailyPnl"]
         refused = desk.handle(demo_script()[0])
@@ -586,7 +589,7 @@ def main() -> int:
     server.demo_running = False
     from mgc_watch import start_watcher
     start_watcher(DESK)
-    print(f"Breakaway execution bot listening on http://127.0.0.1:{args.port}  (MNQ MES MGC MYM, A+ only, 2R)")
+    print(f"Breakaway execution bot listening on http://127.0.0.1:{args.port}  (MES MGC MYM, Select 25K)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
