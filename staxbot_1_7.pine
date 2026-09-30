@@ -748,16 +748,20 @@ if not showTableIn and not na(infoTbl)
     table.delete(infoTbl)
     infoTbl := na
     hudKey := ""
-string wantKey = (showTableIn ? "1" : "0") + hudSizeIn + hudPosIn
+bool hudTop = hudPosIn == "Top right" or hudPosIn == "Top left"
+int hudPad = hudTop ? 1 : 0
+string wantKey = (showTableIn ? "1" : "0") + hudSizeIn + hudPosIn + str.tostring(hudPad)
 if showTableIn and wantKey != hudKey
     if not na(infoTbl)
         table.delete(infoTbl)
     int cols = hudSizeIn == "Compact" ? 3 : 2
-    int rows = hudSizeIn == "Compact" ? 4 : 9
-    infoTbl := table.new(hudPosIn == "Top left" ? position.top_left : hudPosIn == "Bottom right" ? position.bottom_right : hudPosIn == "Bottom left" ? position.bottom_left : position.top_right, cols, rows, bgcolor = color.new(#0B0F19, 0), border_width = 1, border_color = color.new(#121A2B, 0), frame_color = color.new(#121A2B, 0), frame_width = 1)
+    int rows = (hudSizeIn == "Compact" ? 4 : 9) + hudPad
+    infoTbl := table.new(hudPosIn == "Top left" ? position.top_left : hudPosIn == "Bottom right" ? position.bottom_right : hudPosIn == "Bottom left" ? position.bottom_left : position.top_right, cols, rows, bgcolor = color.new(#0B0F19, 100), border_width = 0, frame_width = 0)
+    if hudPad == 1
+        table.merge_cells(infoTbl, 0, 0, cols - 1, 0)
     if hudSizeIn == "Full"
-        table.merge_cells(infoTbl, 0, 2, 1, 2)
-        table.merge_cells(infoTbl, 0, 8, 1, 8)
+        table.merge_cells(infoTbl, 0, 2 + hudPad, 1, 2 + hudPad)
+        table.merge_cells(infoTbl, 0, 8 + hudPad, 1, 8 + hudPad)
     hudKey := wantKey
 
 if showTableIn and not na(infoTbl)
@@ -776,35 +780,38 @@ if showTableIn and not na(infoTbl)
     float openR = live and riskPx > 0 ? dir * (close - entryPx) / riskPx : 0.0
     string note = not targetsOk ? "Enable TP1, TP2, or TP3" : stale ? "INPUTS CHANGED. Recreate the alert." : pending ? "BOS + FVG. Waiting for the retest." : inTrade ? "Plan is live. " + f_signed(openR) : "D" + (hD == 1 ? "+" : hD == -1 ? "-" : "·") + " 4H" + (h4 == 1 ? "+" : h4 == -1 ? "-" : "·") + " 1H" + (h1 == 1 ? "+" : h1 == -1 ? "-" : "·") + " 15" + (h15 == 1 ? "+" : h15 == -1 ? "-" : "·") + " 5" + (h5 == 1 ? "+" : h5 == -1 ? "-" : "·")
     string foot = stale ? "INPUTS CHANGED" : live ? footNow : str.tostring(pTp, "0.#") + "R · " + pSl + " · " + (targetsOk ? "targets on" : "no target") + " · " + sessShort
+    int p = hudPad
+    if p == 1
+        table.cell(infoTbl, 0, 0, "", bgcolor = color.new(#0B0F19, 100), height = 6)
     if hudSizeIn == "Compact"
-        f_cell(infoTbl, 0, 0, "StaxBot 1.7", ink, head, "l")
-        f_cell(infoTbl, 1, 0, "PLAN", ink, head, "l")
-        f_cell(infoTbl, 2, 0, live ? gradeNow : cloud, ink, head, "r")
-        f_cell(infoTbl, 0, 1, state + (sideTxt == "" ? "" : " " + sideTxt), ink, keyBg, "l")
-        f_cell(infoTbl, 1, 1, live ? f_num(entryPx) : "—", ink, rowBg, "r")
-        f_cell(infoTbl, 2, 1, live ? f_signed(openR) : str.tostring(tradesToday) + "/" + str.tostring(pMaxTrades), live ? ink : muted, rowBg, "r")
+        f_cell(infoTbl, 0, p, "StaxBot 1.7", ink, head, "l")
+        f_cell(infoTbl, 1, p, "PLAN", ink, head, "l")
+        f_cell(infoTbl, 2, p, live ? gradeNow : cloud, ink, head, "r")
+        f_cell(infoTbl, 0, p + 1, state + (sideTxt == "" ? "" : " " + sideTxt), ink, keyBg, "l")
+        f_cell(infoTbl, 1, p + 1, live ? f_num(entryPx) : "—", ink, rowBg, "r")
+        f_cell(infoTbl, 2, p + 1, live ? f_signed(openR) : str.tostring(tradesToday) + "/" + str.tostring(pMaxTrades), live ? ink : muted, rowBg, "r")
         string tpName = live ? (on1 and not hit1 ? "TP1" : on2 and not hit2 ? "TP2" : on3 and not hit3 ? "TP3" : "TP") : "TP1"
         float tpShow = live ? (on1 and not hit1 ? t1 : on2 and not hit2 ? t2 : on3 and not hit3 ? t3 : nearPx) : na
-        f_cell(infoTbl, 0, 2, tpName, color.new(#3DDC97, 0), keyBg, "l")
-        f_cell(infoTbl, 1, 2, live ? f_num(tpShow) : "—", ink, rowBg, "r")
-        f_cell(infoTbl, 2, 2, live ? "w" + str.tostring(on1 and not hit1 ? w1 : on2 and not hit2 ? w2 : w3) : "", muted, rowBg, "r")
-        f_cell(infoTbl, 0, 3, stale ? "INPUTS CHANGED" : "STOP", stale ? color.new(#e6b35a, 0) : color.new(#FF5C6C, 0), keyBg, "l")
-        f_cell(infoTbl, 1, 3, live ? f_num(liveStop) : foot, ink, rowBg, "r")
-        f_cell(infoTbl, 2, 3, live ? f_signed(riskPx > 0 ? dir * (liveStop - entryPx) / riskPx : 0.0) : "", muted, rowBg, "r")
+        f_cell(infoTbl, 0, p + 2, tpName, color.new(#3DDC97, 0), keyBg, "l")
+        f_cell(infoTbl, 1, p + 2, live ? f_num(tpShow) : "—", ink, rowBg, "r")
+        f_cell(infoTbl, 2, p + 2, live ? "w" + str.tostring(on1 and not hit1 ? w1 : on2 and not hit2 ? w2 : w3) : "", muted, rowBg, "r")
+        f_cell(infoTbl, 0, p + 3, stale ? "INPUTS CHANGED" : "STOP", stale ? color.new(#e6b35a, 0) : color.new(#FF5C6C, 0), keyBg, "l")
+        f_cell(infoTbl, 1, p + 3, live ? f_num(liveStop) : foot, ink, rowBg, "r")
+        f_cell(infoTbl, 2, p + 3, live ? f_signed(riskPx > 0 ? dir * (liveStop - entryPx) / riskPx : 0.0) : "", muted, rowBg, "r")
     else
-        f_cell(infoTbl, 0, 0, "StaxBot 1.7", ink, head, "l")
-        f_cell(infoTbl, 1, 0, "PLAN", ink, head, "r")
-        f_cell(infoTbl, 0, 1, state + (sideTxt == "" ? "" : "  " + sideTxt), ink, keyBg, "l")
-        f_cell(infoTbl, 1, 1, live ? gradeNow + "  " + f_signed(openR) : cloud, ink, rowBg, "r")
-        f_cell(infoTbl, 0, 2, note, stale ? color.new(#e6b35a, 0) : muted, rowBg, "l")
-        f_cell(infoTbl, 0, 3, on3 and live ? "TP3  " + str.tostring(rUnit * 3.0, "0.#") + "R  w" + str.tostring(w3) : "", color.new(#147A4E, 0), keyBg, "l")
-        f_cell(infoTbl, 1, 3, on3 and live ? f_num(t3) : "", ink, rowBg, "r")
-        f_cell(infoTbl, 0, 4, on2 and live ? "TP2  " + str.tostring(rUnit * 2.0, "0.#") + "R  w" + str.tostring(w2) : "", color.new(#3DDC97, 0), keyBg, "l")
-        f_cell(infoTbl, 1, 4, on2 and live ? f_num(t2) : "", ink, rowBg, "r")
-        f_cell(infoTbl, 0, 5, on1 and live ? "TP1  " + str.tostring(rUnit, "0.#") + "R  w" + str.tostring(w1) : live ? "" : "Trades", on1 and live ? color.new(#3DDC97, 0) : muted, keyBg, "l")
-        f_cell(infoTbl, 1, 5, on1 and live ? f_num(t1) : live ? "" : str.tostring(tradesToday) + "/" + str.tostring(pMaxTrades), ink, rowBg, "r")
-        f_cell(infoTbl, 0, 6, live ? "ENTRY" : "", color.new(#E6EAF2, 0), keyBg, "l")
-        f_cell(infoTbl, 1, 6, live ? f_num(entryPx) : "", ink, rowBg, "r")
-        f_cell(infoTbl, 0, 7, live ? "STOP" : "", color.new(#FF5C6C, 0), keyBg, "l")
-        f_cell(infoTbl, 1, 7, live ? f_num(liveStop) : "", ink, rowBg, "r")
-        f_cell(infoTbl, 0, 8, foot + " · " + pDir, stale ? color.new(#e6b35a, 0) : muted, keyBg, "l")
+        f_cell(infoTbl, 0, p, "StaxBot 1.7", ink, head, "l")
+        f_cell(infoTbl, 1, p, "PLAN", ink, head, "r")
+        f_cell(infoTbl, 0, p + 1, state + (sideTxt == "" ? "" : "  " + sideTxt), ink, keyBg, "l")
+        f_cell(infoTbl, 1, p + 1, live ? gradeNow + "  " + f_signed(openR) : cloud, ink, rowBg, "r")
+        f_cell(infoTbl, 0, p + 2, note, stale ? color.new(#e6b35a, 0) : muted, rowBg, "l")
+        f_cell(infoTbl, 0, p + 3, on3 and live ? "TP3  " + str.tostring(rUnit * 3.0, "0.#") + "R  w" + str.tostring(w3) : "", color.new(#147A4E, 0), keyBg, "l")
+        f_cell(infoTbl, 1, p + 3, on3 and live ? f_num(t3) : "", ink, rowBg, "r")
+        f_cell(infoTbl, 0, p + 4, on2 and live ? "TP2  " + str.tostring(rUnit * 2.0, "0.#") + "R  w" + str.tostring(w2) : "", color.new(#3DDC97, 0), keyBg, "l")
+        f_cell(infoTbl, 1, p + 4, on2 and live ? f_num(t2) : "", ink, rowBg, "r")
+        f_cell(infoTbl, 0, p + 5, on1 and live ? "TP1  " + str.tostring(rUnit, "0.#") + "R  w" + str.tostring(w1) : live ? "" : "Trades", on1 and live ? color.new(#3DDC97, 0) : muted, keyBg, "l")
+        f_cell(infoTbl, 1, p + 5, on1 and live ? f_num(t1) : live ? "" : str.tostring(tradesToday) + "/" + str.tostring(pMaxTrades), ink, rowBg, "r")
+        f_cell(infoTbl, 0, p + 6, live ? "ENTRY" : "", color.new(#E6EAF2, 0), keyBg, "l")
+        f_cell(infoTbl, 1, p + 6, live ? f_num(entryPx) : "", ink, rowBg, "r")
+        f_cell(infoTbl, 0, p + 7, live ? "STOP" : "", color.new(#FF5C6C, 0), keyBg, "l")
+        f_cell(infoTbl, 1, p + 7, live ? f_num(liveStop) : "", ink, rowBg, "r")
+        f_cell(infoTbl, 0, p + 8, foot + " · " + pDir, stale ? color.new(#e6b35a, 0) : muted, keyBg, "l")
