@@ -1,7 +1,7 @@
 //@version=6
 //@strategy_alert_message {{strategy.order.alert_message}}
 // ============================================================================
-//  Breakaway Bot — Stax Edition
+//  Breakaway Bot — Stax Edition  (build 1.1)
 //
 //  Open re-implementation of the "Breakaway model":
 //     1. A valid market range (last confirmed swing high / swing low)
@@ -635,7 +635,7 @@ if showTableIn
          pending ? (pendDir == 1 ? "L rest @ " : "S rest @ ") + str.tostring(pendEntry, format.mintick) : "---"
     biasTxt = bias == 1 ? "Bull" : bias == -1 ? "Bear" : "Flat"
     biasCol = bias == 1 ? color.lime : bias == -1 ? color.red : color.new(#b2b5be, 0)
-    f_head(infoTbl, 0, "BREAKAWAY BOT", "Stax v1.0")
+    f_head(infoTbl, 0, "BREAKAWAY BOT", "Stax v1.1")
     f_head(infoTbl, 1, "SETTINGS", presetIn)
     f_row(infoTbl, 2,  "TP",       str.tostring(pTp, "0.#") + "R", white)
     f_row(infoTbl, 3,  "SL",       pSl, white)
