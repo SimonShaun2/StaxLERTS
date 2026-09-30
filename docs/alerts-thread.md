@@ -50,10 +50,21 @@ The desk is http://127.0.0.1:8791. TradingView is the plan source.
 bot/watch.py mirrors the webhook plan. Do not run the Yahoo scanner.
 One channel only, or the same setup can fill twice.
 
-When a plan or entry arrives, present the market, side, grade, entry, stop,
-each target with its R, and the contract count. Apply the session brief's
-accounts and copy count. This is a paper alert. If nothing is armed, say the
-desk is waiting. Do not invent a setup.
+Order is alert, then this chat, then Sam. The desk holds each accepted alert in
+/api/state under inbox. It does not call Sam when the webhook arrives.
+
+Read inbox. When it has an alert, present it in this chat first: market, side,
+grade, entry, stop, each target with its R, and the contract count. Apply the
+session brief's accounts and copy count. This is a paper alert. If inbox is
+empty, say the desk is waiting. Do not invent a setup.
+
+After that presentation is in the chat, POST http://127.0.0.1:8791/api/release
+with {"eventId":"<that alert's eventId>"}. That release is the only path to Sam.
+Do not release an alert you have not presented. Do not POST the body to Sam yourself.
+
+Keep watching. On a one-minute timer, read http://127.0.0.1:8791/api/state.
+If inbox has an alert, present it, release that eventId, then arm the next check.
+If inbox is empty, arm the next check and stop.
 
 Read docs/alerts-thread.md before you change anything.
 ```
@@ -67,16 +78,21 @@ Sam's own webhook URL is the missing value. When it is pasted, that chat saves i
 Connect this paper desk to the Grokbot named Sam. Do not connect Discord. Do not change Pine. Do not POST a sample trade. Do not ask me to paste Sam's sender key in this chat.
 
 Pull the latest main and restart the desk on port 8791. The TradingView webhook stays
-https://dimension-pot-voices-tyler.trycloudflare.com/webhook/trade-signal
+https://dns-predicted-aspects-latinas.trycloudflare.com/webhook/trade-signal
 
 Sam's routine is "Paper desk alert intake". I will open the desk page and save two fields there:
 - Sam POST URL: the full POST address from that routine
 - Sam sender key: the sender key from that routine
 
-The desk sends that key as Authorization Bearer and X-Automation-Key. A URL without the key is rejected.
+Order is alert, then this chat, then Sam. The desk holds each accepted alert in inbox.
+It does not call Sam on arrival. After you present an inbox alert in this chat, POST
+http://127.0.0.1:8791/api/release with {"eventId":"<that alert's eventId>"}.
+The desk then sends that same body to Sam as Authorization Bearer and X-Automation-Key.
+A URL without the key is rejected. Do not POST the body to Sam yourself.
+
 After I say the fields are saved, read /api/state. Confirm forwardUrl is Sam's POST address and samKeySet is true. Do not print the key.
 
-The five chart alerts stay on the Cloudflare URL. Sam receives the raw alert body. Sam does not replace the desk.
+The five chart alerts stay on the Cloudflare URL. Sam receives the raw alert body only after this chat releases it. Sam does not replace the desk.
 Do not add a firm or an evaluation. End with the three-line status, and say whether Sam's URL is saved and whether samKeySet is true.
 ```
 
@@ -103,7 +119,7 @@ Alert dialog:
 - Trigger: alert() function calls only
 - Do not also enable order fills. This script does not place strategy orders. Order fills are not the plan.
 - Message box: empty. The script calls alert() and sends the JSON itself.
-- Webhook URL: https://dimension-pot-voices-tyler.trycloudflare.com/webhook/trade-signal
+- Webhook URL: https://dns-predicted-aspects-latinas.trycloudflare.com/webhook/trade-signal
 - Alert name: StaxBot 2.0
 
 That webhook forwards to the paper desk at http://127.0.0.1:8791/webhook/trade-signal.

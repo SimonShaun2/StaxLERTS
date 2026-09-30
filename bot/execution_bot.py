@@ -152,6 +152,7 @@ class Desk:
         self.risk_per_trade = SELECT_MAX_RISK
         self.forward_url = ""
         self.forward_token = ""
+        self.inbox: list[dict[str, Any]] = []
         self.watch_markets = list(WATCH_ROOTS)
         self.contract_month = CONTRACT_MONTH
         self.watch = {
@@ -210,6 +211,7 @@ class Desk:
                 "riskPerTrade": self.risk_per_trade,
                 "forwardUrl": self.forward_url,
                 "samKeySet": bool(self.forward_token),
+                "inbox": [dict(item) for item in self.inbox],
                 "planSettingsSource": "TradingView prices and R levels; paper desk sizing settings",
                 "contractMonth": self.contract_month,
                 "contracts": [current_contract(name) for name in self.watch_markets],
@@ -270,6 +272,7 @@ class Desk:
             self.fills.clear()
             self.activity.clear()
             self.processed_event_ids.clear()
+            self.inbox.clear()
             self.killed = False
             self.days_traded = 0
             self.day_pnls = {}
@@ -693,6 +696,62 @@ class Desk:
         self._note(kind, f"{reason} {pos['side']} {close_qty}/{pos.get('initialQty', close_qty)} {pos['ticker']} pnl {pnl:+.2f}")
         return self._result(True, "Trade closed" if self.position is None else "Partial exit booked", fill)
 
+    def _chat_line(self, payload: dict[str, Any]) -> str:
+        event = str(payload.get("event") or "entry").upper()
+        side = str(payload.get("side") or "").upper()
+        ticker = str(payload.get("ticker") or payload.get("root") or "")
+        parts = [f"Held for chat: {event}"]
+        if side:
+            parts.append(side)
+        if ticker:
+            parts.append(ticker)
+        entry = payload.get("entry", payload.get("price"))
+        stop = payload.get("stop")
+        if entry is not None:
+            parts.append(f"entry {entry}")
+        if stop is not None:
+            parts.append(f"stop {stop}")
+        return " ".join(parts) + ". Sam waits."
+
+    def hold_for_chat(self, payload: dict[str, Any]) -> None:
+        """Keep the alert until the alerts chat has presented it. Sam is later."""
+        with self.lock:
+            event_id = str(payload.get("eventId") or "")
+            if event_id and any(item["eventId"] == event_id for item in self.inbox):
+                return
+            self.inbox.append({
+                "eventId": event_id,
+                "event": str(payload.get("event") or "entry"),
+                "ticker": str(payload.get("ticker") or ""),
+                "side": str(payload.get("side") or ""),
+                "receivedAt": now_ny().isoformat(),
+                "payload": payload,
+            })
+            if len(self.inbox) > 50:
+                self.inbox = self.inbox[-50:]
+            self._note("CHAT", self._chat_line(payload))
+
+    def release_to_sam(self, event_id: str | None = None) -> dict[str, Any]:
+        """The chat has presented this alert. Now send that same body to Sam."""
+        with self.lock:
+            if event_id:
+                held = [item for item in self.inbox if item["eventId"] == event_id]
+                self.inbox = [item for item in self.inbox if item["eventId"] != event_id]
+            else:
+                held = list(self.inbox)
+                self.inbox.clear()
+            url_set = bool(self.forward_url)
+            for item in held:
+                label = f"{str(item['event']).upper()} {item['ticker']}".strip()
+                if url_set:
+                    self._note("CHAT", f"Chat released {label}. Forwarding to Sam.")
+                else:
+                    self._note("CHAT", f"Chat released {label}. Sam URL is not saved.")
+        if url_set:
+            for item in held:
+                self._forward(item["payload"])
+        return self._result(True, f"Released {len(held)}", {"released": len(held)})
+
     def forward_alert(self, payload: dict[str, Any]) -> None:
         """Send the TradingView body to Sam. Discord is a later leg."""
         self._forward(payload)
@@ -842,6 +901,21 @@ def selftest() -> int:
         assert desk.position["target"] == 5814.4, desk.position
         assert desk.position["side"] == "long", desk.position
         assert any(item["kind"] == "MISMATCH" for item in desk.activity), desk.activity
+        held_payload = {
+            "source": "staxbot", "event": "plan", "eventId": "hold-1",
+            "setupId": "MESZ2026:hold:long", "side": "long", "ticker": "MESZ2026", "root": "MES",
+            "entry": 5800.0, "stop": 5785.6, "target": 5814.4,
+            "targets": [{"id": "TP1", "price": 5814.4, "allocation": 1, "r": 1}],
+        }
+        desk.hold_for_chat(held_payload)
+        assert [item["eventId"] for item in desk.snapshot()["inbox"]] == ["hold-1"]
+        assert desk.forward_url == ""
+        released = desk.release_to_sam("hold-1")
+        assert released["data"]["released"] == 1, released
+        assert desk.inbox == []
+        assert any("Sam URL is not saved" in item["text"] for item in desk.activity)
+        missing = desk.release_to_sam("missing")
+        assert missing["data"]["released"] == 0, missing
         print("selftest: PASS", snap["equity"], snap["dailyPnl"])
         return 0
     except AssertionError as exc:
@@ -884,8 +958,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path in ("/webhook/trade-signal", "/api/alert"):
             result = DESK.handle(payload)
-            DESK.forward_alert(payload)
+            if result.get("success"):
+                DESK.hold_for_chat(payload)
             self._send(200 if result["success"] else 400, result)
+            return
+        if path == "/api/release":
+            event_id = str(payload.get("eventId") or "").strip() or None
+            self._send(200, DESK.release_to_sam(event_id))
             return
         if path == "/api/settings":
             DESK.update_settings(payload)
