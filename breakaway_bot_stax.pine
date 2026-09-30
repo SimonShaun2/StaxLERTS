@@ -1,4 +1,5 @@
 //@version=6
+//@strategy_alert_message {{strategy.order.alert_message}}
 // ============================================================================
 //  Breakaway Bot — Stax Edition
 //
@@ -429,7 +430,7 @@ if openedNow
     flatRequest := false
     tradesToday += 1
     if showDrawingsIn
-        f_entryLabel(livDir, livId, livQty, livDir == 1 ? low : high)
+        entryLbl = f_entryLabel(livDir, livId, livQty, livDir == 1 ? low : high)
     if not useFillAlerts
         alert(f_entryMsg(livDir, livEntry, livSl, livTp, livQty), alert.freq_once_per_bar_close)
 
@@ -451,7 +452,7 @@ if closedNow
         pending  := false
         tradesToday += 1
         if showDrawingsIn
-            f_entryLabel(livDir, livId, livQty, livDir == 1 ? low : high)
+            entryLbl = f_entryLabel(livDir, livId, livQty, livDir == 1 ? low : high)
         if not useFillAlerts
             alert(f_entryMsg(livDir, livEntry, livSl, livTp, livQty), alert.freq_once_per_bar_close)
     realizedR = livRisk > 0 ? livDir * (exitPx - livEntry) / livRisk : 0.0
@@ -459,7 +460,7 @@ if closedNow
     reason = flatRequest ? "FLAT" : realizedR >= pTp - 0.1 ? "TP" : stopMoved and math.abs(realizedR) < 0.1 ? "BE" : stopMoved ? "TRAILED" : "SL"
     tag    = reason + " " + f_signedR(realizedR)
     if showDrawingsIn
-        f_exitLabel(livDir, livId, livQty, livDir == 1 ? high : low, tag)
+        exitLbl = f_exitLabel(livDir, livId, livQty, livDir == 1 ? high : low, tag)
     if not useFillAlerts and not staxMode and sendExitAlertsIn
         alert(f_genMsg("exit", livDir, exitPx, livStop, livTp, livQty, reason, realizedR), alert.freq_once_per_bar_close)
     inTrade     := false
@@ -618,7 +619,7 @@ f_head(table t, int r, string l, string rt) =>
     table.cell(t, 1, r, rt, text_color = color.new(#b2b5be, 0), text_size = size.tiny, text_halign = text.align_right, bgcolor = color.new(#1e222d, 0))
 
 f_money(float v) =>
-    (v < 0 ? "-$" : "$") + str.tostring(math.abs(v), "#")
+    (v < 0 ? "-$" : "$") + str.tostring(math.round(math.abs(v)))
 
 if showTableIn and barstate.islast
     white  = color.white
