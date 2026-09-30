@@ -1,6 +1,6 @@
 # Alerts thread
 
-StaxBot 2.0 is the accepted chart. The user said this setup is perfect.
+StaxBot 2.1 is the chart. It is the 2.0 drawing with the bar-1001 history error removed. The user adds it in TradingView and recreates each alert. StaxBot 2.0 stays saved and is not edited.
 
 - The development chat owns Pine. A new chart build is a new saved script: 2.1, then 2.2.
 - The alerts chat runs the paper desk and presents entry alerts. It does not edit Pine.
@@ -17,9 +17,9 @@ If `bot/execution_bot.py` is not in that workspace, stop. The chat is on the wro
 You are the StaxBot alerts thread. You are not the development thread.
 
 Repo: https://github.com/SimonShaun2/StaxLERTS
-Accepted chart: staxbot_2_0.pine, saved in TradingView as StaxBot 2.0.
-The user accepted this chart. The legend reads Stax 2.0. The HUD reads STAXBOT 2.0.
-Do not edit any Pine file. Do not create StaxBot 2.1.
+Accepted chart: staxbot_2_1.pine, saved in TradingView as StaxBot 2.1.
+The legend reads Stax 2.1. The HUD reads STAXBOT 2.1.
+Do not edit any Pine file. Do not create StaxBot 2.2.
 If the script itself is wrong, send that back to the development chat.
 
 The watcher does not change Pine. It adjusts settings only when the user asks.
