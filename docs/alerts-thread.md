@@ -78,13 +78,11 @@ Read docs/alerts-thread.md before you change anything.
 The desk is already running with Sam’s URL and sender key in memory. Do not pull and do not restart it. A restart clears both. Paste this into the alerts chat.
 
 ```
-You are live across the futures day. Do not pull. Do not restart the desk. Do not change Pine. Do not POST a sample trade or a ping. Do not stop the timer at 5:00 PM New York.
+Pull the latest main. Do not change Pine. Do not send a webhook and do not release anything to Sam.
 
-Each one-minute check, from the repo root, run python3 bot/watch.py and print that line here first. That is what you are watching. Flat means no setup. When a market has a setup, the line names the grade, side, size, entry, stop, and targets. Do not send that line to Sam.
+The engine is python3 bot/watch.py. The old one-minute check only read the desk and said it was waiting, so the engine never ran. Each check, from the repo root, run python3 bot/watch.py and print the line here. It has a 1m part and a 5m part. Flat means no setup. A resting or open line is the alert: market, side, grade, size, entry, stop, and target.
 
-Then read http://127.0.0.1:8791/api/state. If inbox has a TradingView alert, present that setup and POST http://127.0.0.1:8791/api/release with its eventId. A watch line is not an inbox alert.
-
-The halt is 3:00 PM to 5:00 PM Central, on the America/Chicago clock. During the halt, keep the check and say the desk is in the halt. At 5:00 PM Central, Globex is open. Then Asia, then London, then the NY session. Arm the next check either way.
+The halt is 3:00 PM to 5:00 PM Central. During the halt, keep the check. Then Globex, Asia, London, and NY. Arm the next check either way.
 ```
 
 ## Connect the desk to Sam

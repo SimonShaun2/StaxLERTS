@@ -27,7 +27,7 @@ CATALOG = {
 }
 DEFAULT_ROOTS = ("MNQ", "MGC", "MES", "M2K", "MYM")
 DEFAULT_RULES = {
-    "min_grade": "A",
+    "min_grade": "Off",
     "tp_r": 1.0,
     "qty_a": 3,
     "qty_aplus": 5,
@@ -35,8 +35,8 @@ DEFAULT_RULES = {
 }
 
 
-def fetch_bars(yahoo: str) -> list[dict[str, Any]]:
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo}?interval=5m&range=5d"
+def fetch_bars(yahoo: str, interval: str = "5m") -> list[dict[str, Any]]:
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo}?interval={interval}&range=5d"
     req = urllib.request.Request(url, headers={"User-Agent": "BreakawayDesk/1.2"})
     with urllib.request.urlopen(req, timeout=20) as resp:
         payload = json.loads(resp.read().decode())
@@ -183,6 +183,7 @@ class Market:
         self.pending = None
         self.open_trade = None
         self.last_close = None
+        self.last_signal = None
         self.exit_events: list[dict[str, Any]] = []
         self.trade_events: list[dict[str, Any]] = []
 
@@ -202,9 +203,9 @@ class Market:
         vals = [bars[j][key] for j in range(p - SWING, p + SWING + 1)]
         center = bars[p][key]
         others = vals[:SWING] + vals[SWING + 1:]
-        if center > max(others):
-            return p
-        return None
+        if key == "l":
+            return p if center < min(others) else None
+        return p if center > max(others) else None
 
     def _step(self, bars, i, act: bool) -> list[dict[str, Any]]:
         actions: list[dict[str, Any]] = []
@@ -222,13 +223,15 @@ class Market:
         bar = bars[i]
         atr = bar.get("atr")
         displaced = atr is not None and abs(bar["c"] - bar["o"]) >= atr
-        if self.range_high is not None and not self.high_broken and bar["c"] > self.range_high:
+        # A displaced close through the same extreme is a new break. Otherwise the
+        # first small break uses up the flag and the obvious continuation never alerts.
+        if self.range_high is not None and bar["c"] > self.range_high and (not self.high_broken or displaced):
             self.high_broken = True
             self.bull_bos_i = i
             start = 0 if self.range_low_i is None else max(0, i - 30, self.range_low_i)
             self.bull_leg = min(b["l"] for b in bars[start:i + 1])
             self.bull_displaced = displaced
-        if self.range_low is not None and not self.low_broken and bar["c"] < self.range_low:
+        if self.range_low is not None and bar["c"] < self.range_low and (not self.low_broken or displaced):
             self.low_broken = True
             self.bear_bos_i = i
             start = 0 if self.range_high_i is None else max(0, i - 30, self.range_high_i)
@@ -291,9 +294,13 @@ class Market:
         if not accepts(setup_grade, minimum):
             return {"i": i, "grade": None, "flags": flags, "side": side}
         qty = int(self.rules["qty_aplus"] if setup_grade == "A+" else self.rules["qty_a"])
+        per_contract = risk * self.spec["point"]
+        if per_contract > 0:
+            capped = int(MAX_STOP_DOLLARS // per_contract)
+            if capped < 1:
+                capped = 1
+            qty = min(qty, capped)
         risk_dollars = risk * qty * self.spec["point"]
-        if risk_dollars > MAX_STOP_DOLLARS:
-            return {"i": i, "grade": None, "flags": flags, "wide": True, "side": side}
         reward = float(self.rules["tp_r"])
         target = entry + direction * risk * reward
         targets = [{"id": "TP1", "price": round(target, 2), "qty": qty, "r": reward}]
@@ -320,6 +327,7 @@ class Market:
             self.bull_bos_i = None
         else:
             self.bear_bos_i = None
+        self.last_signal = setup
         return setup
 
     def _manage(self, bars, i, act: bool) -> list[dict[str, Any]]:
@@ -337,6 +345,10 @@ class Market:
             self.pending = None
             return [{"kind": "cancel", "why": "gap failed"}] if act else []
         touched = bar["l"] <= pending["entry"] if direction == 1 else bar["h"] >= pending["entry"]
+        ran = bar["h"] >= pending["target"] if direction == 1 else bar["l"] <= pending["target"]
+        if not touched and ran:
+            self.pending = None
+            return [{"kind": "cancel", "why": "missed"}] if act else []
         if not touched:
             return []
         self.pending = None
@@ -501,7 +513,14 @@ def describe(market: Market, bars: list[dict[str, Any]]) -> str:
     if pending and pending.get("grade"):
         return (
             f"{root} resting {pending['grade']} {pending['side']} {pending['qty']} "
-            f"@ {pending['entry']:.2f} target {pending['target']:.2f}"
+            f"@ {pending['entry']:.2f} stop {pending['stop']:.2f} target {pending['target']:.2f}"
+        )
+    signaled = market.last_signal
+    if signaled and signaled.get("grade") and len(bars) - 1 - int(signaled["i"]) <= 30:
+        return (
+            f"{root} {signaled['grade']} {signaled['side']} {signaled['qty']} "
+            f"@ {signaled['entry']:.2f} stop {signaled['stop']:.2f} target {signaled['target']:.2f} "
+            f"unfilled, last {last:.1f}"
         )
     return f"{root} {last:.1f} flat"
 
@@ -536,14 +555,14 @@ def _shown_grade(market: Market, live_from: datetime | None) -> str | None:
     return None
 
 
-def scan(desk, rules: dict[str, Any], live_from: datetime | None) -> tuple[list[str], str | None]:
+def scan(desk, rules: dict[str, Any], live_from: datetime | None, interval: str = "5m") -> tuple[list[str], str | None]:
     lines = []
     grade = None
     replay_events = []
     for root in rules["roots"]:
         spec = CATALOG[root]
         try:
-            bars = fetch_bars(spec["yahoo"])
+            bars = fetch_bars(spec["yahoo"], interval)
             if len(bars) < 30:
                 lines.append(f"{root} waiting")
                 continue
@@ -566,8 +585,14 @@ def scan(desk, rules: dict[str, Any], live_from: datetime | None) -> tuple[list[
 
 def watch_once(desk=None) -> str:
     rules = rules_from(desk)
-    lines, grade = scan(desk, rules, None)
-    note = " · ".join(lines)
+    parts = []
+    grade = None
+    for interval in ("1m", "5m"):
+        lines, shown = scan(desk, rules, None, interval)
+        if shown:
+            grade = shown
+        parts.append(interval + " " + " · ".join(lines))
+    note = " | ".join(parts)
     if desk:
         desk.set_watch({"symbol": " ".join(rules["roots"]), "grade": grade, "note": note})
     return note
