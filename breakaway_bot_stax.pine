@@ -1,8 +1,9 @@
 //@version=6
 //@strategy_alert_message {{strategy.order.alert_message}}
 // ============================================================================
-//  Breakaway Bot — Stax Edition  (build 1.2)
-//  The chart finds the setup. bot/execution_bot.py is what takes the trade.
+//  Breakaway Bot — Stax Edition  (build 1.3)
+//  Upload this file to Pine. Table must read Stax v1.3.
+//  Takes A (3 contracts) and A+ (5 contracts) only.
 //
 //  Open re-implementation of the "Breakaway model":
 //     1. A valid market range (last confirmed swing high / swing low)
@@ -50,11 +51,13 @@ sessIn           = input.string("24/5 (No Filter)", "Session Preset", group = G_
 customSessIn     = input.session("2000-2130", "Custom Session (If Custom Selected)", group = G_COACH)
 tzIn             = input.string("America/New_York", "Timezone", group = G_COACH, tooltip = "IANA timezone used for sessions, the daily reset and alert timestamps.")
 maxTradesIn      = input.int(5, "Max Trades Per Day", minval = 1, group = G_COACH)
-maxDailyLossIn   = input.float(0, "Max Daily Loss ($, 0 = off)", minval = 0, step = 50, group = G_COACH, tooltip = "Realized P/L. Once hit, pending setups are cancelled and no new setups are taken until the next day. Keep a broker-level daily loss limit as well.")
+maxDailyLossIn   = input.float(750, "Max Daily Loss ($, 0 = off)", minval = 0, step = 50, group = G_COACH, tooltip = "Realized P/L. Once hit, pending setups are cancelled and no new setups are taken until the next day. Keep a broker-level daily loss limit as well.")
 dailyTargetIn    = input.float(0, "Daily Profit Target ($, 0 = off)", minval = 0, step = 50, group = G_COACH, tooltip = "Realized P/L. Once hit, the bot stops taking new setups for the day.")
-ptValOverrideIn  = input.float(0, "Point Value Override ($ per 1.00 move, 0 = auto)", minval = 0, group = G_COACH, tooltip = "Leave 0 to use the exchange point value (MNQ = $2, NQ = $20, MES = $5, ES = $50). Override for CFDs or spread-bet accounts.")
-riskUsdIn        = input.float(100, "Risk Per Trade ($)", minval = 1, step = 25, group = G_COACH)
-minQtyOkIn       = input.bool(true, "Take 1 Contract When Risk Budget Is Too Small", group = G_COACH, tooltip = "Off = skip setups where a single contract already risks more than Risk Per Trade.")
+ptValOverrideIn  = input.float(0, "Point Value Override ($ per 1.00 move, 0 = auto)", minval = 0, group = G_COACH, tooltip = "Leave 0 to use the exchange point value (MGC = $10, MNQ = $2, NQ = $20, MES = $5, ES = $50).")
+minGradeIn       = input.string("A", "Minimum Grade", options = ["Off", "A", "A+"], group = G_COACH, tooltip = "A+ needs all five: displacement, EMA bias, above-average volume, London 03:00-06:00 or NY gold 08:20-11:30, and the gap within 3 bars of the break. A is four of those five, and one must be displacement or the session. Off takes every Breakaway setup.")
+qtyAIn           = input.int(3, "A Contracts", minval = 1, maxval = 20, group = G_COACH)
+qtyAplusIn       = input.int(5, "A+ Contracts", minval = 1, maxval = 20, group = G_COACH)
+riskUsdIn        = input.float(100, "Risk Per Trade ($)", minval = 1, step = 25, group = G_COACH, tooltip = "Shown for reference. Size is the contract count above, not this dollar amount.")
 flatAtSessEndIn  = input.bool(false, "Flatten Open Trade At Session End", group = G_COACH)
 
 swingLenIn       = input.int(5, "Swing Length (Range Structure)", minval = 2, group = G_STRUCT, tooltip = "Bars on each side needed to confirm a swing high / low. The last confirmed swing high and swing low define the range.")
@@ -292,15 +295,19 @@ var int   bullBosBar = na
 var int   bearBosBar = na
 var float bullLegLow  = na
 var float bearLegHigh = na
+var bool  bullDisp    = false
+var bool  bearDisp    = false
 
 if bullBos
     highBroken := true
     bullBosBar := bar_index
     bullLegLow := legLowNow
+    bullDisp   := math.abs(close - open) >= atr
 if bearBos
     lowBroken   := true
     bearBosBar  := bar_index
     bearLegHigh := legHighNow
+    bearDisp    := math.abs(close - open) >= atr
 
 // ────────────────────────────────────────────────────────────────────────────
 //  FAIR VALUE GAP  (3-candle imbalance; bar[1] is the displacement candle)
@@ -354,17 +361,21 @@ f_staxMsg(int dir, float entry, float sl, float tp, int qty) =>
      '","underlying":"' + syminfo.ticker + '","underlyingEntry":' + f_num(entry) + ',"underlyingStop":' + f_num(sl) +
      ',"underlyingTarget":' + f_num(tp) + ',"contracts":' + str.tostring(qty) + '}'
 
-f_genMsg(string event, int dir, float px, float sl, float tp, int qty, string reason, float rr) =>
+f_genMsg(string event, int dir, float px, float sl, float tp, int qty, string reason, float rr, string grade) =>
     action = event == "entry" ? (dir == 1 ? "buy" : "sell") : (dir == 1 ? "sell" : "buy")
     '{"source":"breakaway-bot","event":"' + event + '","action":"' + action + '","side":"' + (dir == 1 ? "long" : "short") +
      '","ticker":"' + syminfo.ticker + '","root":"' + syminfo.root + '","exchange":"' + syminfo.prefix +
      '","qty":' + str.tostring(qty) + ',"orderType":"' + (event == "entry" ? "limit" : "market") +
      '","price":' + f_num(px) + ',"stop":' + f_num(sl) + ',"target":' + f_num(tp) +
-     ',"reason":"' + reason + '","realizedR":' + (na(rr) ? "null" : str.tostring(rr, "0.00")) +
+     ',"reason":"' + reason + '","grade":"' + grade + '","realizedR":' + (na(rr) ? "null" : str.tostring(rr, "0.00")) +
      ',"timestamp":"' + f_ts() + '"}'
 
-f_entryMsg(int dir, float entry, float sl, float tp, int qty) =>
-    staxMode ? f_staxMsg(dir, entry, sl, tp, qty) : f_genMsg("entry", dir, entry, sl, tp, qty, "fvg_retrace", na)
+f_entryMsg(int dir, float entry, float sl, float tp, int qty, string grade) =>
+    staxMode ? f_staxMsg(dir, entry, sl, tp, qty) : f_genMsg("entry", dir, entry, sl, tp, qty, "fvg_retrace", na, grade)
+
+f_grade(bool dispOk, bool biasOk, bool volOk, bool sessOk, bool timeOk) =>
+    int score = (dispOk ? 1 : 0) + (biasOk ? 1 : 0) + (volOk ? 1 : 0) + (sessOk ? 1 : 0) + (timeOk ? 1 : 0)
+    score == 5 ? "A+" : score == 4 and (dispOk or sessOk) ? "A" : "B"
 
 // ────────────────────────────────────────────────────────────────────────────
 //  STATE
@@ -395,7 +406,9 @@ var float livTp       = na
 var float livRisk     = na
 var float livStop     = na
 var line  livStopLn   = na
-var bool  flatRequest = false
+var bool   flatRequest = false
+var string livGrade    = ""
+var string pendGrade   = ""
 
 // ────────────────────────────────────────────────────────────────────────────
 //  DRAWING HELPERS
@@ -429,13 +442,14 @@ if openedNow
     livRisk    := math.abs(pendEntry - pendSl)
     livStop    := pendSl
     livId      := pendId
+    livGrade   := pendGrade
     pending    := false
     flatRequest := false
     tradesToday += 1
     if showDrawingsIn
         entryLbl = f_entryLabel(livDir, livId, livQty, livDir == 1 ? low : high)
     if not useFillAlerts
-        alert(f_entryMsg(livDir, livEntry, livSl, livTp, livQty), alert.freq_once_per_bar_close)
+        alert(f_entryMsg(livDir, livEntry, livSl, livTp, livQty, pendGrade), alert.freq_once_per_bar_close)
 
 if closedNow
     idx     = strategy.closedtrades - 1
@@ -452,12 +466,13 @@ if closedNow
         livRisk  := math.abs(pendEntry - pendSl)
         livStop  := pendSl
         livId    := pendId
+        livGrade := pendGrade
         pending  := false
         tradesToday += 1
         if showDrawingsIn
             entryLbl = f_entryLabel(livDir, livId, livQty, livDir == 1 ? low : high)
         if not useFillAlerts
-            alert(f_entryMsg(livDir, livEntry, livSl, livTp, livQty), alert.freq_once_per_bar_close)
+            alert(f_entryMsg(livDir, livEntry, livSl, livTp, livQty, pendGrade), alert.freq_once_per_bar_close)
     realizedR = livRisk > 0 ? livDir * (exitPx - livEntry) / livRisk : 0.0
     stopMoved = livStop != livSl
     reason = flatRequest ? "FLAT" : realizedR >= pTp - 0.1 ? "TP" : stopMoved and math.abs(realizedR) < 0.1 ? "BE" : stopMoved ? "TRAILED" : "SL"
@@ -465,7 +480,7 @@ if closedNow
     if showDrawingsIn
         exitLbl = f_exitLabel(livDir, livId, livQty, livDir == 1 ? high : low, tag)
     if not useFillAlerts and not staxMode and sendExitAlertsIn
-        alert(f_genMsg("exit", livDir, exitPx, livStop, livTp, livQty, reason, realizedR), alert.freq_once_per_bar_close)
+        alert(f_genMsg("exit", livDir, exitPx, livStop, livTp, livQty, reason, realizedR, livGrade), alert.freq_once_per_bar_close)
     inTrade     := false
     flatRequest := false
     livStopLn   := na
@@ -487,7 +502,7 @@ if inTrade and strategy.position_size != 0 and not openedNow
         if newStop != livStop
             livStop := newStop
             if sendStopUpdIn and not staxMode
-                alert(f_genMsg("stop_update", livDir, livStop, livStop, livTp, livQty, "trail", offR), alert.freq_once_per_bar_close)
+                alert(f_genMsg("stop_update", livDir, livStop, livStop, livTp, livQty, "trail", offR, livGrade), alert.freq_once_per_bar_close)
     if sessionEnded and flatAtSessEndIn
         flatRequest := true
         strategy.close_all(comment = "Session end")
@@ -540,15 +555,20 @@ if longSetup or shortSetup
     sl       = dir == 1 ? slRaw - slBuffer : slRaw + slBuffer
     riskPts  = dir == 1 ? entryLvl - sl : sl - entryLvl
     valid    = riskPts >= minStopTicksIn * tick and (maxStopPtsIn <= 0 or riskPts <= maxStopPtsIn)
-    if valid
-        rawQty = math.floor(riskUsdIn / (riskPts * ptVal))
-        qty    = rawQty >= 1 ? rawQty : minQtyOkIn ? 1 : 0
+    bosBar   = dir == 1 ? bullBosBar : bearBosBar
+    clock    = hour(time, tzIn) * 60 + minute(time, tzIn)
+    goldSess = (clock >= 180 and clock < 360) or (clock >= 500 and clock < 690)
+    grade    = f_grade(dir == 1 ? bullDisp : bearDisp, dir == 1 ? bias == 1 : bias == -1, volume[1] > volSma[1], goldSess, bar_index - bosBar <= 3)
+    takeGrade = minGradeIn == "Off" or grade == "A+" or (minGradeIn == "A" and grade == "A")
+    qty      = grade == "A+" ? qtyAplusIn : qtyAIn
+    if valid and takeGrade
         if qty > 0
             pending     := true
             pendDir     := dir
             pendId      := bar_index
             pendBar     := bar_index
             pendQty     := qty
+            pendGrade   := grade
             pendEntry   := entryLvl
             pendSl      := sl
             pendTp      := entryLvl + dir * pTp * riskPts
@@ -571,7 +591,7 @@ if longSetup or shortSetup
 // ────────────────────────────────────────────────────────────────────────────
 if pending and not inTrade
     strategy.entry(pendDir == 1 ? "L" : "S", pendDir == 1 ? strategy.long : strategy.short, qty = pendQty, limit = pendEntry,
-         alert_message = f_entryMsg(pendDir, pendEntry, pendSl, pendTp, pendQty), disable_alert = not useFillAlerts)
+         alert_message = f_entryMsg(pendDir, pendEntry, pendSl, pendTp, pendQty, pendGrade), disable_alert = not useFillAlerts)
 
 if pending or (inTrade and strategy.position_size != 0)
     xDir  = inTrade ? livDir : pendDir
@@ -579,7 +599,7 @@ if pending or (inTrade and strategy.position_size != 0)
     xTp   = inTrade ? livTp : pendTp
     xQty  = inTrade ? livQty : pendQty
     strategy.exit(xDir == 1 ? "XL" : "XS", from_entry = xDir == 1 ? "L" : "S", stop = xStop, limit = xTp,
-         alert_message = f_genMsg("exit", xDir, xStop, xStop, xTp, xQty, "stop_or_target", na),
+         alert_message = f_genMsg("exit", xDir, xStop, xStop, xTp, xQty, "stop_or_target", na, inTrade ? livGrade : pendGrade),
          disable_alert = not useFillAlerts or staxMode or not sendExitAlertsIn)
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -632,11 +652,11 @@ f_money(float v) =>
 // replay reaches the end of the loaded data, which left the table empty.
 if showTableIn
     white  = color.white
-    tradeTxt = inTrade ? (livDir == 1 ? "LONG " : "SHORT ") + str.tostring(livQty) + " @ " + str.tostring(livEntry, format.mintick) :
-         pending ? (pendDir == 1 ? "L rest @ " : "S rest @ ") + str.tostring(pendEntry, format.mintick) : "---"
+    tradeTxt = inTrade ? livGrade + " " + (livDir == 1 ? "LONG " : "SHORT ") + str.tostring(livQty) + " @ " + str.tostring(livEntry, format.mintick) :
+         pending ? pendGrade + " " + (pendDir == 1 ? "L rest @ " : "S rest @ ") + str.tostring(pendEntry, format.mintick) : "---"
     biasTxt = bias == 1 ? "Bull" : bias == -1 ? "Bear" : "Flat"
     biasCol = bias == 1 ? color.lime : bias == -1 ? color.red : color.new(#b2b5be, 0)
-    f_head(infoTbl, 0, "BREAKAWAY BOT", "Stax v1.2")
+    f_head(infoTbl, 0, "BREAKAWAY BOT", "Stax v1.3")
     f_head(infoTbl, 1, "SETTINGS", presetIn)
     f_row(infoTbl, 2,  "TP",       str.tostring(pTp, "0.#") + "R", white)
     f_row(infoTbl, 3,  "SL",       pSl, white)
@@ -644,7 +664,7 @@ if showTableIn
     f_row(infoTbl, 5,  "Trail",    trailShort, white)
     f_row(infoTbl, 6,  "Dir",      pDir, white)
     f_row(infoTbl, 7,  "Session",  sessShort, white)
-    f_row(infoTbl, 8,  "Risk",     f_money(riskUsdIn), white)
+    f_row(infoTbl, 8,  "Size",     "A " + str.tostring(qtyAIn) + " / A+ " + str.tostring(qtyAplusIn), white)
     f_row(infoTbl, 9,  "Vol",      volMult > 0 ? str.tostring(volMult, "0.0") + "x" : "Off", white)
     f_row(infoTbl, 10, "Pt Val",   f_money(ptVal), white)
     f_head(infoTbl, 11, "LIVE",    staxMode ? "Stax webhook" : "Generic JSON")
