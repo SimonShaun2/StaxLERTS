@@ -47,29 +47,28 @@ Start from the repo root:
 python3 bot/execution_bot.py --selftest
 python3 bot/execution_bot.py --port 8791
 
-The desk is http://127.0.0.1:8791. TradingView is the plan source.
-Each check, run python3 bot/watch.py from the repo root and print that line.
-It names each market. Flat means no setup. A setup line names the grade, side, size, entry, stop, and targets.
-That line is the watch report. Do not send it to Sam and do not book it on the desk.
+The desk is http://127.0.0.1:8791. Do not restart it. A restart clears Sam's URL and key.
 
-Order is alert, then this chat, then Sam. The desk holds each accepted alert in
-/api/state under inbox. It does not call Sam when the webhook arrives.
+Each check, from the repo root, run python3 bot/watch.py and print its line in this chat.
+The line has a 1m part and a 5m part for MNQ, MGC, MES, M2K, and MYM.
+Flat means no setup. A resting or open line is a Python scan. Present each market on that line:
+side, grade, entry, stop, each target with its R, and the contract count.
+Label it Python scan. It is not TradingView-confirmed. The scan uses Yahoo bars.
+Do not paper-fill it. Do not POST it to the desk. Do not call /api/release. Do not send it to Sam.
 
-Read inbox. When it has an alert, present it in this chat first: market, side,
-grade, entry, stop, each target with its R, and the contract count. Apply the
-session brief's accounts and copy count. This is a paper alert. A ping is a
-connection test, not a trade: say that and do not invent prices. If inbox is
-empty, say the desk is waiting. Do not invent a setup.
+A line that starts with SCAN_NEW is a newly resting Python scan plan. Present that plan once, with the same fields.
+The same plan is not printed again on a later check or on the other timeframe.
 
-After that presentation is in the chat, POST http://127.0.0.1:8791/api/release
-with {"eventId":"<that alert's eventId>"}. That release is the only path to Sam.
-Do not release an alert you have not presented. Do not POST the body to Sam yourself.
-If release says the Sam URL or sender key is not saved, leave the alert in the inbox
-and try that same eventId on the next check.
+Then read http://127.0.0.1:8791/api/state.
+If inbox has a TradingView webhook, present it in this chat as TradingView-confirmed:
+market, side, grade, entry, stop, each target with its R, and the contract count.
+A ping is a connection test, not a trade: say that and do not invent prices.
+Do not call /api/release. Do not POST the body to Sam. Leave the inbox item where it is.
 
-Keep watching. On a one-minute timer, read http://127.0.0.1:8791/api/state.
-If inbox has an alert, present it, release that eventId, then arm the next check.
-If inbox is empty, arm the next check and stop.
+If the watch line has no setup and the inbox is empty during the halt, say the desk is in the halt.
+If both are empty outside the halt, say the desk is waiting. Do not invent a setup.
+
+Keep watching every 2.5 minutes. Run the scan, then read the inbox, on every check, including the Central halt.
 
 Read docs/alerts-thread.md before you change anything.
 ```
@@ -81,7 +80,7 @@ The desk is already running with Sam’s URL and sender key in memory. Do not pu
 ```
 Pull the latest main. Do not change Pine. Do not send a webhook and do not release anything to Sam.
 
-The engine is python3 bot/watch.py. The old one-minute check only read the desk and said it was waiting, so the engine never ran. Each check, from the repo root, run python3 bot/watch.py and print the line here. It has a 1m part and a 5m part. Flat means no setup. A resting or open line is the alert: market, side, grade, size, entry, stop, and target.
+Each check, from the repo root, run python3 bot/watch.py and print the line here. It has a 1m part and a 5m part. Flat means no setup. Present each Python scan market in this chat. A SCAN_NEW line is a new resting plan: present it once. Do not paper-fill it, do not POST it to the desk, and do not call /api/release. Then read the inbox. Present a TradingView webhook as TradingView-confirmed and leave it there. Do not restart the desk.
 
 The halt is 3:00 PM to 5:00 PM Central. During the halt, keep the check. Then Globex, Asia, London, and NY. Arm the next check either way.
 ```
