@@ -72,6 +72,20 @@ If inbox is empty, arm the next check and stop.
 Read docs/alerts-thread.md before you change anything.
 ```
 
+## Live through the day session
+
+The desk is already running with Sam’s URL and sender key in memory. Do not pull and do not restart it. A restart clears both. Paste this into the alerts chat.
+
+```
+You are live through the day-session halt at 5:00 PM New York. Do not pull. Do not restart the desk. Do not change Pine. Do not POST a sample trade or a ping.
+
+Real TradingView alerts only, on MNQZ2026, MGCZ2026, MESZ2026, M2KZ2026, and MYMZ2026. Order is alert, then this chat, then Sam.
+
+On each one-minute check, read http://127.0.0.1:8791/api/state. If inbox has an alert, present it here first: market, side, grade, entry, stop, each target with its R, and the contract count. Then POST http://127.0.0.1:8791/api/release with that eventId. If inbox is empty, say the desk is waiting. Arm the next check. At 5:00 PM New York, stop the timer.
+
+End this turn with the three-line status.
+```
+
 ## Connect the desk to Sam
 
 Discord is later. This leg is the paper desk to Sam. Paste this into the alerts chat.
