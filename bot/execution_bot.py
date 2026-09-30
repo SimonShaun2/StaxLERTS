@@ -557,13 +557,6 @@ class Desk:
             "TAKEN",
             f"{tag}{side.upper()} {qty} {ticker} @ {price:.2f}  stop {stop:.2f}  target {target:.2f}",
         )
-        forward_payload = dict(payload)
-        forward_payload["qty"] = qty
-        forward_payload["price"] = price
-        forward_payload["stop"] = stop
-        forward_payload["target"] = target
-        forward_payload["targets"] = normalized_targets
-        self._forward(forward_payload)
         return self._result(True, "Trade taken", self.position)
 
     def _take_option(self, payload: dict[str, Any], when: datetime) -> dict[str, Any]:
@@ -591,7 +584,6 @@ class Desk:
         self.trades_today += 1
         px = f" @ {price}" if price is not None else ""
         self._note("TAKEN", f"OPTION {side.upper()} {qty} {ticker}{px}")
-        self._forward(payload)
         return self._result(True, "Option trade taken", self.position)
 
     def _on_exit(self, payload: dict[str, Any], when: datetime) -> dict[str, Any]:
@@ -688,6 +680,10 @@ class Desk:
         self._note(kind, f"{reason} {pos['side']} {close_qty}/{pos.get('initialQty', close_qty)} {pos['ticker']} pnl {pnl:+.2f}")
         return self._result(True, "Trade closed" if self.position is None else "Partial exit booked", fill)
 
+    def forward_alert(self, payload: dict[str, Any]) -> None:
+        """Send the TradingView body to Sam. Discord is a later leg."""
+        self._forward(payload)
+
     def _forward(self, payload: dict[str, Any]) -> None:
         url = self.forward_url
         if not url:
@@ -698,9 +694,9 @@ class Desk:
             req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
             try:
                 with urllib.request.urlopen(req, timeout=5) as resp:
-                    note = f"Stax accepted ({resp.status})"
+                    note = f"Sam accepted ({resp.status})"
             except (urllib.error.URLError, TimeoutError) as exc:
-                note = f"Stax forward failed: {exc}"
+                note = f"Sam forward failed: {exc}"
             with self.lock:
                 self._note("FORWARD", note)
 
@@ -869,6 +865,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path in ("/webhook/trade-signal", "/api/alert"):
             result = DESK.handle(payload)
+            DESK.forward_alert(payload)
             self._send(200 if result["success"] else 400, result)
             return
         if path == "/api/settings":

@@ -58,6 +58,28 @@ desk is waiting. Do not invent a setup.
 Read docs/alerts-thread.md before you change anything.
 ```
 
+## Connect the desk to Sam
+
+Discord is later. This leg is the paper desk to Sam. Paste this into the alerts chat.
+Sam's own webhook URL is the missing value. When it is pasted, that chat saves it on the desk.
+
+```
+Connect this paper desk to the Grokbot named Sam. Do not connect Discord. Do not change Pine. Do not POST a sample trade.
+
+Pull the latest main and restart the desk on port 8791. The TradingView webhook stays
+https://dimension-pot-voices-tyler.trycloudflare.com/webhook/trade-signal
+
+Every plan, plan_cancel, entry, exit, and stop_update that hits that path is forwarded as the same JSON body to the desk setting forwardUrl. That setting is Sam.
+
+If I have not pasted Sam's webhook URL in this chat, ask me for it and stop.
+When I paste it, save it with POST http://127.0.0.1:8791/api/settings and this JSON body:
+{"forwardUrl":"SAM_WEBHOOK_URL"}
+Then read /api/state and confirm forwardUrl is that address.
+
+Sam receives the raw alert. Sam does not replace the desk. The five chart alerts stay on the Cloudflare URL above.
+Do not add a firm or an evaluation. End with the three-line status, and say whether Sam's URL is saved.
+```
+
 ## Alert and webhook prompt
 
 Paste this into the alerts chat. It is the same alert this development chat set up.
