@@ -60,34 +60,49 @@ Read docs/alerts-thread.md before you change anything.
 
 ## Alert and webhook prompt
 
-Paste this into the alerts chat when it is time to connect TradingView.
+Paste this into the alerts chat. It is the same alert this development chat set up.
+That chat cannot click TradingView. It tells you the dialog. You create the alert on each chart.
 
 ```
-Set up the TradingView alert for StaxBot 2.0. Do not change Pine. Do not invent a payload.
+Give me the TradingView alert for StaxBot 2.0. Do not change Pine. Do not invent a payload. Do not POST a sample trade.
 
-On the chart, StaxBot 2.0 is already saved. In the script inputs set Alert Payload to
-Generic JSON (Futures / Any Webhook). Leave Send Stop-Update Alerts off unless I ask.
+This is the setup already used in development.
 
-Create one alert:
+The script on the chart is StaxBot 2.0. In its inputs, under Stax Alerts:
+- Alert Payload: Generic JSON (Futures / Any Webhook)
+- Send Exit Alerts: on
+- Send Stop-Update Alerts: off
+
+Create the alert on each of these charts: MNQZ2026, MGCZ2026, MESZ2026, M2KZ2026, MYMZ2026.
+Same script, same webhook, one alert per chart. An alert belongs to the chart it is created on.
+
+Alert dialog:
 - Condition: StaxBot 2.0
 - Trigger: alert() function calls only
-- Do not also enable order fills
-- Message box: empty. The script calls alert() with the JSON. Typing a message replaces nothing, and an empty box is correct.
-- Webhook URL: the public HTTPS address that forwards to http://127.0.0.1:8791/webhook/trade-signal
-- Name the alert StaxBot 2.0
+- Do not also enable order fills. This script does not place strategy orders. Order fills are not the plan.
+- Message box: empty. The script calls alert() and sends the JSON itself.
+- Webhook URL: https://dimension-pot-voices-tyler.trycloudflare.com/webhook/trade-signal
+- Alert name: StaxBot 2.0
 
-TradingView cannot reach 127.0.0.1. Until that public HTTPS forward exists, say the alert is ready on the chart and the desk is still waiting. Do not claim an alert arrived.
+That webhook forwards to the paper desk at http://127.0.0.1:8791/webhook/trade-signal.
+You cannot open my TradingView. Tell me those settings and stop. I will create the alerts.
 
-The script sends these events to that path. You do not type them:
+After I create them, wait. When a real alert arrives, present the market, side, grade, entry, stop, and each target with its R. Do not recompute the prices.
+
+The script sends these events. Nobody types them into the message box:
 - plan, when a setup is drawn
 - plan_cancel, when that setup is cancelled
 - entry, when the limit fills
 - exit, when a target or the stop is hit
-- stop_update, only if that input is on
+- stop_update, only if Send Stop-Update Alerts is on
 
-A plan looks like this. Prices come from the chart. There is no contract count and no dollar risk in the body.
+A plan body looks like this. Prices come from the chart. There is no contract count and no dollar amount in it.
 
-{"source":"staxbot","event":"plan","eventId":"...","setupId":"TICKER:barTime:long","settingsId":"...","action":"buy","side":"long","ticker":"...","root":"...","exchange":"...","timeframe":"...","grade":"...","price":0,"entry":0,"stop":0,"target":0,"targets":[{"id":"TP1","price":0,"allocation":1,"r":1.00}],"reason":"fvg_retrace","timestamp":"..."}
+{"source":"staxbot","event":"plan","eventId":"...","setupId":"TICKER:barTime:long","settingsId":"...","action":"buy","side":"long","ticker":"MNQZ2026","root":"MNQ","exchange":"...","timeframe":"...","grade":"...","price":0,"entry":0,"stop":0,"target":0,"targets":[{"id":"TP1","price":0,"allocation":1,"r":1.00}],"reason":"fvg_retrace","timestamp":"..."}
 
-An entry uses the same prices with "event":"entry". An exit adds "reason" and "targetId" (TP1, TP2, TP3, STOP, or FLAT). The desk keeps the armed plan's prices when setupId matches. Present whatever arrives. Do not recompute the targets.
+An entry is the same prices with "event":"entry". An exit adds "reason" and "targetId" (TP1, TP2, TP3, STOP, or FLAT). If setupId matches the armed plan, the desk uses the plan prices.
+
+Changing the chart inputs does not change an alert that is already running. If inputs change, the HUD says INPUTS CHANGED. Delete that alert and create it again.
+
+Do not add a firm or an evaluation. End with the three-line status only.
 ```
