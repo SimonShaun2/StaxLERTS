@@ -19,6 +19,7 @@
 // ============================================================================
 strategy("Breakaway Bot (Stax Edition)", shorttitle = "Breakaway | Stax", overlay = true,
      initial_capital = 50000, default_qty_type = strategy.fixed, default_qty_value = 1, pyramiding = 0,
+     margin_long = 1, margin_short = 1,
      calc_on_every_tick = false, calc_on_order_fills = false, process_orders_on_close = false,
      commission_type = strategy.commission.cash_per_contract, commission_value = 0.0, slippage = 0,
      max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
@@ -166,8 +167,9 @@ sessShort = pSess == "NY AM (09:30-12:00)" ? "NY AM" :
      pSess == "Overnight (18:00-03:00)" ? "Overnight" :
      pSess == "Custom" ? customSessIn : "24/5"
 sessionFilterOn = sessStr != ""
-sessArg         = sessionFilterOn ? sessStr : "0000-0000:1234567"
-inSession       = not na(time(timeframe.period, sessArg, tzIn))
+// time() rejects an empty session. 24/5 skips the result and stays in-session all week.
+sessForTime     = sessionFilterOn ? sessStr : "0000-2359:1234567"
+inSession       = not sessionFilterOn or not na(time(timeframe.period, sessForTime, tzIn))
 sessionEnded    = sessionFilterOn and inSession[1] and not inSession
 
 dayStamp = dayofmonth(time, tzIn)
@@ -558,7 +560,7 @@ if longSetup or shortSetup
                 bearBosBar := na
             if showDrawingsIn
                 boxColor    = dir == 1 ? color.teal : color.red
-                pendBox     := box.new(bar_index - 2, fvgTop, bar_index + 1, fvgBot, border_color = color.new(boxColor, 30), bgcolor = color.new(boxColor, 75), border_width = 1)
+                pendBox     := box.new(bar_index - 2, fvgTop, bar_index + 8, fvgBot, border_color = color.new(boxColor, 0), bgcolor = color.new(boxColor, 70), border_width = 2)
                 pendEntryLn := line.new(bar_index, entryLvl, bar_index + 1, entryLvl, color = color.new(color.white, 20), style = line.style_dotted)
                 pendSlLn    := line.new(bar_index, sl, bar_index + 1, sl, color = color.new(color.red, 0), width = 1)
                 pendTpLn    := line.new(bar_index, pendTp, bar_index + 1, pendTp, color = color.new(color.green, 0), width = 1)
@@ -599,9 +601,13 @@ if showDrawingsIn and (pending or inTrade)
             line.set_y2(livStopLn, livStop)
             line.set_x2(livStopLn, bar_index)
 
-pF = plot(emaFast, "EMA Fast", color = color.new(cloudColorIn, 40), linewidth = 1)
-pS = plot(emaSlow, "EMA Slow", color = color.new(cloudColorIn, 60), linewidth = 1)
-fill(pF, pS, color = color.new(cloudColorIn, 80), title = "EMA Cloud")
+pF = plot(emaFast, "EMA Fast", color = color.new(cloudColorIn, 0), linewidth = 2)
+pS = plot(emaSlow, "EMA Slow", color = color.new(cloudColorIn, 35), linewidth = 2)
+fill(pF, pS, color = color.new(cloudColorIn, 85), title = "EMA Cloud")
+plot(showDrawingsIn ? rangeHigh : na, "Range High", color.new(color.red, 0), 1, plot.style_linebr)
+plot(showDrawingsIn ? rangeLow : na, "Range Low", color.new(color.teal, 0), 1, plot.style_linebr)
+plotshape(showDrawingsIn and bullBos, "Bull break", shape.triangleup, location.belowbar, color.new(color.teal, 0), size = size.tiny)
+plotshape(showDrawingsIn and bearBos, "Bear break", shape.triangledown, location.abovebar, color.new(color.red, 0), size = size.tiny)
 bgcolor(showSessBgIn and sessionFilterOn and inSession ? color.new(cloudColorIn, 93) : na, title = "Session")
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -621,7 +627,9 @@ f_head(table t, int r, string l, string rt) =>
 f_money(float v) =>
     (v < 0 ? "-$" : "$") + str.tostring(math.round(math.abs(v)))
 
-if showTableIn and barstate.islast
+// Every bar, not only barstate.islast. In Bar Replay islast stays false until the
+// replay reaches the end of the loaded data, which left the table empty.
+if showTableIn
     white  = color.white
     tradeTxt = inTrade ? (livDir == 1 ? "LONG " : "SHORT ") + str.tostring(livQty) + " @ " + str.tostring(livEntry, format.mintick) :
          pending ? (pendDir == 1 ? "L rest @ " : "S rest @ ") + str.tostring(pendEntry, format.mintick) : "---"
