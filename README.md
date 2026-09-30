@@ -22,6 +22,7 @@ original's exact rules are not public, this README says what this version does i
 | `bot/execution_bot.py` | The paper desk at `http://127.0.0.1:8791`. It sizes contracts from its own risk setting and uses the prices in the alert. |
 | `bot/watch.py` | Mirrors the TradingView plan on the desk. It does not invent entry, stop, or target prices. |
 | `docs/strategy-logic.md` | Bar-by-bar description of every rule and setting. |
+| `docs/alerts-thread.md` | Standing split: this repo's chart is accepted, and the alerts chat does not edit Pine. |
 | `tools/mock_stax_webhook.py` | Payload checker for the Stax options webhook format. |
 
 ## What takes the trades
