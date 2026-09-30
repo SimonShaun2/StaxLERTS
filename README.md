@@ -18,7 +18,7 @@ original's exact rules are not public, this README says what this version does i
 
 | Path | Purpose |
 | --- | --- |
-| `breakaway_bot_stax.pine` | The signal. One script, titled StaxBot. Minimum Grade and Take Profit are settings on the chart. The table reads **StaxBot** and **v1.5**. |
+| `breakaway_bot_stax.pine` | The signal. One script, titled StaxBot. Risk, take profit, daily loss, and minimum grade are settings on the chart. The table reads **StaxBot** and **v1.5**. |
 | `bot/execution_bot.py` | The bot that takes the trade. Paper desk at `http://127.0.0.1:8791`. |
 | `bot/watch.py` | The desk scan. Markets, minimum grade, take profit, and size come from the desk settings. |
 | `docs/strategy-logic.md` | Bar-by-bar description of every rule and setting. |
@@ -43,7 +43,7 @@ An entry alert opens the paper position at the signal price with the stop and ta
 
 **Take sample trades** on the desk runs two MES round-trips so you can see a fill without waiting for the chart. MNQ is not on the watch. Leave the forward URL blank for futures. Stax's webhook expects an options ticker (`SPY260930C660.0`), not a futures root. Paste that URL only when the chart is the underlying and the payload is **Stax Options Webhook**.
 
-StaxBot is one script. Another watch is a change to Minimum Grade and Take Profit on the chart, not a new file. The paper desk uses the same idea: markets, minimum grade, take profit, and contract counts are settings on the desk. Defaults match the chart — minimum A, target 1R, 3 contracts on A and 5 on A+, MES, MGC, and MYM. MNQ stays off this Select account. The paper desk is a Tradeify Select 25K evaluation: $25,000 start, $1,500 profit target, $1,000 end-of-day trailing drawdown enforced in real time, no daily loss limit, and a 40% consistency rule. The day stops at $600 so the best day can still be 40% of the $1,500 target. Max size is 1 mini or 10 micros. One trade is capped at $250 of stop risk so a single stop cannot spend the trail. An alert from the chart is taken with the grade and target in that alert.
+StaxBot is one script. Another watch is a change to the chart inputs, not a new file. Size is `floor(Risk Per Trade / (stop distance × point value))`. Defaults are the ones this script was built with: risk $100, take profit 1R, max daily loss $0, minimum grade Off. The paper desk has its own settings for markets, minimum grade, take profit, and contract counts. MNQ stays off this Select account. The paper desk is a Tradeify Select 25K evaluation: $25,000 start, $1,500 profit target, $1,000 end-of-day trailing drawdown enforced in real time, no daily loss limit, and a 40% consistency rule. The day stops at $600 so the best day can still be 40% of the $1,500 target. Max size is 1 mini or 10 micros. One trade is capped at $250 of stop risk so a single stop cannot spend the trail. An alert from the chart is taken with the grade and target in that alert.
 
 ## How the strategy trades
 
