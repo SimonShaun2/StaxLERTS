@@ -18,7 +18,7 @@ original's exact rules are not public, this README says what this version does i
 
 | Path | Purpose |
 | --- | --- |
-| `staxbot_2_0.pine` | The plan. Saved in TradingView as **StaxBot 2.0**. Each update is a new file and a new saved name: 2.0, then 2.1, then 2.2. The chart legend reads **Stax 2.0**. The HUD reads **StaxBot 2.0**. |
+| `staxbot_2_1.pine` | The plan. Saved in TradingView as **StaxBot 2.1**. The legend reads **Stax 2.1**. The HUD reads **StaxBot 2.1**. `staxbot_2_0.pine` stays as the previous save. |
 | `bot/execution_bot.py` | The paper desk at `http://127.0.0.1:8791`. It sizes contracts from its own risk setting and uses the prices in the alert. |
 | `bot/watch.py` | Mirrors the TradingView plan on the desk. It does not invent entry, stop, or target prices. |
 | `docs/strategy-logic.md` | Bar-by-bar description of every rule and setting. |
