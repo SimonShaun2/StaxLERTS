@@ -1,0 +1,565 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Stax Grok decision v2 — canonical playbook v1.9",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "candidate_id",
+    "candidate_revision",
+    "decision",
+    "entry_option_id",
+    "stop_option_id",
+    "target_1_option_id",
+    "target_2_option_id",
+    "target_final_option_id",
+    "visual_adjustment",
+    "visual_checks",
+    "checklist",
+    "reasons",
+    "reject_codes",
+    "warnings"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "grok_decision_v2"
+    },
+    "candidate_id": {
+      "type": "string"
+    },
+    "candidate_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "decision": {
+      "enum": [
+        "CONFIRMED",
+        "REVIEW",
+        "REJECTED"
+      ]
+    },
+    "entry_option_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stop_option_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "target_1_option_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "target_2_option_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "target_final_option_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "visual_adjustment": {
+      "type": "integer",
+      "minimum": -3,
+      "maximum": 2
+    },
+    "visual_checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "displacement_quality",
+        "retrace_quality",
+        "chart_cleanliness"
+      ],
+      "properties": {
+        "displacement_quality": {
+          "enum": [
+            "STRONG",
+            "ADEQUATE",
+            "WEAK",
+            "FAKE",
+            "UNCLEAR"
+          ]
+        },
+        "retrace_quality": {
+          "enum": [
+            "CLEAN",
+            "DEEP",
+            "FAILED_ZONE",
+            "NO_RETRACE",
+            "CHURN",
+            "UNCLEAR"
+          ]
+        },
+        "chart_cleanliness": {
+          "enum": [
+            "CLEAN",
+            "CHOP",
+            "UNCLEAR"
+          ]
+        }
+      }
+    },
+    "checklist": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "0_cut",
+        "1_context",
+        "2_level",
+        "3_displacement",
+        "4_retracement",
+        "5_confirmation",
+        "6_invalidation",
+        "7_room",
+        "8_instrument"
+      ],
+      "properties": {
+        "0_cut": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cut_time_et",
+            "visible_high",
+            "visible_low",
+            "pane"
+          ],
+          "properties": {
+            "cut_time_et": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "visible_high": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "visible_low": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "1_context": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "result",
+                "htf_bias",
+                "day_type",
+                "session_active",
+                "news_clear",
+                "note"
+              ],
+              "properties": {
+                "result": {
+                  "enum": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                },
+                "htf_bias": {
+                  "enum": [
+                    "UP",
+                    "DOWN",
+                    "RANGE"
+                  ]
+                },
+                "day_type": {
+                  "enum": [
+                    "TREND",
+                    "RANGE",
+                    "CHOP"
+                  ]
+                },
+                "session_active": {
+                  "type": "boolean"
+                },
+                "news_clear": {
+                  "type": "boolean"
+                },
+                "note": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "2_level": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "result",
+                "level",
+                "location",
+                "freshness",
+                "note"
+              ],
+              "properties": {
+                "result": {
+                  "enum": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                },
+                "level": {
+                  "type": "string"
+                },
+                "location": {
+                  "enum": [
+                    "DISCOUNT",
+                    "PREMIUM",
+                    "MID"
+                  ]
+                },
+                "freshness": {
+                  "enum": [
+                    "FIRST_TEST",
+                    "RETEST",
+                    "OVERTESTED"
+                  ]
+                },
+                "note": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "3_displacement": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "result",
+                "quality",
+                "structure_broken",
+                "note"
+              ],
+              "properties": {
+                "result": {
+                  "enum": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                },
+                "quality": {
+                  "enum": [
+                    "STRONG",
+                    "ADEQUATE",
+                    "WEAK",
+                    "FAKE"
+                  ]
+                },
+                "structure_broken": {
+                  "type": "boolean"
+                },
+                "note": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "4_retracement": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "result",
+                "quality",
+                "zone_pre_selected",
+                "note"
+              ],
+              "properties": {
+                "result": {
+                  "enum": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                },
+                "quality": {
+                  "enum": [
+                    "CLEAN",
+                    "DEEP",
+                    "FAILED_ZONE",
+                    "NO_RETRACE",
+                    "CHURN"
+                  ]
+                },
+                "zone_pre_selected": {
+                  "type": "boolean"
+                },
+                "note": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "5_confirmation": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "result",
+                "signal",
+                "note"
+              ],
+              "properties": {
+                "result": {
+                  "enum": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                },
+                "signal": {
+                  "type": "string"
+                },
+                "note": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "6_invalidation": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "result",
+                "stop_option_id",
+                "invalidation_reference",
+                "invalidation_price",
+                "note"
+              ],
+              "properties": {
+                "result": {
+                  "enum": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                },
+                "stop_option_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "invalidation_reference": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "invalidation_price": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "note": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "7_room": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "result",
+                "session_checklist",
+                "majors_between_entry_and_final",
+                "first_obstacle",
+                "first_obstacle_price",
+                "targets_before_obstacle",
+                "note"
+              ],
+              "properties": {
+                "result": {
+                  "enum": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                },
+                "session_checklist": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "level",
+                      "price",
+                      "status"
+                    ],
+                    "properties": {
+                      "level": {
+                        "type": "string"
+                      },
+                      "price": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "status": {
+                        "enum": [
+                          "ABOVE",
+                          "BELOW",
+                          "SWEPT",
+                          "NOT_VISIBLE"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "majors_between_entry_and_final": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "first_obstacle": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "first_obstacle_price": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "targets_before_obstacle": {
+                  "type": "boolean"
+                },
+                "note": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "8_instrument": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "result",
+                "module",
+                "rules_applied",
+                "cross_market",
+                "note"
+              ],
+              "properties": {
+                "result": {
+                  "enum": [
+                    "PASS",
+                    "FAIL"
+                  ]
+                },
+                "module": {
+                  "enum": [
+                    "MGC",
+                    "MNQ",
+                    "MES"
+                  ]
+                },
+                "rules_applied": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "cross_market": {
+                  "type": "string"
+                },
+                "note": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "reject_codes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
