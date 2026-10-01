@@ -1,6 +1,6 @@
 """Decision rules for StaxBot 2.4.0.
 
-The Pine script staxbot_2_4_0.pine follows these rules. This file is the check
+The Pine script staxbot_2_4_1.pine follows these rules. This file is the check
 that can run here. It does not read market data and it does not place trades.
 """
 

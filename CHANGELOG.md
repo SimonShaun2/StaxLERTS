@@ -8,3 +8,4 @@
 - StaxBot 2.4.0 in `staxbot_2_4_0.pine`. Shelf and gap plans arm independently. Tight, Medium, and Large share the leg extreme and change only the buffer. A fill is an overlap on a later bar. The daily count moves only on that fill. `staxbot_2_1.pine` was not edited.
 - `docs/strategy-logic.md` and the README now describe StaxBot 2.4.0.
 - 2.4.1. `planSeq` and `hudReject` are fields on `Engine`. Functions update those fields instead of the globals. `moveSeq` and `moveIdNow` stay globals because only the main script writes them.
+- 2.4.1 is its own file, `staxbot_2_4_1.pine`. `staxbot_2_4_0.pine` is the 2.4.0 script again.

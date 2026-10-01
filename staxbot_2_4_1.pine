@@ -1,12 +1,12 @@
 //@version=6
-// StaxBot 2.4.0
-// New saved script. The legend reads Stax 2.4.0. The HUD reads STAXBOT 2.4.0.
+// StaxBot 2.4.1
+// New saved script. The legend reads Stax 2.4.1. The HUD reads STAXBOT 2.4.1.
 // Built from the 2.1 base: stored break price, latest swing, gap detection.
 // A shelf plan arms without a gap. A gap inside the window is a second plan.
 // Tight, Medium, and Large all use the leg extreme and change only the buffer.
 // Targets use the Medium buffer. The daily count moves only when a plan fills.
 // This script does not call strategy.entry or strategy.exit. Alerts are alert() only.
-strategy("StaxBot 2.4.0", shorttitle = "Stax 2.4.0", overlay = true,
+strategy("StaxBot 2.4.1", shorttitle = "Stax 2.4.1", overlay = true,
      initial_capital = 50000, default_qty_type = strategy.fixed, default_qty_value = 1, pyramiding = 0,
      margin_long = 1, margin_short = 1,
      calc_on_every_tick = false, calc_on_order_fills = false, process_orders_on_close = false,
@@ -309,9 +309,13 @@ type staxPlan
     box rangeBox = na
     label lbRange = na
 
+type Engine
+    int planSeq = 0
+    string hudReject = ""
+
+var Engine eng = Engine.new()
 var array<staxPlan> plans = array.new<staxPlan>()
 var array<string> outbox = array.new_string()
-var int planSeq = 0
 var int moveSeq = 0
 var int moveIdNow = 0
 var int moveDir = 0
@@ -324,7 +328,6 @@ var float moveZoneLo = na
 var int moveZoneFrom = 0
 var bool moveFlag1 = false
 var int tradesToday = 0
-var string hudReject = ""
 
 f_num(float v) =>
     na(v) ? "null" : str.tostring(v, format.mintick)
@@ -405,7 +408,7 @@ f_replace_older(int side, int id) =>
                 array.set(plans, i, p)
     true
 f_try_arm(string origin, int side, float entry, float anchor, float shelf, int swingBar, float zoneHi, float zoneLo, int zoneFrom, bool flag1, bool fifth) =>
-    planSeq += 1
+    eng.planSeq += 1
     float med = f_stop(anchor, side, "Medium")
     float sel = f_stop(anchor, side, pSl)
     float ref = (entry - med) * side
@@ -425,14 +428,14 @@ f_try_arm(string origin, int side, float entry, float anchor, float shelf, int s
     string g = f_grade(flag1, side == 1 ? bias == 1 : bias == -1, volume > volSma, gradeSess, fifth)
     bool take = minGradeIn == "Off" or g == "A+" or (minGradeIn == "A" and g == "A")
     if not geometryOk
-        hudReject := "PLAN REJECTED: geometry."
-        log.info("plan_id " + str.tostring(planSeq) + " PLAN REJECTED: geometry")
+        eng.hudReject := "PLAN REJECTED: geometry."
+        log.info("plan_id " + str.tostring(eng.planSeq) + " PLAN REJECTED: geometry")
     else if not distanceOk
-        hudReject := "PLAN REJECTED: stop distance."
-        log.info("plan_id " + str.tostring(planSeq) + " PLAN REJECTED: stop distance")
+        eng.hudReject := "PLAN REJECTED: stop distance."
+        log.info("plan_id " + str.tostring(eng.planSeq) + " PLAN REJECTED: stop distance")
     else if take and not f_has(moveIdNow, origin)
         staxPlan p = staxPlan.new()
-        p.planId := planSeq
+        p.planId := eng.planSeq
         p.moveId := moveIdNow
         p.scenario := origin == "gap" ? "A" : "B"
         p.origin := origin
@@ -462,12 +465,12 @@ f_try_arm(string origin, int side, float entry, float anchor, float shelf, int s
         p.w1 := tp1WIn
         p.w2 := tp2WIn
         p.w3 := tp3WIn
-        p.setupId := syminfo.ticker + ":" + str.tostring(time) + ":" + str.tostring(planSeq)
+        p.setupId := syminfo.ticker + ":" + str.tostring(time) + ":" + str.tostring(eng.planSeq)
         p.fp := f_fp()
         p.reason := ""
         array.push(plans, p)
         f_send(f_payload(p, "plan", ""))
-        hudReject := ""
+        eng.hudReject := ""
     true
 
 f_note(int at, float y, string txt) =>
@@ -862,7 +865,7 @@ staxPlan view = have ? array.get(plans, focus) : staxPlan.new()
 string resolvedLine = f_resolved_line()
 bool hudStale = have and view.fp != f_fp()
 string moveLine = f_move_line()
-string noteBody = hudStale ? "INPUTS CHANGED. Recreate the alert." : hudReject != "" ? hudReject : inPause ? "Pause. No new plans and no fills." : moveLine != "" ? moveLine : resolvedLine != "" ? resolvedLine : "Waiting for a displaced close."
+string noteBody = hudStale ? "INPUTS CHANGED. Recreate the alert." : eng.hudReject != "" ? eng.hudReject : inPause ? "Pause. No new plans and no fills." : moveLine != "" ? moveLine : resolvedLine != "" ? resolvedLine : "Waiting for a displaced close."
 string note = enableCIn ? "Scenario C is not built. " + noteBody : noteBody
 string stateWord = have and view.state == "TRIGGERED" ? "TRIGGERED" : have and view.state == "LIVE" ? "LIVE" : have and view.state == "ARMED" ? "ARMED" : resolvedLine != "" ? resolvedLine : inPause ? "PAUSE" : "WATCH"
 string sideWord = have ? (view.dir == 1 ? "LONG" : "SHORT") : ""
@@ -912,7 +915,7 @@ if showTableIn and not na(infoTbl)
     string cloud = bulls > bears ? "BULL " + str.tostring(bulls) + "/5" : bears > bulls ? "BEAR " + str.tostring(bears) + "/5" : "MIX"
     color biasInk = bulls > bears ? color.new(#4C8DFF, 0) : bears > bulls ? color.new(#FF8A3D, 0) : ink
     if hudSizeIn == "Compact"
-        f_cell(infoTbl, 0, 0, "STAXBOT 2.4.0", ink, headBg)
+        f_cell(infoTbl, 0, 0, "STAXBOT 2.4.1", ink, headBg)
         f_cell(infoTbl, 1, 0, cloud, biasInk, headBg)
         f_cell(infoTbl, 2, 0, stateWord, stateInk, headBg)
         f_cell(infoTbl, 0, 1, stateTxt, sideInk, keyBg)
@@ -925,13 +928,13 @@ if showTableIn and not na(infoTbl)
         f_cell(infoTbl, 1, 3, have ? f_num(view.liveStop) : pSl, have ? color.new(#FF5C6C, 0) : ink, rowBg)
         f_cell(infoTbl, 2, 3, have ? view.preset : "", muted, rowBg)
     else
-        f_cell(infoTbl, 0, 0, "STAXBOT 2.4.0", ink, headBg)
+        f_cell(infoTbl, 0, 0, "STAXBOT 2.4.1", ink, headBg)
         f_cell(infoTbl, 1, 0, stateWord, stateInk, headBg)
         f_cell(infoTbl, 0, 1, cloud, biasInk, keyBg)
         f_cell(infoTbl, 1, 1, sessShort, ink, rowBg)
         f_cell(infoTbl, 0, 2, stateTxt, sideInk, keyBg)
         f_cell(infoTbl, 1, 2, gradeTxt, have ? ink : muted, rowBg)
-        f_cell(infoTbl, 0, 3, note, hudStale or hudReject != "" ? color.new(#e6b35a, 0) : muted, rowBg)
+        f_cell(infoTbl, 0, 3, note, hudStale or eng.hudReject != "" ? color.new(#e6b35a, 0) : muted, rowBg)
         f_cell(infoTbl, 0, 4, lab1, have and view.on1 ? liveGreen : muted, keyBg)
         f_cell(infoTbl, 1, 4, val1, ink, rowBg)
         f_cell(infoTbl, 0, 5, lab2, have ? color.new(#E6EAF2, 0) : muted, keyBg)
