@@ -1,10 +1,11 @@
 # Breakaway Bot — Stax Edition
 
 An open Pine Script v6 re-implementation of the Breakaway model. The chart
-script is `staxbot_2_4_5.pine`. The legend reads **StaxBot**. A
-shelf break arms without a gap. A gap inside the window is a second plan. Tight,
-Medium, and Large choose the stop distance. Targets stay on the Medium distance. Alerts
-are formatted for the
+script is `staxbot_2_5_0.pine`. The legend reads **StaxBot**. The HUD reads
+**STAXBOT 2.5.0**. A shelf break arms without a gap. A gap inside the window is
+a second plan. Scenario C arms the reversal after a failed break. Tight, Medium,
+and Large choose the stop distance. Targets and the arm decision stay on the
+Medium stop. Alerts are formatted for the
 [StaxInvesting](https://staxinvesting.com) webhook, so Stax can execute what the
 strategy signals.
 
@@ -21,14 +22,16 @@ original's exact rules are not public, this README says what this version does i
 
 | Path | Purpose |
 | --- | --- |
-| `staxbot_2_4_5.pine` | The chart. The legend reads **StaxBot**. The HUD reads **STAXBOT 2.4.5**. Shelf plan and gap plan. Tight, Medium, and Large choose the stop. Targets stay on the Medium distance. |
-| `staxbot_2_4_4.pine` | Previous file. Do not load it over 2.4.5. |
-| `staxbot_2_4_3.pine` | Previous file. It stops on bar 141. Do not load it over 2.4.5. |
-| `staxbot_2_4_2.pine` | Previous file. Do not load it over 2.4.5. |
-| `staxbot_2_4_1.pine` | Previous file. Do not load it over 2.4.5. |
-| `staxbot_2_4_0.pine` | Previous file. It does not compile. Do not load it over 2.4.5. |
-| `staxbot_2_1.pine` | Untouched rebuild base. Do not load it over 2.4.5. |
-| `tools/engine_rules.py` | The fill, stop, and grade checks that match the 2.4.5 rules. |
+| `staxbot_2_5_0.pine` | The chart. The legend reads **StaxBot**. The HUD reads **STAXBOT 2.5.0**. Paste this file into a new Pine tab. |
+| `staxbot_2_4_7.pine` | Previous file. Do not load it over 2.5.0. |
+| `staxbot_2_4_5.pine` | Previous file. Do not load it over 2.5.0. |
+| `staxbot_2_4_4.pine` | Previous file. Do not load it over 2.5.0. |
+| `staxbot_2_4_3.pine` | Previous file. It stops on bar 141. Do not load it over 2.5.0. |
+| `staxbot_2_4_2.pine` | Previous file. Do not load it over 2.5.0. |
+| `staxbot_2_4_1.pine` | Previous file. Do not load it over 2.5.0. |
+| `staxbot_2_4_0.pine` | Previous file. It does not compile. Do not load it over 2.5.0. |
+| `staxbot_2_1.pine` | Untouched rebuild base. Do not load it over 2.5.0. |
+| `tools/engine_rules.py` | The fill, stop, grade, room, and watch checks that match the 2.5.0 rules. |
 | `archive/staxbot_2_0.pine` | Archived. Gap detection and the alert-only HUD. The bar-1001 history lookup is why it left the active path. |
 | `archive/staxbot_2_2.pine` | Archived. Same-bar fill-and-exit counting. Its Medium stop is the displacement candle, and that is the script that filled the day at 5/5. |
 | `archive/staxbot_2_3.pine` | Archived. Plan/fill split, Take Profit (R) input, and RANGE drawing stay available to port. Oldest-extreme range memory is why it is not the base. |
@@ -59,7 +62,9 @@ A `plan` alert stores the chart's entry, stop, and targets. An `entry` alert ope
 
 **Take sample trades** on the desk runs two MES round-trips so you can see a fill without waiting for the chart. Leave the forward URL blank for futures. Stax's webhook expects an options ticker (`SPY260930C660.0`), not a futures root. Paste that URL only when the chart is the underlying and the payload is **Stax Options Webhook**.
 
-StaxBot is one script. Another watch is a change to the chart inputs, not a new file. The chart plan is price and R only: TP1 is `Take Profit (R)` times the stop distance, TP2 is twice that, and TP3 is three times that. Turn each target on or off and set its weight in the inputs. Weights are shares, not contracts. Defaults match the original replay's single 1R target: TP1 on, TP2 off, TP3 off, minimum grade Off. Dollar loss, dollar profit, and contract size are not chart inputs. The account is not part of the chart or the alerts chat. Say what you are trading before the session, and say it again when that changes. The desk's **Risk per trade** setting sizes the position from the alert's stop distance. The charts it watches are the December 2026 contracts: MNQZ2026, MGCZ2026, MESZ2026, M2KZ2026, and MYMZ2026.
+StaxBot is one script. Another watch is a change to the chart inputs, not a new file. The chart plan is price and R only: TP1 is `Take Profit (R)` times the Medium stop distance, TP2 is twice that, and TP3 is three times that, unless Structural Targets is on. Turn each target on or off and set its weight in the inputs. Weights are shares, not contracts. Defaults are TP1, TP2, and TP3 on, weights 2 / 1 / 1, trail Standard (BE 1R), Shelf, Gap, and Scenario C on, and Momentum off. Dollar loss, dollar profit, and contract size are not chart inputs. The account is not part of the chart or the alerts chat. Say what you are trading before the session, and say it again when that changes. The desk's **Risk per trade** setting sizes the position from the alert's stop distance. The charts it watches are the December 2026 contracts: MNQZ2026, MGCZ2026, MESZ2026, M2KZ2026, and MYMZ2026.
+
+Keep the 2.4 alert attached until the desk accepts `version`, `fp`, `level`, `exit_price`, and the `watch`, `break_forming`, and `break_cancelled` events. `watch` and `break_forming` are heads-ups. They do not book a trade. This repo does not change the desk.
 
 TradingView copies the script inputs into an alert when the alert is created. Editing the chart later does not edit that alert, and the drawn plan does not move. The HUD says **INPUTS CHANGED** when the live inputs no longer match the plan. Delete the old alert and create it again. The script also puts a `settingsId` on the payload so the desk can see that an entry was built from a different snapshot than the armed plan. It still uses the armed plan's prices.
 
@@ -86,9 +91,7 @@ TradingView copies the script inputs into an alert when the alert is created. Ed
 
 The resting plan stays while price runs to a target without tagging the entry. It is cancelled if it expires, if a bar closes beyond the stop, if a bar trades both the entry and the stop, if structure flips, or if the session ends.
 
-Everything is evaluated **once per bar on closed data**, structure only uses confirmed
-swings, and the bot holds at most **one resting order and one open position** — the same
-anti-repaint posture the original moved to in its v1.9 update.
+The state machine runs once on the confirmed bar. Realtime ticks can send one provisional `break_forming` alert. They do not arm a second plan.
 
 ## Replay settings from your screenshots
 
@@ -141,7 +144,7 @@ fields the script includes (`source`, `side`, `underlyingEntry`, `underlyingStop
    and copy your personal webhook URL. Leave the strategy **disabled** until you have seen test
    alerts arrive.
 2. In TradingView, open the chart you want Stax to trade from (for options that is the
-   underlying — SPY, QQQ, SPX…), add `staxbot_2_4_5.pine` from the Pine Editor, and set
+   underlying — SPY, QQQ, SPX…), add `staxbot_2_4_7.pine` from the Pine Editor, and set
    your inputs. In the **Stax Alerts** group:
    * `Alert Payload = Stax Options Webhook`
    * `Days To Expiration`, `Strikes OTM`, `Strike Step` to taste (0DTE, ATM, step 1 by default)
@@ -175,7 +178,7 @@ exits, and (optionally) stop updates are then sent as:
 
 The payload has no contract quantity and no dollar risk. `allocation` is the weight from
 the chart. The desk turns weights into whole contracts. There is no Pine compiler in this
-repo, so paste `staxbot_2_4_5.pine` into TradingView and confirm the HUD reads **STAXBOT 2.4.5**
+repo, so paste `staxbot_2_4_7.pine` into TradingView and confirm the HUD reads **STAXBOT 2.4.7**
 before treating the script as compiled.
 
 ## Testing alerts locally
@@ -200,12 +203,12 @@ printed with the decoded contract, and the response mirrors Stax's success / err
 * **Exit alerts to Stax** — not sent, because the public webhook has no exit action.
   Generic JSON mode sends them.
 * **Daily reset** — when a bar opens at or after 5:00 PM America/Chicago. Not at midnight New York.
-* **Stop distance** — Tight is beyond the gap far edge or the break candle. Medium is beyond the nearest swing past the entry. Large is beyond the leg extreme. Each adds its own buffer. Targets stay on the Medium distance.
+* **Stop distance** — Tight is beyond the gap far edge or the break candle. Medium is beyond the displacement candle. Large is beyond the leg extreme. Buffers use the previous bar's ATR. Tight stays at or inside Medium, and Large at or beyond it. Targets and the min/max stop check stay on the Medium distance. A selected stop inside the minimum is widened to it.
 
 ## Running it
 
-Paste `staxbot_2_4_5.pine` into a new Pine Editor tab and save it. The script name is
+Paste `staxbot_2_4_7.pine` into a new Pine Editor tab and save it. The script name is
 **StaxBot**. Pasting into an older tab keeps the old saved name, so TradingView
 will not store this update. The legend reads **StaxBot** and the HUD reads
-**STAXBOT 2.4.5**. The strategy tester will not show order arrows: the plan is the
+**STAXBOT 2.4.7**. The strategy tester will not show order arrows: the plan is the
 drawing, not a broker fill. `staxbot_2_1.pine` and `archive/staxbot_2_3.pine` are not the chart to load.
