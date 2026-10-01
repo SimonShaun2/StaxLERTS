@@ -1,4 +1,4 @@
-"""Decision rules for StaxBot 2.5.0.
+"""Decision rules for StaxBot 2.5.1.
 
 The Pine script staxbot_2_5_0.pine follows these rules. This file is the check
 that can run here. It does not read market data and it does not place trades.
@@ -432,15 +432,18 @@ def downgrade(grade_name: str) -> str:
     return "A" if grade_name == "A+" else "B"
 
 
-def opposing_level(direction: int, entry: float, tp1: float, zones: list[tuple[str, float]], atr: float, half: float = 0.1) -> str:
+def opposing_level(direction: int, entry: float, tp1: float, zones: list[tuple[str, float]], atr: float, half: float = 0.1, reclaim_atr: float = 0.25) -> str:
+    """Skip a zone that contains the entry. The near edge must clear entry by more than the reclaim tolerance."""
+    tol = reclaim_atr * atr
     best_name = ""
     best = None
     for name, px in zones:
         zlo = px - half * atr
         zhi = px + half * atr
-        hit = px > entry and zlo < tp1 and zhi > entry if direction == 1 else px < entry and zhi > tp1 and zlo < entry
+        contains = zlo <= entry <= zhi
+        clear = (zlo - entry) > tol and zlo < tp1 if direction == 1 else (entry - zhi) > tol and zhi > tp1
         dist = abs(px - entry)
-        if hit and (best is None or dist < best):
+        if not contains and clear and (best is None or dist < best):
             best = dist
             best_name = name
     return best_name
@@ -517,6 +520,12 @@ def test_room_and_location() -> None:
     assert tp1 == 94.0 and tp2 == 100.0 and tp3 == 110.0 and not ladder2 and not ladder3
     tp1, tp2, tp3, ladder2, ladder3 = structural_targets(1, 90.0, 4.0, 1.0, [])
     assert (tp1, tp2, tp3) == (94.0, 98.0, 102.0) and ladder2 and ladder3
+    # The swept zone's outer edge is the Scenario C entry. That zone is not a wall.
+    assert opposing_level(1, 101.0, 120.0, zones, atr=10.0) == ""
+    assert opposing_level(-1, 79.0, 60.0, zones, atr=10.0) == ""
+    # A near edge inside the reclaim tolerance does not block. One beyond it does.
+    assert opposing_level(1, 97.0, 110.0, [("PDH", 100.0)], atr=10.0) == ""
+    assert opposing_level(1, 100.0, 140.0, [("PDH", 100.0), ("PWH", 120.0)], atr=10.0) == "PWH"
 
 
 def c_grade(swept_htf: bool) -> str:
