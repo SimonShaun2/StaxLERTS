@@ -1,8 +1,8 @@
-# Strategy logic, StaxBot 2.4.5
+# Strategy logic, StaxBot 2.4.6
 
-`staxbot_2_4_5.pine` runs once per bar, on the bar's close. It does not call `strategy.entry` or `strategy.exit`. The drawing is the plan. Alerts are `alert()` calls.
+`staxbot_2_4_6.pine` runs once per bar, on the bar's close. It does not call `strategy.entry` or `strategy.exit`. The drawing is the plan. Alerts are `alert()` calls.
 
-`staxbot_2_1.pine` is the untouched base this version was built from. Load the file as a new script. The legend reads **StaxBot**. The HUD reads **STAXBOT 2.4.5**. The version is in the file name, this header, and that HUD header.
+`staxbot_2_1.pine` is the untouched base this version was built from. Load the file as a new script. The legend reads **StaxBot**. The HUD reads **STAXBOT 2.4.6**. The version is in the file name, this header, and that HUD header.
 
 ## 1. Settings
 
@@ -10,13 +10,13 @@ A strategy preset can change direction, session, which stop is selected, breakev
 
 It cannot change Take Profit (R), the entry, or the scenario. Take Profit (R) is always the input.
 
-Tight, Medium, and Large choose the stop distance. They do not choose the entry or the targets.
+Tight, Medium, and Large choose the stop distance. They do not choose the entry, the targets, or whether the plan arms.
 
-- Tight, on a gap plan, is the gap's far edge plus the tight tick buffer. On a shelf plan it is the break candle's extreme plus that same tick buffer. A long uses the candle low. A short uses the candle high. The break candle is the bar that arms the plan.
-- Medium is the nearest stored swing beyond the entry, plus the medium tick buffer. That swing is the other side of the range the shelf formed on. Targets are R multiples of this distance on every preset.
-- Large is the leg extreme plus the large ATR buffer. That is the previous large stop.
+- Tight, on a gap plan, is the gap's far edge plus `Tight Buffer` (default 0.05× ATR). On a shelf plan it is the break candle's extreme plus that same buffer. A long uses the candle low. A short uses the candle high. The break candle is the bar that arms the plan.
+- Medium is the nearest stored swing beyond the entry, plus `Medium Buffer` (default 0.10× ATR). That swing is the other side of the range the shelf formed on. Targets are R multiples of this distance on every preset. Min stop (default 0.5× ATR) and max stop (default 3× ATR, 0 = off) are checked on this distance.
+- Large is the leg extreme plus `Large Buffer` (default 0.5× ATR).
 
-Switching the preset on a fresh calculation moves only the stop line. The entry and the target lines stay on the Medium distance. The geometry check uses the selected stop.
+After the buffers, Tight is pulled back to Medium when it would sit farther out, and Large is pushed out to Medium when it would sit closer. Switching the preset on a fresh calculation moves only the stop line. The geometry check uses the selected stop, which stays on the same side of the entry as Medium.
 
 ## 2. Latest swing
 
@@ -67,9 +67,11 @@ The daily count increases only when a plan becomes `TRIGGERED`. Plans can still 
 
 On an armed plan, starting the bar after it was created:
 
-1. A close beyond the shelf by at least `Reclaim Tolerance` (default 2 ticks) sets `INVALIDATED`. The scenario stays A or B. The reason is `reclaim close`. No fill.
+1. A close beyond the shelf by at least `Reclaim Tolerance` (default 0.25× ATR) sets `INVALIDATED`. The scenario stays A or B. The reason is `reclaim close`. No fill.
 2. A bar that trades both the entry and the stop (`low <= price <= high` on each) does not fill.
-3. A fill requires the bar to trade the entry (`low <= entry <= high`) and the close to stay within the reclaim tolerance of the shelf. The state is `TRIGGERED` on that bar and `LIVE` from the next bar. Exit checks start on the next bar.
+3. A shelf fill requires the bar to trade the zone from the shelf to the reclaim tolerance, and the close to stay within that tolerance. A gap fill still requires the bar to trade the gap entry (`low <= entry <= high`). The state is `TRIGGERED` on that bar and `LIVE` from the next bar. Exit checks start on the next bar.
+
+`Reclaim Tolerance` defaults to 0.25× ATR. Invalidation and the live reclaim exit need the close at least that far past the shelf. The same distance is the far side of the shelf entry zone.
 
 The 3:00–5:00 PM Chicago pause, while enabled, blocks step 3 and blocks new plans. The window and the timezone are inputs.
 
@@ -83,7 +85,7 @@ Before a plan arms, a short must satisfy `selected stop > entry > TP1 > TP2 > TP
 
 If that fails, the plan is not armed. The Pine log records the plan id, and the HUD reads `PLAN REJECTED: geometry.`
 
-A stop that passes that order but breaks the min or max stop distance is not armed either. The HUD then reads `PLAN REJECTED: stop distance.`
+A Medium stop that passes that order but breaks the min or max stop distance is not armed either. Both limits are ATR multiples of the Medium distance, so the preset does not change the result. The HUD then reads `PLAN REJECTED: stop distance.`
 
 ## 9. Live trade
 
@@ -113,9 +115,9 @@ The D / 4H / 1H / 15m / 5m cloud is display only unless `Only Trade With EMA Bia
 
 A shelf plan draws a `RANGE` box. A gap plan draws a `GAP` box. The box border is 2px, solid, with a 70% fill. Lines start 24 bars before the arm bar. Entry is a 2px `#E6EAF2` line. The stop is 3px `#FF5C6C`. TP1 is 2px `#3DDC97`. TP2 is 3px `#3DDC97`. TP3 is 3px `#147A4E`. Price tags sit on the right and the target tags include the R multiple. A `BREAK` note sits on the arm bar at the shelf. A trailed stop turns `#9AA3B5`.
 
-`TRIGGERED`, `LIVE`, and `ARMED` stay in color. `Resolved Plans` defaults to Remove, which deletes the drawing. Grey keeps a faint grey entry line and a short state tag (`CLOSED`, `EXPIRED`, `INVALIDATED`, `REPLACED`, or `CANCELLED`), with no price tags, and only the last three resolved plans.
+`TRIGGERED`, `LIVE`, and `ARMED` stay in color. `Resolved Plans` defaults to Remove, which deletes the drawing. Grey keeps a faint grey entry line and a short state tag (`CLOSED`, `EXPIRED`, `INVALIDATED`, `REPLACED`, or `CANCELLED`), with no price tags, and only the last three resolved plans. Review keeps the last five resolved plans: entry, stop, and target lines in grey, plus that state tag.
 
-The HUD follows that same row layout. Its header reads `STAXBOT 2.4.5`. The state word is `WATCH`, `ARMED`, `TRIGGERED`, `LIVE`, `PAUSE`, or the resolve reason on the bar it happens. Full size lists TP3, then TP2, then TP1, then entry, then stop, and shows or hides rows when a target is toggled. An armed move reads like `Move 3: shelf plan 7750 and gap plan 7758`. Changing an input after a plan exists shows `INPUTS CHANGED`. Recreate the alert.
+The HUD follows that same row layout. Its header reads `STAXBOT 2.4.6`. The state word is `WATCH`, `ARMED`, `TRIGGERED`, `LIVE`, `PAUSE`, or the resolve reason on the bar it happens. Full size lists TP3, then TP2, then TP1, then entry, then stop, and shows or hides rows when a target is toggled. An armed move reads like `Move 3: shelf plan 7750 and gap plan 7758`. Changing an input after a plan exists shows `INPUTS CHANGED`. Recreate the alert.
 
 Scenario C is an input and it is not built. Turning it on does not arm a sweep-and-reclaim plan. The HUD says so.
 
