@@ -1,8 +1,8 @@
-# Strategy logic, StaxBot 2.4.2
+# Strategy logic, StaxBot 2.4.3
 
-`staxbot_2_4_2.pine` runs once per bar, on the bar's close. It does not call `strategy.entry` or `strategy.exit`. The drawing is the plan. Alerts are `alert()` calls.
+`staxbot_2_4_3.pine` runs once per bar, on the bar's close. It does not call `strategy.entry` or `strategy.exit`. The drawing is the plan. Alerts are `alert()` calls.
 
-`staxbot_2_1.pine` is the untouched base this version was built from. Load **StaxBot 2.4.2**, saved as a new script. The legend reads **Stax 2.4.2**. The HUD reads **STAXBOT 2.4.2**.
+`staxbot_2_1.pine` is the untouched base this version was built from. Load **StaxBot 2.4.3**, saved as a new script. The legend reads **Stax 2.4.3**. The HUD reads **STAXBOT 2.4.3**.
 
 ## 1. Settings
 
@@ -91,6 +91,8 @@ Stop, then targets, then the reclaim exit, then breakeven or trail. Trail steps 
 
 Stops and targets are one-sided. A short stop is hit when `high >= live stop`, and a short target when `low <= target`. A long is the mirror. The entry fill and the entry-and-stop same-bar check still require the price to trade inside the bar.
 
+When the bar opens beyond the live stop, the exit price is the open: `max(open, stop)` for a short and `min(open, stop)` for a long. A stop that is only traded inside the bar still exits at the stop. Realized R uses that exit price. A target exit keeps the target price.
+
 `Reclaim Exit On Live Trades` defaults to on. A live close beyond the shelf by at least the reclaim tolerance exits at that close. Off leaves that rule for the pre-fill check only.
 
 ## 10. Grade
@@ -131,4 +133,4 @@ Every alert JSON object includes `plan_id`, `move_id`, `scenario`, `state`, `ent
 | `exit` | Stop, target, reclaim, or session flatten, when exit alerts are on |
 | `stop_update` | The live stop moves, when that alert is on |
 
-The paper desk is a separate project and is not changed by this script. It still stores one plan. A second `plan` alert replaces that slot. A `plan_cancel` clears it only when the setup id matches.
+The paper desk is a separate project and is not changed by this script. It still stores one plan. A second `plan` alert replaces that slot. A `plan_cancel` clears it only when the setup id matches. The alerts build has to accept a JSON array and process each event in order.

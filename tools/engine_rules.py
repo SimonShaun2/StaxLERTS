@@ -1,6 +1,6 @@
-"""Decision rules for StaxBot 2.4.2.
+"""Decision rules for StaxBot 2.4.3.
 
-The Pine script staxbot_2_4_2.pine follows these rules. This file is the check
+The Pine script staxbot_2_4_3.pine follows these rules. This file is the check
 that can run here. It does not read market data and it does not place trades.
 """
 
@@ -69,6 +69,10 @@ def break_arms(bars_since_cross: int, window: int, close: float, shelf: float, d
 
 def stop_hit(direction: int, low: float, high: float, px: float) -> bool:
     return low <= px if direction == 1 else high >= px
+
+
+def stop_exit_price(direction: int, bar_open: float, stop: float) -> float:
+    return min(bar_open, stop) if direction == 1 else max(bar_open, stop)
 
 
 def target_hit(direction: int, low: float, high: float, px: float) -> bool:
@@ -276,11 +280,19 @@ def test_one_sided_exits_and_reclaim_tolerance() -> None:
 
 def test_break_window_and_strong_flag() -> None:
     assert break_arms(0, 3, 7748, 7750, -1, False) is False
+    assert break_arms(0, 3, 7748, 7750, -1, True) is True
     assert break_arms(1, 3, 7748, 7750, -1, True) is True
     assert break_arms(3, 3, 7748, 7750, -1, True) is False
     assert displaced("Body >= ATR x", body=5, atr=4, body_mult=1, beyond=0, zone_width=10) is True
     assert strong_displacement(5, 4, 1.5) is False
     assert grade(False, True, True, True, True) == "A"
+
+
+def test_gap_through_stop_uses_the_open() -> None:
+    assert stop_exit_price(-1, 7770.0, 7764.0) == 7770.0
+    assert stop_exit_price(-1, 7760.0, 7764.0) == 7764.0
+    assert stop_exit_price(1, 7690.0, 7700.0) == 7690.0
+    assert stop_exit_price(1, 7710.0, 7700.0) == 7700.0
 
 
 def test_count_resets_at_chicago_open() -> None:
@@ -305,6 +317,7 @@ if __name__ == "__main__":
     test_displacement_uses_one_definition()
     test_one_sided_exits_and_reclaim_tolerance()
     test_break_window_and_strong_flag()
+    test_gap_through_stop_uses_the_open()
     test_count_resets_at_chicago_open()
     test_grade_fifth_flag_changes_the_letter()
     print("engine rules ok")
