@@ -8,7 +8,9 @@ The receiver does not read a Pine file, a release tag, or GitHub.
 and is never part of a dedupe key.
 
 The 2.4.5 inspection that defined ``legacy_stax`` is recorded in
-``docs/event-contract.md``. It is not a startup gate.
+``docs/event-contract.md``. A later look at 2.5.0 is recorded there too.
+Neither file is a startup gate. ``version`` is diagnostic, the same way
+``pineVersion`` is.
 
 Point values are exchange contract multipliers, matched exactly on the
 payload ``root`` (CME micro equity index FAQ and COMEX micro gold specs):
@@ -43,10 +45,11 @@ POINT_VALUES = {
     "MGC": 10.0,
 }
 SUPPORTED_ROOTS = tuple(POINT_VALUES)
-KNOWN_EVENTS = {"plan", "entry", "exit", "plan_cancel", "stop_update"}
+KNOWN_EVENTS = {"plan", "entry", "exit", "plan_cancel", "stop_update", "watch", "break_forming", "break_cancelled"}
+HEADS_UP = {"watch", "break_forming", "break_cancelled"}
 EXIT_REASONS = {"TP", "SL", "BE", "TRAILED", "RECLAIM", "FLAT"}
 FINAL_EXITS = {"SL", "BE", "TRAILED", "RECLAIM", "FLAT"}
-# Inspected 2.4.5: f_close_trade uses these targetIds. TP exits use TP1, TP2, or TP3.
+# Inspected 2.4.5 and 2.5.0: f_close_trade uses these targetIds. TP exits use TP1, TP2, or TP3.
 EXIT_TARGET_IDS = {
     "SL": "STOP",
     "BE": "STOP",
@@ -61,6 +64,7 @@ CANCEL_REASONS = {
     "expired",
     "session",
     "sibling filled",
+    "failed breakout",
 }
 CANCEL_TEXT = {
     "replaced": "it was replaced",
@@ -69,6 +73,7 @@ CANCEL_TEXT = {
     "expired": "it expired",
     "session": "the session ended",
     "sibling filled": "the other plan on this move filled",
+    "failed breakout": "the breakout failed",
 }
 EXIT_TEXT = {
     "TP": "target",
@@ -157,6 +162,67 @@ def _source_instance(source: str, exchange: str, ticker: str, timeframe: str) ->
     return json.dumps([source, exchange, ticker, timeframe], separators=(",", ":"))
 
 
+def _diagnostic_version(clean: dict[str, Any]) -> str | None:
+    """pineVersion and version are labels. They do not select an adapter."""
+    if clean.get("pineVersion") not in (None, ""):
+        return str(clean["pineVersion"])
+    if clean.get("version") not in (None, ""):
+        return str(clean["version"])
+    return None
+
+
+def _headsup_dedupe(event: dict[str, Any]) -> str:
+    """Heads-up payloads omit the market, so prices keep two charts on one bar apart."""
+    parts = [
+        event["source_instance"],
+        event["eventId"],
+        event.get("fp") or "",
+        event.get("level") or "",
+        event.get("side") or "",
+        _num(event.get("entry")),
+        _num(event.get("stop")),
+        _num(event.get("target")),
+        _num(event.get("range_high")),
+        _num(event.get("range_low")),
+    ]
+    return json.dumps(parts, separators=(",", ":"))
+
+
+def _headsup_sentence(event: dict[str, Any]) -> str:
+    name = event["event"]
+    if name == "watch":
+        sentence = "A compressed range is on watch"
+        if event.get("level"):
+            sentence += f" at {event['level']}"
+        if event.get("range_low") is not None and event.get("range_high") is not None:
+            sentence += f", {_num(event['range_low'])} to {_num(event['range_high'])}"
+        return sentence + "."
+    if name == "break_forming":
+        sentence = "A provisional"
+        if event.get("side"):
+            sentence += f" {event['side']}"
+        sentence += " break is forming"
+        details = []
+        if event.get("entry") is not None:
+            details.append(f"entry {_num(event['entry'])}")
+        if event.get("stop") is not None:
+            details.append(f"stop {_num(event['stop'])}")
+        if event.get("target") is not None:
+            details.append(f"target {_num(event['target'])}")
+        if event.get("level"):
+            details.append(event["level"])
+        if details:
+            sentence += ": " + ", ".join(details)
+        return sentence + "."
+    sentence = "The provisional"
+    if event.get("side"):
+        sentence += f" {event['side']}"
+    sentence += " break"
+    if event.get("entry") is not None:
+        sentence += f" at {_num(event['entry'])}"
+    return sentence + " was cancelled."
+
+
 def _dedupe_key(source_instance: str, event_id: str, event: str, target_id: str, reason: str) -> str:
     if event == "exit":
         parts = [source_instance, event_id, target_id, reason]
@@ -227,6 +293,8 @@ def _adapt(item: dict[str, Any]) -> tuple[dict[str, Any] | None, str, str]:
     event = clean.get("event")
     if event not in KNOWN_EVENTS:
         return None, "unknown-event", f"Unsupported event {event!r}"
+    if event in HEADS_UP:
+        return _adapt_headsup(clean, adapter)
     required = ("source", "event", "eventId", "setupId", "side", "entry", "stop", "price", "ticker", "root", "exchange", "timeframe")
     missing = [name for name in required if clean.get(name) in (None, "")]
     if missing:
@@ -242,6 +310,12 @@ def _adapt(item: dict[str, Any]) -> tuple[dict[str, Any] | None, str, str]:
     entry = float(clean["entry"])
     stop = float(clean["stop"])
     price = float(clean["price"])
+    # 2.4.x repeats price, and the last value is the exit. 2.5.0 keeps price as the
+    # entry and sends the fill in exit_price. The booked price is the fill.
+    if event == "exit" and clean.get("exit_price") is not None:
+        if not _finite(clean.get("exit_price")):
+            return None, "invalid-event", "exit_price is not a finite price"
+        price = float(clean["exit_price"])
     # Plans and entries still have the original stop on the risk side of entry.
     # Exits and stop updates carry the live stop, which may sit at or through entry.
     if event in {"plan", "entry"}:
@@ -268,9 +342,7 @@ def _adapt(item: dict[str, Any]) -> tuple[dict[str, Any] | None, str, str]:
             return None, "unknown-event", f"Unsupported cancel reason {reason!r}"
     if event == "stop_update" and not _finite(clean.get("stop")):
         return None, "invalid-event", "stop_update needs a finite stop"
-    pine_version = clean.get("pineVersion")
-    if pine_version is not None:
-        pine_version = str(pine_version)
+    pine_version = _diagnostic_version(clean)
     canonical = {
         "adapter": adapter,
         "schemaVersion": 1 if adapter == "schema-1" else None,
@@ -308,7 +380,7 @@ def _adapt(item: dict[str, Any]) -> tuple[dict[str, Any] | None, str, str]:
                 "source", "event", "eventId", "setupId", "plan_id", "move_id", "scenario", "state",
                 "origin", "side", "entry", "stop", "stop_preset", "price", "target", "targets",
                 "grade", "timeframe", "ticker", "root", "exchange", "timestamp", "reason",
-                "targetId", "realizedR", "schemaVersion", "pineVersion",
+                "targetId", "realizedR", "schemaVersion", "pineVersion", "version",
             }
         },
     }
@@ -318,6 +390,69 @@ def _adapt(item: dict[str, Any]) -> tuple[dict[str, Any] | None, str, str]:
     canonical["dedupe_key"] = _dedupe_key(
         canonical["source_instance"], canonical["eventId"], event, target_id, str(reason or "")
     )
+    return canonical, "", ""
+
+
+def _adapt_headsup(clean: dict[str, Any], adapter: str) -> tuple[dict[str, Any] | None, str, str]:
+    """watch, break_forming, and break_cancelled notify. They do not book."""
+    if clean.get("source") != "staxbot":
+        return None, "unknown-source", "source is not staxbot"
+    event_id = clean.get("eventId")
+    if not isinstance(event_id, str) or not event_id:
+        return None, "invalid-event", "Missing eventId"
+    side = clean.get("side")
+    if side not in (None, ""):
+        side = str(side).lower()
+        if side not in {"long", "short"}:
+            return None, "invalid-event", "side must be long or short"
+    else:
+        side = None
+    for name in ("entry", "stop", "target", "range_high", "range_low"):
+        if clean.get(name) not in (None, "") and not _finite(clean.get(name)):
+            return None, "invalid-event", f"{name} is not a finite price"
+    level = None if clean.get("level") in (None, "") else str(clean["level"])
+    entry = float(clean["entry"]) if _finite(clean.get("entry")) else None
+    stop = float(clean["stop"]) if _finite(clean.get("stop")) else None
+    target = float(clean["target"]) if _finite(clean.get("target")) else None
+    canonical = {
+        "adapter": adapter,
+        "schemaVersion": 1 if adapter == "schema-1" else None,
+        "pineVersion": _diagnostic_version(clean),
+        "source": "staxbot",
+        "event": str(clean["event"]),
+        "eventId": event_id,
+        "setupId": "",
+        "plan_id": None,
+        "move_id": None,
+        "scenario": None,
+        "state": None,
+        "origin": None,
+        "side": side,
+        "entry": entry,
+        "stop": stop,
+        "stop_preset": None,
+        "price": entry,
+        "target": target,
+        "targets": [],
+        "grade": None,
+        "level": level,
+        "fp": None if clean.get("fp") in (None, "") else str(clean["fp"]),
+        "range_high": float(clean["range_high"]) if _finite(clean.get("range_high")) else None,
+        "range_low": float(clean["range_low"]) if _finite(clean.get("range_low")) else None,
+        "timeframe": str(clean.get("timeframe") or ""),
+        "ticker": str(clean.get("ticker") or ""),
+        "root": str(clean.get("root") or "").strip().upper(),
+        "exchange": str(clean.get("exchange") or ""),
+        "timestamp": None if clean.get("timestamp") is None else str(clean["timestamp"]),
+        "reason": None,
+        "targetId": "",
+        "realizedR": None,
+        "extra": {},
+    }
+    canonical["source_instance"] = _source_instance(
+        canonical["source"], canonical["exchange"], canonical["ticker"], canonical["timeframe"]
+    )
+    canonical["dedupe_key"] = _headsup_dedupe(canonical)
     return canonical, "", ""
 
 
@@ -1010,8 +1145,14 @@ class PaperDesk:
         if name == "plan_cancel":
             self._on_cancel(event, notes)
             return 0
+        if name in HEADS_UP:
+            self._on_headsup(event, notes)
+            return 0
         self._on_stop(event, notes)
         return 0
+
+    def _on_headsup(self, event: dict[str, Any], notes: dict[str, dict[str, list[str]]]) -> None:
+        self._note(notes, "headsup:" + event["dedupe_key"], _headsup_sentence(event), event["dedupe_key"])
 
     def _setup_id(self, event: dict[str, Any]) -> str:
         return event["source_instance"] + "\x1f" + event["setupId"]
@@ -1483,10 +1624,14 @@ class PaperDesk:
                 )
             return
         label = "the paper stop" if paper else "the stop"
+        sentence = f"{_market(event)} {event['side']}: {label} moved from {_num(old)} to {_num(event['stop'])}."
+        locked = (event.get("extra") or {}).get("locked_r")
+        if _finite(locked):
+            sentence += f" Locked R {_num(float(locked))}."
         self._note(
             notes,
             self._setup_id(event),
-            f"{_market(event)} {event['side']}: {label} moved from {_num(old)} to {_num(event['stop'])}.",
+            sentence,
             event["dedupe_key"],
         )
 

@@ -30,7 +30,18 @@ Checked against that file:
 - Stop-update alerts default off. Exit alerts default on.
 - The wire cancel reason for a newer break is `replaced`. The plan object's internal text `newer break` is not sent.
 
-No payload mismatch with that baseline turned up. Later compatible scripts do not need this audit again.
+No payload mismatch with that baseline turned up. Later compatible scripts do not need a Python rebuild. A second inspection, of `staxbot_2_5_0.pine` at `f20c9e3` (blob `3a78aa9d09cf0036eccd79feb4c3f73475437332`), is recorded below. It is not a runtime gate. The 2.4.7 file (blob `acd49be990517b8284849a7d922b16750c68b782`) still uses the 2.4 duplicate-`price` exit.
+
+## 2.5.0 additions
+
+Checked against that file's `f_payload` and `f_close_trade`:
+
+- `version` is a diagnostic label, like `pineVersion`. It is not an adapter and it is not part of a dedupe key.
+- `fp`, `level`, and `locked_r` are metadata. A stop update keeps them off the P&L. When `locked_r` is present the stop sentence reports it.
+- Exit builders send `exit_price` for the fill and leave `price` as the entry. The desk books `exit_price` when it is present. A 2.4 exit that repeats `price` still books the last `price`.
+- Final exits are unchanged: SL, BE, and TRAILED use `targetId` `STOP`; RECLAIM uses `RECLAIM`; FLAT uses `FLAT`; TP uses `TP1`, `TP2`, or `TP3`.
+- `plan_cancel` can say `failed breakout`.
+- `watch`, `break_forming`, and `break_cancelled` are heads-ups. They do not open or close a paper position. A retry of the same heads-up does not notify again. Two charts can share an `eventId` on one bar, so the dedupe also includes the level and prices those payloads do send.
 
 ## Adapters
 
@@ -77,8 +88,11 @@ Chart setup state and the paper position are stored separately.
 | `exit` `FLAT` | `targetId` is `FLAT`. Close the paper remainder. |
 
 A final exit whose `targetId` does not match that reason is audited and does not close. The inspected script sends `STOP` for stop, breakeven, and trail, and the reason name itself for reclaim and flatten.
-| `plan_cancel` | Update that setup only. |
-| `stop_update` | Move the matching stop. `realizedR` is a stop offset, not P&L. |
+| `plan_cancel` | Update that setup only. `failed breakout` is one of the wire reasons. |
+| `stop_update` | Move the matching stop. `realizedR` is a stop offset, not P&L. `locked_r` is reported when the payload sends it. |
+| `watch` | One notice for a compressed range. No setup and no fill. |
+| `break_forming` | One provisional notice. No fill. |
+| `break_cancelled` | One notice that the provisional break ended. It does not cancel an armed plan. |
 
 An entry that arrives before its plan creates the setup from the entry. A later plan may fill in metadata. It does not reset the setup to armed, overwrite the fill, or repeat the first alert. A closed setup does not reopen. A rejected entry can still take later chart events, with no paper P&L. An exit that matches nothing is audited and does not invent a position.
 

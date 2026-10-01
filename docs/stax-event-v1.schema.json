@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/SimonShaun2/StaxLERTS/docs/stax-event-v1.schema.json",
   "title": "StaxBot schemaVersion 1 event",
-  "description": "Documentation for schemaVersion 1. The desk validates with the standard library. legacy_stax is the same shape without schemaVersion, and a legacy exit may repeat price with the exit price last. This schema does not describe that legacy exception.",
+  "description": "Documentation for schemaVersion 1. The desk validates with the standard library. legacy_stax is the same shape without schemaVersion. A legacy 2.4 exit may repeat price with the exit price last. A 2.5.0 exit sends exit_price and leaves price as the entry. version is diagnostic. watch, break_forming, and break_cancelled are heads-ups and are not this required trade shape.",
   "oneOf": [
     { "$ref": "#/$defs/event" },
     { "type": "array", "items": { "$ref": "#/$defs/event" } }
@@ -15,6 +15,11 @@
       "properties": {
         "schemaVersion": { "const": 1 },
         "pineVersion": { "type": "string" },
+        "version": { "type": "string", "description": "Diagnostic label. Not an adapter and not a dedupe key." },
+        "fp": { "type": "string" },
+        "level": { "type": ["string", "null"] },
+        "exit_price": { "type": "number", "description": "Fill price when present. price stays the entry." },
+        "locked_r": { "type": "number" },
         "source": { "const": "staxbot" },
         "event": { "enum": ["plan", "entry", "exit", "plan_cancel", "stop_update"] },
         "eventId": { "type": "string", "minLength": 1 },

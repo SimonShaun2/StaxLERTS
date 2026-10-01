@@ -1,7 +1,6 @@
 """Offline checks for the durable paper desk.
 
-Fixtures are synthetic. A pineVersion of 2.4.6 or 2.5.0 does not mean that
-script was reviewed. Nothing here binds port 8791 or talks to Sam.
+Fixtures are synthetic. Nothing here binds port 8791 or talks to Sam.
 """
 from __future__ import annotations
 
@@ -308,6 +307,7 @@ def test_every_cancel_and_exit_reason(tmp_path: Path) -> None:
         "expired": "it expired",
         "session": "the session ended",
         "sibling filled": "the other plan on this move filled",
+        "failed breakout": "the breakout failed",
     }
     for reason, phrase in reasons.items():
         note = desk.ingest(_raw(
@@ -654,4 +654,108 @@ def test_legacy_snapshot_does_not_activate_limits_or_rebook(tmp_path: Path) -> N
     assert view["samKeySet"] is True
     assert "secret-token" not in json.dumps(view)
     assert any("Waiting for the retest" in item["text"] for item in view["inbox"])
+    desk.close()
+
+
+def test_version_label_exit_price_and_headsups_do_not_book(tmp_path: Path) -> None:
+    desk = _desk(tmp_path)
+    _arm(desk)
+    armed = desk.ingest(_raw(event="plan", eventId="p", setupId="s", state="ARMED", version="2.5.0", fp="fp", level="prior day"))
+    assert armed["booked"] == 0
+    assert "Waiting for the retest" in armed["notifications"][0]
+    retry = desk.ingest(_raw(event="plan", eventId="p", setupId="s", state="ARMED", version="2.4.7"))
+    assert retry["booked"] == 0
+    assert retry["notifications"] == []
+    desk.ingest(_raw(event="entry", eventId="e", setupId="s", state="TRIGGERED", version="2.5.0"))
+    watched = desk.ingest(json.dumps({
+        "source": "staxbot",
+        "event": "watch",
+        "eventId": "watch:10",
+        "version": "2.5.0",
+        "fp": "fp",
+        "provisional": False,
+        "level": "prior day",
+        "range_high": 110.0,
+        "range_low": 100.0,
+        "timestamp": "2026-09-30T10:00:00",
+    }))
+    assert watched["booked"] == 0
+    assert watched["notifications"] == ["A compressed range is on watch at prior day, 100 to 110."]
+    other_market = desk.ingest(json.dumps({
+        "source": "staxbot",
+        "event": "watch",
+        "eventId": "watch:10",
+        "version": "2.5.0",
+        "fp": "fp",
+        "level": "prior week",
+        "range_high": 21000.0,
+        "range_low": 20900.0,
+        "timestamp": "2026-09-30T10:00:00",
+    }))
+    assert other_market["notifications"]
+    assert desk.ingest(json.dumps({
+        "source": "staxbot",
+        "event": "watch",
+        "eventId": "watch:10",
+        "version": "2.5.0",
+        "fp": "fp",
+        "level": "prior day",
+        "range_high": 110.0,
+        "range_low": 100.0,
+    }))["notifications"] == []
+    forming = desk.ingest(json.dumps({
+        "source": "staxbot",
+        "event": "break_forming",
+        "eventId": "break_forming:11",
+        "version": "2.5.0",
+        "fp": "fp",
+        "provisional": True,
+        "side": "long",
+        "entry": 110.0,
+        "stop": 100.0,
+        "target": 120.0,
+        "level": "shelf",
+        "timestamp": "2026-09-30T10:05:00",
+    }))
+    assert forming["booked"] == 0
+    assert "provisional long break is forming" in forming["notifications"][0]
+    assert desk.positions()[0]["state"] == "OPEN"
+    cancelled = desk.ingest(json.dumps({
+        "source": "staxbot",
+        "event": "break_cancelled",
+        "eventId": "break_cancelled:11",
+        "version": "2.5.0",
+        "fp": "fp",
+        "provisional": False,
+        "side": "long",
+        "entry": 110.0,
+        "stop": 100.0,
+        "target": 120.0,
+        "timestamp": "2026-09-30T10:05:00",
+    }))
+    assert "was cancelled" in cancelled["notifications"][0]
+    assert desk.positions()[0]["state"] == "OPEN"
+    assert desk.ledger_count() == 1
+    wrong = desk.ingest(_raw(
+        event="exit", eventId="s:exit:SL:12", setupId="s", state="CLOSED",
+        reason="SL", targetId="SL", price=100.0, exit_price=91.0, version="2.5.0",
+    ))
+    assert wrong["booked"] == 0
+    assert desk.positions()[0]["state"] == "OPEN"
+    closed = desk.ingest(_raw(
+        event="exit", eventId="s:exit:STOP:SL:12", setupId="s", state="CLOSED",
+        reason="SL", targetId="STOP", price=100.0, exit_price=91.0, version="2.5.0", fp="fp",
+    ))
+    assert closed["booked"] == 1
+    assert "closed at 91" in closed["notifications"][0]
+    assert desk.positions()[0]["state"] == "CLOSED"
+    fills = [row for row in desk.db.execute("SELECT price, kind FROM ledger WHERE kind = 'exit'")]
+    assert fills[-1]["price"] == 91.0
+    desk.ingest(_raw(event="entry", eventId="e2", setupId="s2", state="TRIGGERED"))
+    desk.ingest(json.dumps(_event(
+        event="stop_update", eventId="s2:stop:4", setupId="s2", state="LIVE",
+        stop=95, reason="trail", realizedR=0.5, locked_r=0.5, version="2.5.0",
+    )))
+    assert "Locked R 0.5" in desk.notifications()[-1]["text"]
+    assert desk.dashboard()["delivery"] == "outbox"
     desk.close()

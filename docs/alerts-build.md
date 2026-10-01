@@ -9,14 +9,14 @@ This file is the build record. It does not change Pine.
 
 That file is the initial `legacy_stax` baseline. The running desk does not read it, and a later compatible release does not need another Python deploy. The contract is `docs/event-contract.md`. The machine-readable notes are `docs/stax-event-v1.schema.json`.
 
-`schemaVersion` 1 is supported. The 2.4.5 script does not send it. Missing `pineVersion`, `2.4.5`, and synthetic `2.4.6` / `2.5.0` labels are accepted when the event shape is valid. Those future labels are fixtures, not a review of unreleased scripts.
+`schemaVersion` 1 is supported. The 2.4.5 script does not send it. `version` and `pineVersion` are diagnostic labels. StaxBot 2.5.0 is on main and was inspected for `exit_price`, heads-up events, and the same final-exit target ids. The desk does not read that file at runtime.
 
 ## What this build does
 
 - SQLite is the store for webhooks, settings, positions, dashboard state, and chat delivery. `GET /api/state` reads that book. `delivery` is `outbox`.
 - A final exit must use the inspected target id: `STOP` for SL, BE, and TRAILED, `RECLAIM` for reclaim, and `FLAT` for flatten.
 - A legacy memory snapshot can be imported without confirming its limits or rebooking an open position. The process on port 8791 is not restarted for that import.
-- Plans notify and do not book. Entries book at the received price or record the exact rejection. Exits close frozen target quantity or the remainder.
+- Plans notify and do not book. Entries book at the received price or record the exact rejection. Exits close frozen target quantity or the remainder. A 2.5.0 exit books `exit_price`. `watch` and `break_forming` notify and do not book.
 - Fixed quantity and dollar risk are separate modes. Setup alerts still fire when sizing is not configured.
 - Leftover contracts all go to the earliest enabled target. Allocation is frozen at entry.
 - Guards use the stored session. They do not block an exit.
@@ -37,7 +37,7 @@ Do not point an old scanner and the chart at the same book. Do not send a sample
 
 ## Checked offline
 
-`python3 -m pytest bot/test_paper_desk.py` — 26 passed.
+`python3 -m pytest bot/test_paper_desk.py` — 30 passed.
 `python3 bot/execution_bot.py --selftest` — pass, equity 12.0. The selftest uses its own in-memory desk and does not bind 8791.
 
 No webhook was sent to the listening process. No order was sent.
