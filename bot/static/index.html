@@ -123,15 +123,23 @@
         <label class="check"><input id="mM2K" type="checkbox" checked /> M2KZ2026</label>
         <label class="check"><input id="mMYM" type="checkbox" checked /> MYMZ2026</label>
       </div>
+      <label>Sizing</label>
+      <select id="sizingMode">
+        <option value="">Not set</option>
+        <option value="fixed">Fixed quantity</option>
+        <option value="risk">Dollar risk</option>
+      </select>
+      <label>Fixed contracts</label>
+      <input id="fixedQty" type="number" min="1" />
       <label>Risk per trade ($)</label>
-      <input id="riskPerTrade" type="number" min="1" max="250" step="1" value="250" />
+      <input id="riskPerTrade" type="number" min="0" step="1" value="250" />
       <h2 style="margin-top:16px">BOT LIMITS</h2>
       <label>Max trades per day</label>
       <input id="maxTrades" type="number" min="1" value="5" />
       <label>Max daily loss ($ , 0 = off)</label>
       <input id="maxDailyLoss" type="number" min="0" value="0" />
       <label>Daily profit cap ($ , 0 = off)</label>
-      <input id="dailyTarget" type="number" min="0" value="600" />
+      <input id="dailyTarget" type="number" min="0" value="0" />
       <label>Point value override (0 = exchange value)</label>
       <input id="pointOverride" type="number" min="0" step="0.5" value="0" />
       <label>Sam POST URL</label>
@@ -140,7 +148,6 @@
       <input id="forwardToken" type="password" autocomplete="off" placeholder="Paste the key here, not into chat" />
       <div class="actions">
         <button id="save" type="button">Save limits</button>
-        <button id="demo" class="ghost" type="button">Take sample trades</button>
         <button id="flat" class="danger" type="button">Flatten</button>
       </div>
     </section>
@@ -164,15 +171,16 @@ async function refresh() {
   const profit = Number(state.profit || 0);
   const best = Number(state.bestDay || 0);
   const share = profit > 0 ? Math.round((best / profit) * 100) : 0;
-  document.getElementById("eval").textContent =
-    "Profit " + money(profit) + " / " + money(state.passTarget || 1500) +
-    " · floor " + money(state.floor || 24000) +
-    " · best day " + share + "% · " + (state.daysTraded || 0) + " days";
+  document.getElementById("eval").textContent = state.passTarget == null
+    ? "Paper book"
+    : "Profit " + money(profit) + " / " + money(state.passTarget) +
+      " · floor " + money(state.floor || 0) +
+      " · best day " + share + "% · " + (state.daysTraded || 0) + " days";
   document.getElementById("equity").textContent = money(state.equity);
   const daily = document.getElementById("daily");
   daily.textContent = money(state.dailyPnl);
   daily.className = cls(state.dailyPnl);
-  document.getElementById("count").textContent = state.tradesToday + "/" + state.maxTrades;
+  document.getElementById("count").textContent = state.tradesToday + "/" + (state.maxTrades == null ? "—" : state.maxTrades);
   const pos = state.position;
   document.getElementById("risk").textContent = pos ? money(pos.openRisk || 0) : "$0";
   const box = document.getElementById("position");
@@ -183,11 +191,12 @@ async function refresh() {
       if (box && state.watchMarkets) box.checked = state.watchMarkets.includes(name);
     }
     box.className = "pos";
-    const risk = state.riskPerTrade ?? 250;
+    const risk = state.riskPerTrade;
+    const riskText = risk ? money(risk) : "not set";
     const plan = state.plan;
     box.innerHTML = plan
-      ? `<div class="meta">${plan.status || "PLAN"} ${(plan.side || "").toUpperCase()} ${plan.root || ""} @ ${Number(plan.entry).toFixed(2)}</div><div class="meta">Stop ${Number(plan.stop).toFixed(2)}. Prices stay on the TradingView plan. This desk sizes at ${money(risk)} risk.</div>`
-      : `<div class="meta">Flat.</div><div class="meta">Waiting for a TradingView plan. Markets ${markets}. Risk ${money(risk)} per trade.</div>`;
+      ? `<div class="meta">${plan.status || "PLAN"} ${(plan.side || "").toUpperCase()} ${plan.root || ""} @ ${Number(plan.entry).toFixed(2)}</div><div class="meta">Stop ${Number(plan.stop).toFixed(2)}. Prices stay on the TradingView plan. This desk sizes at ${riskText} risk.</div>`
+      : `<div class="meta">Flat.</div><div class="meta">Waiting for a TradingView plan. Markets ${markets}. Risk ${riskText} per trade.</div>`;
   } else {
     box.className = "pos live";
     const px = pos.entry == null ? "market" : Number(pos.entry).toFixed(2);
@@ -210,7 +219,7 @@ const field = (id) => document.getElementById(id);
 
 document.getElementById("save").onclick = async () => {
   const markets = ["MNQ", "MGC", "MES", "M2K", "MYM"].filter((name) => field("m" + name).checked);
-  await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+  const settings = {
     maxTrades: Number(field("maxTrades").value),
     maxDailyLoss: Number(field("maxDailyLoss").value),
     dailyTarget: Number(field("dailyTarget").value),
@@ -218,16 +227,17 @@ document.getElementById("save").onclick = async () => {
     riskPerTrade: Number(field("riskPerTrade").value),
     forwardUrl: field("forwardUrl").value,
     watchMarkets: markets
-  })});
+  };
+  const sizingMode = field("sizingMode").value;
+  if (sizingMode) settings.sizingMode = sizingMode;
+  if (field("fixedQty").value) settings.fixedQty = Number(field("fixedQty").value);
+  await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings)});
   const samKey = field("forwardToken").value.trim();
   if (samKey) {
     await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ forwardToken: samKey })});
     field("forwardToken").value = "";
   }
   refresh();
-};
-document.getElementById("demo").onclick = async () => {
-  await fetch("/api/demo", { method: "POST" });
 };
 document.getElementById("flat").onclick = async () => {
   await fetch("/api/flatten", { method: "POST" });

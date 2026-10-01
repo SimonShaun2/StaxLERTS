@@ -12,8 +12,9 @@ refuse a signal after it leaves the chart.
     python3 bot/execution_bot.py                 # http://127.0.0.1:8791
     python3 bot/execution_bot.py --selftest
 
-Paper fills only. Nothing is sent to a broker unless you set a forward URL
-in the desk. Stax's documented webhook accepts an options ticker, not a futures root.
+Paper fills only. Nothing is sent to a broker. A saved Sam URL is an
+automation webhook for the previous in-memory desk, not an order route.
+Both webhook paths now use the durable paper desk.
 """
 from __future__ import annotations
 
@@ -32,16 +33,7 @@ from zoneinfo import ZoneInfo
 
 NY = ZoneInfo("America/New_York")
 STATIC = Path(__file__).resolve().parent / "static" / "index.html"
-# Boot book until a session profile is set. The trail rolls at 5:00 PM New York
-# and is enforced the moment equity touches it. One day cannot be more
-# than 40% of total profit, so the day stops at 40% of the $1,500 target.
-SELECT_START = 25_000.0
-SELECT_TARGET = 1_500.0
-SELECT_TRAIL = 1_000.0
-SELECT_LOCK = 100.0
-SELECT_CONSISTENCY = 0.40
-SELECT_DAY_CAP = SELECT_TARGET * SELECT_CONSISTENCY
-SELECT_MAX_RISK = 250.0
+# Starting balance and risk stay unset until the owner confirms them.
 WATCH_ROOTS = ("MNQ", "MGC", "MES", "M2K", "MYM")
 CONTRACT_MONTH = "Z2026"
 MICROS = {"MNQ", "MES", "MYM", "MGC", "M2K"}
@@ -143,13 +135,13 @@ def session_date(when: datetime) -> datetime.date:
 class Desk:
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        self.starting_equity = SELECT_START
-        self.equity = SELECT_START
+        self.starting_equity = 0.0
+        self.equity = 0.0
         self.max_trades = 5
         self.max_daily_loss = 0.0
-        self.daily_target = SELECT_DAY_CAP
+        self.daily_target = 0.0
         self.point_override = 0.0
-        self.risk_per_trade = SELECT_MAX_RISK
+        self.risk_per_trade = 0.0
         self.forward_url = ""
         self.forward_token = ""
         self.inbox: list[dict[str, Any]] = []
@@ -166,8 +158,8 @@ class Desk:
         self.trades_today = 0
         self.days_traded = 0
         self.day_pnls: dict[Any, float] = {}
-        self.peak_eod = SELECT_START
-        self.floor = SELECT_START - SELECT_TRAIL
+        self.peak_eod = 0.0
+        self.floor = 0.0
         self.floor_locked = False
         self.failed = False
         self.position: dict[str, Any] | None = None
@@ -186,8 +178,6 @@ class Desk:
                 pos["openRisk"] = round(pos["riskDollars"], 2)
             profit = self.equity - self.starting_equity
             best = max(self.day_pnls.values(), default=0.0)
-            share = (best / profit) if profit > 0 else 0.0
-            passed = (not self.failed) and profit >= SELECT_TARGET and self.days_traded >= 3 and best <= profit * SELECT_CONSISTENCY + 0.01
             return {
                 "mode": "paper",
                 "account": "Paper",
@@ -195,13 +185,13 @@ class Desk:
                 "equity": round(self.equity, 2),
                 "dailyPnl": round(daily, 2),
                 "profit": round(profit, 2),
-                "passTarget": SELECT_TARGET,
+                "passTarget": None,
                 "floor": round(self.floor, 2),
                 "floorLocked": self.floor_locked,
                 "failed": self.failed,
-                "passed": passed,
+                "passed": False,
                 "bestDay": round(best, 2),
-                "consistency": round(share, 4),
+                "consistency": None,
                 "daysTraded": self.days_traded,
                 "tradesToday": self.trades_today,
                 "maxTrades": self.max_trades,
@@ -235,7 +225,7 @@ class Desk:
             if "pointOverride" in body:
                 self.point_override = max(0.0, float(body["pointOverride"]))
             if "riskPerTrade" in body:
-                self.risk_per_trade = min(SELECT_MAX_RISK, max(1.0, float(body["riskPerTrade"])))
+                self.risk_per_trade = max(0.0, float(body["riskPerTrade"]))
             if "forwardUrl" in body:
                 self.forward_url = str(body["forwardUrl"] or "").strip()
             if body.get("forwardToken"):
@@ -276,11 +266,11 @@ class Desk:
             self.killed = False
             self.days_traded = 0
             self.day_pnls = {}
-            self.peak_eod = SELECT_START
-            self.floor = SELECT_START - SELECT_TRAIL
+            self.peak_eod = self.starting_equity
+            self.floor = 0.0
             self.floor_locked = False
             self.failed = False
-            self._note("RESET", "Paper book reset to the $25,000 Select evaluation")
+            self._note("RESET", "Paper book reset")
 
     def set_watch(self, info: dict[str, Any]) -> None:
         with self.lock:
@@ -405,21 +395,13 @@ class Desk:
     def _apply_eod(self) -> None:
         if self.equity > self.peak_eod:
             self.peak_eod = self.equity
-        if self.peak_eod >= self.starting_equity + SELECT_TRAIL + SELECT_LOCK:
-            self.floor = self.starting_equity + SELECT_LOCK
-            self.floor_locked = True
-        else:
-            self.floor = max(self.floor, self.peak_eod - SELECT_TRAIL)
 
     def _check_bust(self) -> None:
-        if self.equity <= self.floor:
-            self.failed = True
-            self.killed = True
-            self._note("FAILED", f"Trailing drawdown hit at {self.floor:.0f}. The evaluation is over.")
+        return
 
     def _blocked(self) -> str | None:
-        if self.failed:
-            return "Select evaluation failed. Trailing drawdown was hit."
+        if self.risk_per_trade <= 0:
+            return "Risk per trade is not configured"
         if self.killed:
             return "Kill switch is on"
         daily = self.equity - self.day_start_equity
@@ -517,20 +499,15 @@ class Desk:
             self._note("REFUSED", "Stop is on top of the entry")
             return self._result(False, "Stop is on top of the entry")
         key = contract_key(root)
-        room = self.equity - self.floor
         risk_per_contract = risk_pts * pv
-        budget = min(self.risk_per_trade, SELECT_MAX_RISK, max(0.0, room))
+        budget = self.risk_per_trade
         qty = math.floor(budget / risk_per_contract) if risk_per_contract > 0 else 0
         qty_cap = 10 if key in MICROS else 1 if key in MINIS else 0
         if qty_cap:
             qty = min(qty, qty_cap)
         if qty < 1:
-            self._note("REFUSED", f"One contract risks ${risk_per_contract:.0f}; watcher budget is ${budget:.0f}.")
-            return self._result(False, "One contract exceeds the watcher's per-trade risk budget")
-        risk_dollars = risk_per_contract * qty
-        if risk_dollars > SELECT_MAX_RISK or risk_dollars >= room:
-            self._note("REFUSED", f"Stop risks ${risk_dollars:.0f}. The trail has ${room:.0f} left, and one trade is capped at ${SELECT_MAX_RISK:.0f}.")
-            return self._result(False, "Stop risks more than the trailing drawdown allows")
+            self._note("REFUSED", f"One contract risks ${risk_per_contract:.0f}; risk per trade is ${budget:.0f}.")
+            return self._result(False, "One contract exceeds the configured risk per trade")
         if targets is not None:
             # Pine supplies target prices and relative weights; the desk sizes
             # the position and translates those weights into whole contracts.
@@ -794,6 +771,83 @@ class Desk:
 
 
 DESK = Desk()
+_PAPER: Any = None
+
+
+def get_paper_desk():
+    """Open the durable book on first use. Import does not create it or bind a port."""
+    global _PAPER
+    if _PAPER is None:
+        from paper_desk import PaperDesk
+
+        _PAPER = PaperDesk(Path(__file__).resolve().parent / "data" / "paper.sqlite")
+    return _PAPER
+
+
+def _paper(desk: Any = None):
+    return desk if desk is not None else get_paper_desk()
+
+
+def _json_body(raw: bytes) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    try:
+        payload = json.loads(raw.decode() or "{}")
+    except json.JSONDecodeError:
+        return None, {"success": False, "message": "Body is not valid JSON"}
+    if not isinstance(payload, dict):
+        return None, {"success": False, "message": "Body must be a JSON object"}
+    return payload, None
+
+
+def route_get(path: str, desk: Any = None) -> tuple[int, dict[str, Any]]:
+    """Dashboard state from SQLite. This does not bind port 8791 or read the in-memory desk."""
+    if path == "/api/state":
+        return 200, _paper(desk).dashboard()
+    return 404, {"success": False, "message": "Not found"}
+
+
+def route_post(path: str, raw: bytes, desk: Any = None) -> tuple[int, dict[str, Any]]:
+    """HTTP entry used by the server and by offline tests. This does not bind port 8791.
+
+    Webhooks, settings, positions, and chat delivery use the SQLite desk.
+    Sam forwarding is not called. Sample sessions and book resets cannot change it.
+    """
+    target = _paper(desk)
+    if path in ("/webhook/trade-signal", "/api/alert"):
+        result = target.ingest(raw)
+        status = 200 if result.get("ok") else 400
+        return status, result
+    if path == "/api/demo":
+        return 410, {"success": False, "message": "Sample sessions are disabled"}
+    if path == "/api/reset":
+        return 410, {"success": False, "message": "Book reset is disabled"}
+    if path == "/api/flatten":
+        return 200, {"success": False, "message": "A chart FLAT event closes the paper position."}
+    if path == "/api/settings":
+        payload, error = _json_body(raw)
+        if error:
+            return 400, error
+        try:
+            target.apply_dashboard_settings(payload or {})
+        except (TypeError, ValueError) as exc:
+            return 400, {"success": False, "message": str(exc)}
+        return 200, target.dashboard()
+    if path == "/api/release":
+        payload, error = _json_body(raw)
+        if error:
+            return 400, error
+        identity = str((payload or {}).get("identity") or "").strip()
+        if not identity:
+            return 200, {
+                "success": False,
+                "message": "Pass the notice identity. Sam is not called.",
+                "data": {"released": 0},
+            }
+        try:
+            target.confirm_delivery(identity)
+        except KeyError:
+            return 200, {"success": False, "message": "Notice was not pending.", "data": {"released": 0}}
+        return 200, {"success": True, "message": "Notice accepted.", "data": {"released": 1}}
+    return 404, {"success": False, "message": "Not found"}
 
 
 def demo_script() -> list[dict[str, Any]]:
@@ -850,7 +904,7 @@ def selftest() -> int:
         assert snap["position"] is None, snap["position"]
         assert snap["tradesToday"] == 2, snap["tradesToday"]
         # Desk risk setting sizes each setup to one MES; Pine quantities are absent.
-        assert abs(snap["equity"] - 25012.0) < 0.01, snap["equity"]
+        assert abs(snap["equity"] - 12.0) < 0.01, snap["equity"]
         assert abs(snap["dailyPnl"] - 12.0) < 0.01, snap["dailyPnl"]
         assert snap["watchMarkets"] == ["MNQ", "MGC", "MES", "M2K", "MYM"], snap["watchMarkets"]
         assert snap["contracts"] == ["MNQZ2026", "MGCZ2026", "MESZ2026", "M2KZ2026", "MYMZ2026"], snap["contracts"]
@@ -957,7 +1011,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, raw=STATIC.read_bytes(), content_type="text/html; charset=utf-8")
             return
         if path == "/api/state":
-            self._send(200, DESK.snapshot())
+            status, body = route_get(path)
+            self._send(status, body)
             return
         self._send(404, {"success": False, "message": "Not found"})
 
@@ -965,46 +1020,9 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b"{}"
-        try:
-            payload = json.loads(raw.decode() or "{}")
-        except json.JSONDecodeError:
-            self._send(400, {"success": False, "message": "Body is not valid JSON"})
-            return
-        if path in ("/webhook/trade-signal", "/api/alert"):
-            result = DESK.handle(payload)
-            if result.get("success"):
-                DESK.hold_for_chat(payload)
-            self._send(200 if result["success"] else 400, result)
-            return
-        if path == "/api/release":
-            event_id = str(payload.get("eventId") or "").strip() or None
-            self._send(200, DESK.release_to_sam(event_id))
-            return
-        if path == "/api/settings":
-            DESK.update_settings(payload)
-            self._send(200, DESK.snapshot())
-            return
-        if path == "/api/flatten":
-            self._send(200, DESK.flatten())
-            return
-        if path == "/api/demo":
-            if getattr(self.server, "demo_running", False):
-                self._send(409, {"success": False, "message": "Sample session already running"})
-                return
-            self.server.demo_running = True
-
-            def job() -> None:
-                try:
-                    run_demo(delay=1.1)
-                finally:
-                    self.server.demo_running = False
-
-            threading.Thread(target=job, daemon=True).start()
-            self._send(200, {"success": True, "message": "Sample session started"})
-            return
-        if path == "/api/reset":
-            DESK.reset_book()
-            self._send(200, DESK.snapshot())
+        if path in ("/webhook/trade-signal", "/api/alert", "/api/demo", "/api/release", "/api/settings", "/api/flatten", "/api/reset"):
+            status, body = route_post(path, raw)
+            self._send(status, body)
             return
         self._send(404, {"success": False, "message": "Not found"})
 
@@ -1022,8 +1040,6 @@ def main() -> int:
         return selftest()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.demo_running = False
-    from watch import start_watcher
-    start_watcher(DESK)
     print(f"StaxBot paper desk listening on http://127.0.0.1:{args.port}")
     try:
         server.serve_forever()

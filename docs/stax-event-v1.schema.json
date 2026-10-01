@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SimonShaun2/StaxLERTS/docs/stax-event-v1.schema.json",
+  "title": "StaxBot schemaVersion 1 event",
+  "description": "Documentation for schemaVersion 1. The desk validates with the standard library. legacy_stax is the same shape without schemaVersion. A legacy 2.4 exit may repeat price with the exit price last. A 2.5.0 exit sends exit_price and leaves price as the entry. version is diagnostic. watch, break_forming, and break_cancelled are heads-ups and are not this required trade shape.",
+  "oneOf": [
+    { "$ref": "#/$defs/event" },
+    { "type": "array", "items": { "$ref": "#/$defs/event" } }
+  ],
+  "$defs": {
+    "event": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["schemaVersion", "source", "event", "eventId", "setupId", "side", "entry", "stop", "price", "ticker", "root", "exchange", "timeframe"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "pineVersion": { "type": "string" },
+        "version": { "type": "string", "description": "Diagnostic label. Not an adapter and not a dedupe key." },
+        "fp": { "type": "string" },
+        "level": { "type": ["string", "null"] },
+        "exit_price": { "type": "number", "description": "Fill price when present. price stays the entry." },
+        "locked_r": { "type": "number" },
+        "source": { "const": "staxbot" },
+        "event": { "enum": ["plan", "entry", "exit", "plan_cancel", "stop_update"] },
+        "eventId": { "type": "string", "minLength": 1 },
+        "setupId": { "type": "string", "minLength": 1 },
+        "plan_id": {},
+        "move_id": {},
+        "scenario": { "type": "string" },
+        "state": { "type": "string" },
+        "origin": { "type": "string" },
+        "side": { "enum": ["long", "short"] },
+        "entry": { "type": "number" },
+        "stop": { "type": "number" },
+        "stop_preset": { "type": "string" },
+        "price": { "type": "number" },
+        "target": { "type": "number" },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "price", "allocation"],
+            "properties": {
+              "id": { "enum": ["TP1", "TP2", "TP3"] },
+              "price": { "type": "number" },
+              "allocation": { "type": "number", "exclusiveMinimum": 0 },
+              "r": { "type": "number", "description": "Chart reference R, not paper R." },
+              "enabled": { "type": "boolean" }
+            }
+          }
+        },
+        "grade": { "type": "string" },
+        "timeframe": { "type": "string" },
+        "ticker": { "type": "string" },
+        "root": { "type": "string" },
+        "exchange": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "reason": { "type": "string" },
+        "targetId": { "type": "string" },
+        "realizedR": { "type": "number", "description": "Chart reference offset. Not booked P&L." }
+      }
+    }
+  }
+}

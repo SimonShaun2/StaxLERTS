@@ -4,3 +4,7 @@ __pycache__/
 agent-tools/
 terminals/
 .DS_Store
+bot/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

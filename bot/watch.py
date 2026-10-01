@@ -641,11 +641,10 @@ def sync_events(desk, events: list[dict[str, Any]]) -> None:
 
 
 def start_watcher(desk) -> None:
-    """Report what each market is doing. A TradingView plan is added beside that. This does not book a trade."""
+    """Reflect a TradingView webhook plan already on the desk. This does not fetch bars or create a plan."""
     def loop() -> None:
         while True:
             try:
-                note = watch_once(desk)
                 plan = desk.snapshot().get("plan")
                 if plan:
                     targets = ", ".join(
@@ -656,7 +655,10 @@ def start_watcher(desk) -> None:
                         "symbol": ticker,
                         "price": plan.get("entry"),
                         "grade": plan.get("grade"),
-                        "note": f"{note} · TradingView {str(plan.get('side') or '').upper()} {ticker} @ {float(plan['entry']):.2f} stop {float(plan['stop']):.2f}; {targets}",
+                        "note": (
+                            f"TradingView {str(plan.get('side') or '').upper()} {ticker} "
+                            f"@ {float(plan['entry']):.2f} stop {float(plan['stop']):.2f}; {targets}"
+                        ),
                     })
             except Exception as exc:
                 desk.set_watch({"note": f"Watch error: {exc}"})
@@ -666,4 +668,4 @@ def start_watcher(desk) -> None:
 
 
 if __name__ == "__main__":
-    print(watch_once())
+    print("Offline scan helpers only. Live plans come from the TradingView webhook.")
