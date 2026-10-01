@@ -1,8 +1,8 @@
-# Strategy logic, StaxBot 2.4.0
+# Strategy logic, StaxBot 2.4.1
 
 `staxbot_2_4_0.pine` runs once per bar, on the bar's close. It does not call `strategy.entry` or `strategy.exit`. The drawing is the plan. Alerts are `alert()` calls.
 
-`staxbot_2_1.pine` is the untouched base this version was built from. Load **StaxBot 2.4.0**, saved as a new script. The legend reads **Stax 2.4.0**. The HUD reads **STAXBOT 2.4.0**.
+`staxbot_2_1.pine` is the untouched base this version was built from. Load **StaxBot 2.4.1**, saved as a new script. The legend reads **Stax 2.4.1**. The HUD reads **STAXBOT 2.4.1**.
 
 ## 1. Settings
 
