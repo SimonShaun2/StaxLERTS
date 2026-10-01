@@ -1,8 +1,8 @@
-# Strategy logic, StaxBot 2.5.1
+# Strategy logic, StaxBot 2.5.2
 
-`staxbot_2_5_1.pine` runs the state machine once on the confirmed bar. Realtime ticks can send one provisional `break_forming` alert. They do not arm, fill, or count a trade. The script does not call `strategy.entry` or `strategy.exit`. The drawing is the plan. Confirmed alerts are `alert()` calls, one per bar.
+`staxbot_2_5_2.pine` runs the state machine once on the confirmed bar. Realtime ticks can send one provisional `break_forming` alert. They do not arm, fill, or count a trade. The script does not call `strategy.entry` or `strategy.exit`. The drawing is the plan. Confirmed alerts are `alert()` calls, one per bar.
 
-Load the file as a new script. The legend reads **StaxBot**. The HUD reads **STAXBOT 2.5.1**. The version is in the file name, this header, and that HUD header.
+Load the file as a new script. The legend reads **StaxBot**. The HUD reads **STAXBOT 2.5.2**. The version is in the file name, this header, and that HUD header.
 
 ## 1. Settings
 
@@ -117,11 +117,11 @@ A shelf plan draws a `RANGE` box. A gap plan draws a `GAP` box. The box border i
 
 `TRIGGERED`, `LIVE`, and `ARMED` stay in color. `Resolved Plans` defaults to Remove, which deletes the drawing. Grey keeps a faint grey entry line and a short state tag (`CLOSED`, `EXPIRED`, `INVALIDATED`, `REPLACED`, or `CANCELLED`), with no price tags, and only the last three resolved plans. Review keeps the last five resolved plans: entry, stop, and target lines in grey, plus that state tag and the reason.
 
-The HUD follows that same row layout. Its header reads `STAXBOT 2.5.1`. The state word is `WATCH`, `RANGE WATCH`, `BREAK FORMING`, `ARMED`, `TRIGGERED`, `LIVE`, `PAUSE`, or the resolve reason on the bar it happens. While a trade is live, the move line describes that trade, and other armed plans collapse to one `Also armed` line. Those other plans draw as a dashed entry only. A trailed stop tag reads `STOP (trail)` and the HUD shows the locked R. Full size lists TP3, then TP2, then TP1, then entry, then stop, and shows or hides rows when a target is toggled. Changing an input after a plan exists shows `INPUTS CHANGED`. Recreate the alert.
+The HUD follows that same row layout. Its header reads `STAXBOT 2.5.2`. The state word is `WATCH`, `RANGE WATCH`, `BREAK FORMING`, `ARMED`, `TRIGGERED`, `LIVE`, `PAUSE`, or the resolve reason on the bar it happens. While a trade is live, the move line describes that trade, and other armed plans collapse to one `Also armed` line. Those other plans draw as a dashed entry only. A trailed stop tag reads `STOP (trail)` and the HUD shows the locked R. Full size lists TP3, then TP2, then TP1, then entry, then stop, and shows or hides rows when a target is toggled. Changing an input after a plan exists shows `INPUTS CHANGED`. Recreate the alert.
 
 Scenario C is `Scenario C: Sweep & Reclaim`, default on. A close beyond a range, a higher-timeframe zone, or an armed shelf, then a later close back inside within the sweep window, arms the reversal at the reclaimed level. A higher-timeframe sweep is A+. A chart-range sweep is capped at B. Arming C cancels armed plans in the failed direction with reason `failed breakout`. Momentum entry is off.
 
-Higher-timeframe zones are prior day, prior week, the last completed Asia, London, and overnight sessions on the Chicago clock, and the last three confirmed swings on the daily, 4H, and 1H. Prior day, prior week, and those swings use the previous completed higher-timeframe bar with lookahead on, so a historical bar and a realtime bar show the same completed high. Each zone is the level plus or minus 0.1 ATR. Overlapping zones merge. The room check skips a zone that contains the entry. It counts a zone only when that zone's near edge is beyond the entry by more than the reclaim tolerance and still in front of TP1. Otherwise it rejects the plan with `PLAN REJECTED: no room (level)`, unless Room Check is Downgrade. A continuation whose entry is more than 3× ATR from the slow EMA drops one grade and is tagged extended. Scenario C is not extended.
+Higher-timeframe zones are prior day, prior week, the last completed Asia, London, and overnight sessions on the Chicago clock, and the last three confirmed swings on the daily, 4H, and 1H. Prior day, prior week, and those swings use the previous completed higher-timeframe bar with lookahead on, so a historical bar and a realtime bar show the same completed high. The pivot offset is on each series inside the function. Pine does not allow `[]` on the tuple that function returns. Each zone is the level plus or minus 0.1 ATR. Overlapping zones merge. The room check skips a zone that contains the entry. It counts a zone only when that zone's near edge is beyond the entry by more than the reclaim tolerance and still in front of TP1. Otherwise it rejects the plan with `PLAN REJECTED: no room (level)`, unless Room Check is Downgrade. A continuation whose entry is more than 3× ATR from the slow EMA drops one grade and is tagged extended. Scenario C is not extended.
 
 ## 12. Alert payload
 
@@ -140,4 +140,4 @@ Every alert JSON object includes `plan_id`, `move_id`, `scenario`, `state`, `ent
 | `exit` | Stop, target, reclaim, or session flatten, when exit alerts are on |
 | `stop_update` | The live stop moves, when that alert is on. `locked_r` is the R locked by the new stop |
 
-The paper desk is a separate project and is not changed by this script. Attach 2.5.1 alerts only after that desk accepts these fields. `watch` and `break_forming` book nothing.
+The paper desk is a separate project and is not changed by this script. Attach 2.5.2 alerts only after that desk accepts these fields. `watch` and `break_forming` book nothing.
