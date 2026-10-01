@@ -1,6 +1,6 @@
-"""Decision rules for StaxBot 2.4.7.
+"""Decision rules for StaxBot 2.5.0.
 
-The Pine script staxbot_2_4_7.pine follows these rules. This file is the check
+The Pine script staxbot_2_5_0.pine follows these rules. This file is the check
 that can run here. It does not read market data and it does not place trades.
 """
 
@@ -44,12 +44,12 @@ def medium_distance_ok(distance: float, atr: float, min_atr: float, max_atr: flo
     return True
 
 
-def scenario_allowed(mode: str, origin: str) -> bool:
-    if mode == "Gap only":
-        return origin == "gap"
-    if mode == "Shelf only":
-        return origin == "shelf"
-    return origin in ("shelf", "gap")
+def scenario_allowed(shelf_on: bool, gap_on: bool, origin: str) -> bool:
+    if origin == "shelf":
+        return shelf_on
+    if origin == "gap":
+        return gap_on
+    return False
 
 
 def targets(entry: float, ref_risk: float, direction: int, tp_r: float) -> tuple[float, float, float]:
@@ -291,9 +291,9 @@ def test_gap_invalidates_beyond_the_far_edge() -> None:
 
 
 def test_allowed_scenarios() -> None:
-    assert scenario_allowed("Shelf + Gap", "shelf") and scenario_allowed("Shelf + Gap", "gap")
-    assert scenario_allowed("Gap only", "gap") and not scenario_allowed("Gap only", "shelf")
-    assert scenario_allowed("Shelf only", "shelf") and not scenario_allowed("Shelf only", "gap")
+    assert scenario_allowed(True, True, "shelf") and scenario_allowed(True, True, "gap")
+    assert scenario_allowed(False, True, "gap") and not scenario_allowed(False, True, "shelf")
+    assert scenario_allowed(True, False, "shelf") and not scenario_allowed(True, False, "gap")
 
 
 def test_medium_distance_gates_every_preset() -> None:
