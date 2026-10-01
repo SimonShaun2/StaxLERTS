@@ -428,6 +428,97 @@ def test_count_resets_at_chicago_open() -> None:
     assert session_count_reset(18 * 60, 17 * 60) is False
 
 
+def downgrade(grade_name: str) -> str:
+    return "A" if grade_name == "A+" else "B"
+
+
+def opposing_level(direction: int, entry: float, tp1: float, zones: list[tuple[str, float]], atr: float, half: float = 0.1) -> str:
+    best_name = ""
+    best = None
+    for name, px in zones:
+        zlo = px - half * atr
+        zhi = px + half * atr
+        hit = px > entry and zlo < tp1 and zhi > entry if direction == 1 else px < entry and zhi > tp1 and zlo < entry
+        dist = abs(px - entry)
+        if hit and (best is None or dist < best):
+            best = dist
+            best_name = name
+    return best_name
+
+
+def at_level(entry: float, zones: list[tuple[str, float]], atr: float, loc: float = 0.5, half: float = 0.1) -> str:
+    reach = loc * atr
+    best = None
+    name = ""
+    for zone_name, px in zones:
+        zlo = px - half * atr
+        zhi = px + half * atr
+        if zlo <= entry <= zhi:
+            dist = 0.0
+        elif entry < zlo:
+            dist = zlo - entry
+        else:
+            dist = entry - zhi
+        if dist <= reach and (best is None or dist < best):
+            best = dist
+            name = zone_name
+    return name
+
+
+def apply_context(base: str, room_mode: str, room_name: str, extended: bool) -> tuple[str | None, str]:
+    if room_name and room_mode == "Reject":
+        return None, f"PLAN REJECTED: no room ({room_name})"
+    grade_name = downgrade(base) if room_name and room_mode == "Downgrade" else base
+    if extended:
+        grade_name = downgrade(grade_name)
+    return grade_name, ""
+
+
+def structural_targets(direction: int, entry: float, ref: float, tp_r: float, zones: list[float]) -> tuple[float, float, float, bool, bool]:
+    tp1 = entry + direction * tp_r * ref
+    tp2 = entry + direction * tp_r * 2.0 * ref
+    tp3 = entry + direction * tp_r * 3.0 * ref
+    ladder2 = True
+    ladder3 = True
+    nxt1 = None
+    nxt2 = None
+    for px in zones:
+        beyond = px > tp1 if direction == 1 else px < tp1
+        if not beyond:
+            continue
+        if nxt1 is None or (px < nxt1 if direction == 1 else px > nxt1):
+            nxt2 = nxt1
+            nxt1 = px
+        elif nxt2 is None or (px < nxt2 if direction == 1 else px > nxt2):
+            nxt2 = px
+    if nxt1 is not None:
+        tp2 = nxt1
+        ladder2 = False
+    if nxt2 is not None and (nxt2 > tp2 if direction == 1 else nxt2 < tp2):
+        tp3 = nxt2
+        ladder3 = False
+    elif not ladder2 and (tp3 <= tp2 if direction == 1 else tp3 >= tp2):
+        tp3 = tp2 + direction * tp_r * ref
+        ladder3 = False
+    return tp1, tp2, tp3, ladder2, ladder3
+
+
+def test_room_and_location() -> None:
+    zones = [("PDH", 100.0), ("PDL", 80.0)]
+    assert opposing_level(1, 90.0, 102.0, zones, atr=10.0) == "PDH"
+    assert opposing_level(1, 90.0, 95.0, zones, atr=10.0) == ""
+    assert at_level(99.0, zones, atr=10.0) == "PDH"
+    assert at_level(90.0, zones, atr=10.0) == ""
+    armed, reason = apply_context("A+", "Reject", "PDH", False)
+    assert armed is None and reason == "PLAN REJECTED: no room (PDH)"
+    armed, reason = apply_context("A+", "Downgrade", "PDH", True)
+    assert armed == "B" and reason == ""
+    tp1, tp2, tp3, ladder2, ladder3 = structural_targets(1, 90.0, 4.0, 1.0, [100.0, 110.0])
+    assert tp1 == 94.0 and tp2 == 100.0 and tp3 == 110.0 and not ladder2 and not ladder3
+    tp1, tp2, tp3, ladder2, ladder3 = structural_targets(1, 90.0, 4.0, 1.0, [])
+    assert (tp1, tp2, tp3) == (94.0, 98.0, 102.0) and ladder2 and ladder3
+
+
 def test_grade_fifth_flag_changes_the_letter() -> None:
     assert grade(True, True, True, True, True) == "A+"
     assert grade(True, True, True, True, False) == "A"
@@ -451,5 +542,6 @@ if __name__ == "__main__":
     test_break_window_and_strong_flag()
     test_gap_through_stop_uses_the_open()
     test_count_resets_at_chicago_open()
+    test_room_and_location()
     test_grade_fifth_flag_changes_the_letter()
     print("engine rules ok")

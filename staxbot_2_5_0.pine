@@ -6,6 +6,7 @@
 // Tight stops past the gap far edge or the break candle. Medium stops past the displacement candle. Large stops past the leg extreme.
 // Buffers, reclaim, and stop limits use the previous bar's ATR. Tight stays at or inside Medium, and Large stays at or beyond it.
 // The arm decision uses the Medium stop. A selected stop inside the minimum is widened to it. Targets use the Medium distance. The daily count moves only when a plan fills.
+// Higher-timeframe zones are prior day, prior week, completed sessions, and the last three swings on the daily, 4H, and 1H. A zone in front of TP1 rejects the plan. Flag 5 is that location.
 // This script does not call strategy.entry or strategy.exit. Alerts are alert() only.
 strategy("StaxBot", shorttitle = "StaxBot", overlay = true,
      initial_capital = 50000, default_qty_type = strategy.fixed, default_qty_value = 1, pyramiding = 0,
@@ -39,7 +40,12 @@ maxTradesIn      = input.int(20, "Max Trades Per Day", minval = 1, group = G_COA
 maxLiveIn        = input.int(1, "Live Positions At Once", minval = 1, maxval = 5, group = G_COACH)
 flatAtSessEndIn  = input.bool(false, "Flatten Open Trade At Session End", group = G_COACH)
 minGradeIn       = input.string("Off", "Minimum Grade", options = ["Off", "A", "A+"], group = G_COACH,
-     tooltip = "A+ needs all five flags. A is four, and one of those four must be strong displacement or the London/New York window. Flag 1 is the strong-displacement body. Flag 5 is a gap on scenario A, or swing age on scenario B.")
+     tooltip = "A+ needs all five flags. A is four, and one of those four must be strong displacement or the London/New York window. Flag 1 is strong displacement. Flag 2 is EMA bias. Flag 3 is volume. Flag 4 is London 03:00–06:00 or New York 08:20–11:30. Flag 5 is an entry within 0.5 ATR of a higher-timeframe zone.")
+roomModeIn       = input.string("Reject", "Room Check", options = ["Reject", "Downgrade"], group = G_COACH,
+     tooltip = "Reject skips a plan whose path from entry to TP1 crosses an opposing higher-timeframe zone. Downgrade drops that plan one grade.")
+extOnIn          = input.bool(true, "Extension Filter", group = G_COACH,
+     tooltip = "A shelf, gap, or momentum plan whose entry is farther than the extension distance from the slow EMA drops one grade and is tagged extended. Scenario C is not extended.")
+extAtrIn         = input.float(3.0, "Extension Distance (ATR x)", minval = 0, step = 0.1, group = G_COACH)
 reclaimExitIn    = input.bool(true, "Reclaim Exit On Live Trades", group = G_COACH,
      tooltip = "On: a live trade that closes back through the shelf exits at that close. Off: the shelf reclaim only blocks a fill.")
 reclaimAtrIn   = input.float(0.25, "Reclaim Tolerance (ATR x)", minval = 0, step = 0.05, group = G_COACH,
@@ -58,7 +64,6 @@ breakWinIn       = input.int(3, "Break Window (bars)", minval = 1, group = G_STR
 strongAtrIn      = input.float(1.5, "Strong Displacement (ATR x)", minval = 0, step = 0.1, group = G_STRUCT,
      tooltip = "Grade flag 1. The arming bar's body must be at least this multiple of ATR. A smaller displaced close can still arm.")
 fvgWindowIn      = input.int(1, "Gap Window After The Break (bars)", minval = 1, group = G_STRUCT)
-swingAgeIn       = input.int(5, "Swing Age For Grade Flag 5 (bars)", minval = 1, group = G_STRUCT)
 setupExpiryIn    = input.int(12, "Plan Expires After N Bars", minval = 1, group = G_STRUCT)
 entryLevelIn     = input.string("FVG Near Edge (Aggressive)", "Gap Entry", group = G_STRUCT,
      options = ["FVG Near Edge (Aggressive)", "FVG Midpoint (CE)", "FVG Far Edge (Deep)"])
@@ -77,6 +82,8 @@ tp3OnIn = input.bool(true, "TP3", group = G_TP)
 tp1WIn  = input.int(2, "TP1 weight", minval = 1, maxval = 100, group = G_TP)
 tp2WIn  = input.int(1, "TP2 weight", minval = 1, maxval = 100, group = G_TP)
 tp3WIn  = input.int(1, "TP3 weight", minval = 1, maxval = 100, group = G_TP)
+structOnIn = input.bool(false, "Structural Targets", group = G_TP,
+     tooltip = "Off keeps TP2 and TP3 on the R ladder. On sets TP2 to the nearest higher-timeframe zone beyond TP1 and TP3 to the next one. A missing zone stays on the ladder. TP1 stays the R multiple.")
 
 slTypeIn     = input.string("Medium", "SL Type", options = ["Tight", "Medium", "Large"], group = G_SL,
      tooltip = "Tight stops beyond the gap far edge, or the break candle on a shelf plan. Medium stops beyond the displacement candle. Large stops beyond the leg extreme. Distances stay Tight at or inside Medium, and Large at or beyond Medium. A selected stop inside the minimum is widened to the minimum. Entry, targets, and the arm decision stay on the Medium stop. Buffers use the previous bar's ATR.")
@@ -117,6 +124,8 @@ showDrawingsIn = input.bool(true, "Show Chart Drawings", group = G_DISPLAY)
 resolvedIn     = input.string("Remove", "Resolved Plans", options = ["Grey", "Remove", "Review"], group = G_DISPLAY,
      tooltip = "Remove deletes the drawing. Grey keeps a faint entry line and a state tag for the last three. Review keeps the last five with entry, stop, and target lines in grey, plus the state tag and the reason.")
 showSessBgIn   = input.bool(true, "Shade Active Session", group = G_DISPLAY)
+showHtfIn      = input.bool(true, "Show HTF Zones", group = G_DISPLAY,
+     tooltip = "Draws each higher-timeframe zone faintly. A zone is the level plus or minus 0.1 ATR. Overlapping zones merge.")
 cloudColorIn   = input.color(#00c8ff, "EMA Cloud Color", group = G_DISPLAY)
 
 pauseOnIn   = input.bool(true, "Session Pause", group = G_SESSION)
@@ -165,6 +174,9 @@ inSession = not sessionFilterOn or not na(time(timeframe.period, sessForTime, tz
 sessionEnded = sessionFilterOn and inSession[1] and not inSession
 pauseHit = time(timeframe.period, pauseSessIn, pauseTzIn)
 inPause = pauseOnIn and not na(pauseHit)
+inAsiaSess = not na(time(timeframe.period, "2000-0000", "America/Chicago"))
+inLonSess = not na(time(timeframe.period, "0300-0600", "America/Chicago"))
+inOnSess = not na(time(timeframe.period, "1800-0300", "America/Chicago"))
 tick = syminfo.mintick
 longsOk = pDir != "Shorts Only"
 shortsOk = pDir != "Longs Only"
@@ -234,6 +246,15 @@ h4  = request.security(syminfo.tickerid, "240", f_htf(), barmerge.gaps_off, barm
 h1  = request.security(syminfo.tickerid, "60", f_htf(), barmerge.gaps_off, barmerge.lookahead_off)
 h15 = request.security(syminfo.tickerid, "15", f_htf(), barmerge.gaps_off, barmerge.lookahead_off)
 h5  = request.security(syminfo.tickerid, "5", f_htf(), barmerge.gaps_off, barmerge.lookahead_off)
+pdh = request.security(syminfo.tickerid, "D", high[1], barmerge.gaps_off, barmerge.lookahead_off)
+pdl = request.security(syminfo.tickerid, "D", low[1], barmerge.gaps_off, barmerge.lookahead_off)
+pwh = request.security(syminfo.tickerid, "W", high[1], barmerge.gaps_off, barmerge.lookahead_off)
+pwl = request.security(syminfo.tickerid, "W", low[1], barmerge.gaps_off, barmerge.lookahead_off)
+f_htf_piv() =>
+    [ta.pivothigh(high, swingLenIn, swingLenIn), ta.pivotlow(low, swingLenIn, swingLenIn)]
+[dPh, dPl] = request.security(syminfo.tickerid, "D", f_htf_piv(), barmerge.gaps_off, barmerge.lookahead_off)
+[h4Ph, h4Pl] = request.security(syminfo.tickerid, "240", f_htf_piv(), barmerge.gaps_off, barmerge.lookahead_off)
+[h1Ph, h1Pl] = request.security(syminfo.tickerid, "60", f_htf_piv(), barmerge.gaps_off, barmerge.lookahead_off)
 
 ph = ta.pivothigh(high, swingLenIn, swingLenIn)
 pl = ta.pivotlow(low, swingLenIn, swingLenIn)
@@ -299,6 +320,10 @@ type staxPlan
     string setupId = ""
     string reason = ""
     string fp = ""
+    string level = ""
+    bool extended = false
+    bool struct2 = false
+    bool struct3 = false
     bool hit1 = false
     bool hit2 = false
     bool hit3 = false
@@ -350,6 +375,38 @@ var float winZoneHi = na
 var float winZoneLo = na
 var int winZoneFrom = 0
 var int tradesToday = 0
+var array<string> zoneName = array.new_string()
+var array<float> zonePx = array.new_float()
+var array<float> zoneLo = array.new_float()
+var array<float> zoneHi = array.new_float()
+var array<string> rawName = array.new_string()
+var array<float> rawPx = array.new_float()
+var array<float> dHighs = array.new_float()
+var array<float> dLows = array.new_float()
+var array<float> h4Highs = array.new_float()
+var array<float> h4Lows = array.new_float()
+var array<float> h1Highs = array.new_float()
+var array<float> h1Lows = array.new_float()
+var float asiaHi = na
+var float asiaLo = na
+var float asiaRunHi = na
+var float asiaRunLo = na
+var float lonHi = na
+var float lonLo = na
+var float lonRunHi = na
+var float lonRunLo = na
+var float onHi = na
+var float onLo = na
+var float onRunHi = na
+var float onRunLo = na
+var float seenDph = na
+var float seenDpl = na
+var float seen4h = na
+var float seen4l = na
+var float seen1h = na
+var float seen1l = na
+var array<line> htfLn = array.new_line()
+var array<label> htfLb = array.new_label()
 
 f_num(float v) =>
     na(v) ? "null" : str.tostring(v, format.mintick)
@@ -371,7 +428,7 @@ f_grade(bool dispOk, bool biasOk, bool volFlag, bool sessOk, bool fifth) =>
     int score = (dispOk ? 1 : 0) + (biasOk ? 1 : 0) + (volFlag ? 1 : 0) + (sessOk ? 1 : 0) + (fifth ? 1 : 0)
     score == 5 ? "A+" : score == 4 and (dispOk or sessOk) ? "A" : "B"
 f_fp() =>
-    str.tostring(pTp, "0.00") + "|" + pSl + "|" + str.tostring(tightAtrIn, "0.00") + "|" + str.tostring(medAtrIn, "0.00") + "|" + str.tostring(largeAtrIn, "0.00") + "|" + minGradeIn + "|" + entryLevelIn + "|" + pBe + "|" + pTrail + "|" + pDir + "|" + sessShort + "|" + dispModeIn + "|" + str.tostring(dispBodyAtrIn, "0.0") + "|" + str.tostring(maxLiveIn) + "|" + (reclaimExitIn ? "1" : "0") + "|" + (pauseOnIn ? "1" : "0") + "|" + (enableCIn ? "1" : "0") + "|" + str.tostring(breakWinIn) + "|" + str.tostring(strongAtrIn, "0.0") + "|" + str.tostring(reclaimAtrIn, "0.00") + "|" + str.tostring(minStopAtrIn, "0.0") + "|" + str.tostring(maxStopAtrIn, "0.0") + "|" + (shelfOnIn ? "1" : "0") + "|" + (gapOnIn ? "1" : "0")
+    str.tostring(pTp, "0.00") + "|" + pSl + "|" + str.tostring(tightAtrIn, "0.00") + "|" + str.tostring(medAtrIn, "0.00") + "|" + str.tostring(largeAtrIn, "0.00") + "|" + minGradeIn + "|" + entryLevelIn + "|" + pBe + "|" + pTrail + "|" + pDir + "|" + sessShort + "|" + dispModeIn + "|" + str.tostring(dispBodyAtrIn, "0.0") + "|" + str.tostring(maxLiveIn) + "|" + (reclaimExitIn ? "1" : "0") + "|" + (pauseOnIn ? "1" : "0") + "|" + (enableCIn ? "1" : "0") + "|" + str.tostring(breakWinIn) + "|" + str.tostring(strongAtrIn, "0.0") + "|" + str.tostring(reclaimAtrIn, "0.00") + "|" + str.tostring(minStopAtrIn, "0.0") + "|" + str.tostring(maxStopAtrIn, "0.0") + "|" + (shelfOnIn ? "1" : "0") + "|" + (gapOnIn ? "1" : "0") + "|" + roomModeIn + "|" + (extOnIn ? "1" : "0") + "|" + str.tostring(extAtrIn, "0.0") + "|" + (structOnIn ? "1" : "0") + "|" + (showHtfIn ? "1" : "0")
 f_signed(float r) =>
     (r >= 0 ? "+" : "") + str.tostring(r, "0.0") + "R"
 f_stop(float anchor, int side, string which) =>
@@ -396,16 +453,20 @@ f_targets(staxPlan p) =>
     if p.on1
         s := '{"id":"TP1","price":' + f_num(p.tp1) + ',"allocation":' + str.tostring(p.w1) + ',"r":' + str.tostring(p.rUnit, "0.00") + '}'
     if p.on2
-        string bit = '{"id":"TP2","price":' + f_num(p.tp2) + ',"allocation":' + str.tostring(p.w2) + ',"r":' + str.tostring(p.rUnit * 2.0, "0.00") + '}'
+        float r2 = p.struct2 and p.refRisk > 0 ? math.abs(p.tp2 - p.entry) / p.refRisk : p.rUnit * 2.0
+        string bit = '{"id":"TP2","price":' + f_num(p.tp2) + ',"allocation":' + str.tostring(p.w2) + ',"r":' + str.tostring(r2, "0.00") + '}'
         s := s == "" ? bit : s + "," + bit
     if p.on3
-        string bit3 = '{"id":"TP3","price":' + f_num(p.tp3) + ',"allocation":' + str.tostring(p.w3) + ',"r":' + str.tostring(p.rUnit * 3.0, "0.00") + '}'
+        float r3 = p.struct3 and p.refRisk > 0 ? math.abs(p.tp3 - p.entry) / p.refRisk : p.rUnit * 3.0
+        string bit3 = '{"id":"TP3","price":' + f_num(p.tp3) + ',"allocation":' + str.tostring(p.w3) + ',"r":' + str.tostring(r3, "0.00") + '}'
         s := s == "" ? bit3 : s + "," + bit3
     "[" + s + "]"
-f_payload(staxPlan p, string event, string extra) =>
+f_payload(staxPlan p, string event, string extra, string idBit) =>
     string side = p.dir == 1 ? "long" : "short"
     string opt = staxMode and event == "entry" ? ',"unmodifiedTicker":"' + (tickerOverrideIn != "" ? tickerOverrideIn : syminfo.root) + f_expiryYYMMDD() + (p.dir == 1 ? "C" : "P") + f_strike(p.dir) + '"' : ""
-    '{"source":"staxbot","event":"' + event + '","eventId":"' + p.setupId + ":" + event + ":" + str.tostring(bar_index) + '","setupId":"' + p.setupId + '","plan_id":' + str.tostring(p.planId) + ',"move_id":' + str.tostring(p.moveId) + ',"scenario":"' + p.scenario + '","state":"' + p.state + '","origin":"' + p.origin + '","side":"' + side + '","entry":' + f_num(p.entry) + ',"stop":' + f_num(p.liveStop) + ',"stop_preset":"' + p.preset + '","price":' + f_num(p.entry) + ',"target":' + f_num(p.on1 ? p.tp1 : p.on2 ? p.tp2 : p.tp3) + ',"targets":' + f_targets(p) + ',"grade":"' + p.grade + '","timeframe":"' + timeframe.period + '","ticker":"' + syminfo.ticker + '","root":"' + syminfo.root + '","exchange":"' + syminfo.prefix + '"' + opt + extra + ',"timestamp":"' + f_ts() + '"}'
+    string eid = idBit == "" ? p.setupId + ":" + event + ":" + str.tostring(bar_index) : p.setupId + ":" + event + ":" + idBit + ":" + str.tostring(bar_index)
+    string lvl = p.level == "" ? "null" : '"' + p.level + '"'
+    '{"source":"staxbot","event":"' + event + '","eventId":"' + eid + '","setupId":"' + p.setupId + '","plan_id":' + str.tostring(p.planId) + ',"move_id":' + str.tostring(p.moveId) + ',"scenario":"' + p.scenario + '","state":"' + p.state + '","origin":"' + p.origin + '","side":"' + side + '","entry":' + f_num(p.entry) + ',"stop":' + f_num(p.liveStop) + ',"stop_preset":"' + p.preset + '","price":' + f_num(p.entry) + ',"target":' + f_num(p.on1 ? p.tp1 : p.on2 ? p.tp2 : p.tp3) + ',"targets":' + f_targets(p) + ',"grade":"' + p.grade + '","level":' + lvl + ',"version":"2.5.0","fp":"' + p.fp + '","timeframe":"' + timeframe.period + '","ticker":"' + syminfo.ticker + '","root":"' + syminfo.root + '","exchange":"' + syminfo.prefix + '"' + opt + extra + ',"timestamp":"' + f_ts() + '"}'
 f_send(string msg) =>
     array.push(outbox, msg)
     true
@@ -434,10 +495,45 @@ f_replace_older(int side, int id) =>
                 p.reason := "newer break"
                 p.ready := false
                 p.resolvedBar := bar_index
-                f_send(f_payload(p, "plan_cancel", ',"reason":"replaced"'))
+                f_send(f_payload(p, "plan_cancel", ',"reason":"replaced"', ""))
                 array.set(plans, i, p)
     true
-f_try_arm(string origin, int side, float entry, float tightPx, float medPx, float anchor, float shelf, int swingBar, float zoneHi, float zoneLo, int zoneFrom, bool flag1, bool fifth) =>
+f_down(string g) =>
+    g == "A+" ? "A" : "B"
+f_at_level(float px) =>
+    string name = ""
+    float best = na
+    float reach = 0.5 * atr
+    if array.size(zonePx) > 0
+        for i = 0 to array.size(zonePx) - 1
+            float zLo = array.get(zoneLo, i)
+            float zHi = array.get(zoneHi, i)
+            float dist = (px >= zLo and px <= zHi) ? 0.0 : (px < zLo ? zLo - px : px - zHi)
+            if dist <= reach and (na(best) or dist < best)
+                best := dist
+                name := array.get(zoneName, i)
+    name
+f_room_name(int side, float entry, float tp1) =>
+    string name = ""
+    float best = na
+    if array.size(zonePx) > 0
+        for i = 0 to array.size(zonePx) - 1
+            float zLo = array.get(zoneLo, i)
+            float zHi = array.get(zoneHi, i)
+            float zPx = array.get(zonePx, i)
+            bool hit = side == 1 ? (zPx > entry and zLo < tp1 and zHi > entry) : (zPx < entry and zHi > tp1 and zLo < entry)
+            float dist = math.abs(zPx - entry)
+            if hit and (na(best) or dist < best)
+                best := dist
+                name := array.get(zoneName, i)
+    name
+f_keep3(array<float> src, float v) =>
+    if not na(v)
+        array.push(src, v)
+        if array.size(src) > 3
+            array.shift(src)
+    true
+f_try_arm(string origin, int side, float entry, float tightPx, float medPx, float anchor, float shelf, int swingBar, float zoneHi, float zoneLo, int zoneFrom, bool flag1) =>
     eng.planSeq += 1
     float med = f_stop(medPx, side, "Medium")
     float rawTight = f_stop(tightPx, side, "Tight")
@@ -454,16 +550,47 @@ f_try_arm(string origin, int side, float entry, float tightPx, float medPx, floa
     float t1 = entry + side * pTp * ref
     float t2 = entry + side * pTp * 2.0 * ref
     float t3 = entry + side * pTp * 3.0 * ref
+    bool ladder2 = true
+    bool ladder3 = true
+    if structOnIn and not na(t1) and array.size(zonePx) > 0
+        float nxt1 = na
+        float nxt2 = na
+        for i = 0 to array.size(zonePx) - 1
+            float zPx = array.get(zonePx, i)
+            bool beyond = side == 1 ? zPx > t1 : zPx < t1
+            if beyond
+                if na(nxt1) or (side == 1 ? zPx < nxt1 : zPx > nxt1)
+                    nxt2 := nxt1
+                    nxt1 := zPx
+                else if na(nxt2) or (side == 1 ? zPx < nxt2 : zPx > nxt2)
+                    nxt2 := zPx
+        if not na(nxt1)
+            t2 := nxt1
+            ladder2 := false
+        if not na(nxt2) and (side == 1 ? nxt2 > t2 : nxt2 < t2)
+            t3 := nxt2
+            ladder3 := false
+        else if not ladder2 and (side == 1 ? t3 <= t2 : t3 >= t2)
+            t3 := t2 + side * pTp * ref
+            ladder3 := false
     bool distanceOk = dM >= minStopAtrIn * armAtr and (maxStopAtrIn <= 0 or dM <= maxStopAtrIn * armAtr)
     bool ordered = side == 1 ? med < entry and entry < t1 and t1 < t2 and t2 < t3 : med > entry and entry > t1 and t1 > t2 and t2 > t3
     float r1 = ref > 0 ? math.abs(t1 - entry) / ref : na
     float r2 = ref > 0 ? math.abs(t2 - entry) / ref : na
     float r3 = ref > 0 ? math.abs(t3 - entry) / ref : na
-    bool labelsOk = not na(r1) and math.abs(r1 - pTp) < 0.0001 and math.abs(r2 - pTp * 2.0) < 0.0001 and math.abs(r3 - pTp * 3.0) < 0.0001
+    bool labelsOk = not na(r1) and math.abs(r1 - pTp) < 0.0001 and (not ladder2 or math.abs(r2 - pTp * 2.0) < 0.0001) and (not ladder3 or math.abs(r3 - pTp * 3.0) < 0.0001)
     bool geometryOk = ordered and labelsOk
     int clock = hour(time, tzIn) * 60 + minute(time, tzIn)
     bool gradeSess = (clock >= 180 and clock < 360) or (clock >= 500 and clock < 690)
-    string g = f_grade(flag1, side == 1 ? bias == 1 : bias == -1, volume > volSma, gradeSess, fifth)
+    string atLevel = f_at_level(entry)
+    string g = f_grade(flag1, side == 1 ? bias == 1 : bias == -1, volume > volSma, gradeSess, atLevel != "")
+    string roomName = geometryOk and distanceOk ? f_room_name(side, entry, t1) : ""
+    bool roomHit = roomName != ""
+    if roomHit and roomModeIn == "Downgrade"
+        g := f_down(g)
+    bool extended = extOnIn and origin != "sweep" and math.abs(entry - emaSlow) > extAtrIn * atr
+    if extended
+        g := f_down(g)
     bool take = minGradeIn == "Off" or g == "A+" or (minGradeIn == "A" and g == "A")
     if not geometryOk
         eng.hudReject := "PLAN REJECTED: geometry."
@@ -471,6 +598,9 @@ f_try_arm(string origin, int side, float entry, float tightPx, float medPx, floa
     else if not distanceOk
         eng.hudReject := "PLAN REJECTED: stop distance."
         log.info("plan_id " + str.tostring(eng.planSeq) + " PLAN REJECTED: stop distance")
+    else if roomHit and roomModeIn == "Reject"
+        eng.hudReject := "PLAN REJECTED: no room (" + roomName + ")"
+        log.info("plan_id " + str.tostring(eng.planSeq) + " PLAN REJECTED: no room (" + roomName + ")")
     else if take and not f_has(moveIdNow, origin)
         float minDist = minStopAtrIn * armAtr
         float dSel = (entry - sel) * side
@@ -479,7 +609,7 @@ f_try_arm(string origin, int side, float entry, float tightPx, float medPx, floa
         staxPlan p = staxPlan.new()
         p.planId := eng.planSeq
         p.moveId := moveIdNow
-        p.scenario := origin == "gap" ? "A" : "B"
+        p.scenario := origin == "gap" ? "A" : origin == "sweep" ? "C" : origin == "momentum" ? "M" : "B"
         p.origin := origin
         p.dir := side
         p.entry := entry
@@ -511,8 +641,12 @@ f_try_arm(string origin, int side, float entry, float tightPx, float medPx, floa
         p.setupId := syminfo.ticker + ":" + str.tostring(time) + ":" + str.tostring(eng.planSeq)
         p.fp := f_fp()
         p.reason := ""
+        p.level := atLevel
+        p.extended := extended
+        p.struct2 := not ladder2
+        p.struct3 := not ladder3
         array.push(plans, p)
-        f_send(f_payload(p, "plan", ""))
+        f_send(f_payload(p, "plan", "", ""))
         eng.hudReject := ""
     true
 
@@ -677,10 +811,10 @@ f_draw(staxPlan p) =>
                 p.lb1 := f_price_tag(right, p.tp1, "TP1  " + f_num(p.tp1) + "   " + str.tostring(p.rUnit, "0.#") + "R", color.new(#3DDC97, 0))
             if p.on2
                 p.ln2 := line.new(left, p.tp2, right, p.tp2, color = color.new(#3DDC97, 0), style = line.style_solid, width = 3)
-                p.lb2 := f_price_tag(right, p.tp2, "TP2  " + f_num(p.tp2) + "   " + str.tostring(p.rUnit * 2.0, "0.#") + "R", color.new(#3DDC97, 0))
+                p.lb2 := f_price_tag(right, p.tp2, p.struct2 ? "TP2  " + f_num(p.tp2) : "TP2  " + f_num(p.tp2) + "   " + str.tostring(p.rUnit * 2.0, "0.#") + "R", color.new(#3DDC97, 0))
             if p.on3
                 p.ln3 := line.new(left, p.tp3, right, p.tp3, color = color.new(#147A4E, 0), style = line.style_solid, width = 3)
-                p.lb3 := f_price_tag(right, p.tp3, "TP3  " + f_num(p.tp3) + "   " + str.tostring(p.rUnit * 3.0, "0.#") + "R", color.new(#147A4E, 0))
+                p.lb3 := f_price_tag(right, p.tp3, p.struct3 ? "TP3  " + f_num(p.tp3) : "TP3  " + f_num(p.tp3) + "   " + str.tostring(p.rUnit * 3.0, "0.#") + "R", color.new(#147A4E, 0))
         else
             line.set_x1(p.lnEn, left)
             line.set_x2(p.lnEn, right)
@@ -726,8 +860,8 @@ f_close_trade(staxPlan p, float px, string why, string targetId) =>
             label.delete(p.lbExit)
         p.lbExit := f_exit_mark(p.dir, px, why + " " + f_signed(rr), ink)
     if sendExitAlertsIn
-        string extra = ',"price":' + f_num(px) + ',"reason":"' + why + '","targetId":"' + targetId + '","realizedR":' + str.tostring(rr, "0.00")
-        f_send(f_payload(p, "exit", extra))
+        string extra = ',"exit_price":' + f_num(px) + ',"reason":"' + why + '","targetId":"' + targetId + '","realizedR":' + str.tostring(rr, "0.00")
+        f_send(f_payload(p, "exit", extra, targetId + ":" + why))
     p
 f_mark_tp(staxPlan p, string which, float px, float rr) =>
     if showDrawingsIn
@@ -735,8 +869,8 @@ f_mark_tp(staxPlan p, string which, float px, float rr) =>
             label.delete(p.lbExit)
         p.lbExit := f_exit_mark(p.dir, px, which + " " + f_signed(rr), color.new(#3DDC97, 0))
     if sendExitAlertsIn
-        string extra = ',"price":' + f_num(px) + ',"reason":"TP","targetId":"' + which + '","realizedR":' + str.tostring(rr, "0.00")
-        f_send(f_payload(p, "exit", extra))
+        string extra = ',"exit_price":' + f_num(px) + ',"reason":"TP","targetId":"' + which + '","realizedR":' + str.tostring(rr, "0.00")
+        f_send(f_payload(p, "exit", extra, which + ":TP"))
     p
 
 int ctOpenMin = hour(time, "America/Chicago") * 60 + minute(time, "America/Chicago")
@@ -744,6 +878,154 @@ int ctPrevMin = hour(time[1], "America/Chicago") * 60 + minute(time[1], "America
 if ctOpenMin >= 17 * 60 and (na(ctPrevMin) or ctPrevMin < 17 * 60)
     tradesToday := 0
 array.clear(outbox)
+
+if barstate.isconfirmed
+    if bar_index > 0 and inAsiaSess[1] and not inAsiaSess
+        asiaHi := asiaRunHi
+        asiaLo := asiaRunLo
+        asiaRunHi := na
+        asiaRunLo := na
+    if inAsiaSess
+        asiaRunHi := na(asiaRunHi) ? high : math.max(asiaRunHi, high)
+        asiaRunLo := na(asiaRunLo) ? low : math.min(asiaRunLo, low)
+    if bar_index > 0 and inLonSess[1] and not inLonSess
+        lonHi := lonRunHi
+        lonLo := lonRunLo
+        lonRunHi := na
+        lonRunLo := na
+    if inLonSess
+        lonRunHi := na(lonRunHi) ? high : math.max(lonRunHi, high)
+        lonRunLo := na(lonRunLo) ? low : math.min(lonRunLo, low)
+    if bar_index > 0 and inOnSess[1] and not inOnSess
+        onHi := onRunHi
+        onLo := onRunLo
+        onRunHi := na
+        onRunLo := na
+    if inOnSess
+        onRunHi := na(onRunHi) ? high : math.max(onRunHi, high)
+        onRunLo := na(onRunLo) ? low : math.min(onRunLo, low)
+    if not na(dPh) and (na(seenDph) or dPh != seenDph)
+        f_keep3(dHighs, dPh)
+        seenDph := dPh
+    if not na(dPl) and (na(seenDpl) or dPl != seenDpl)
+        f_keep3(dLows, dPl)
+        seenDpl := dPl
+    if not na(h4Ph) and (na(seen4h) or h4Ph != seen4h)
+        f_keep3(h4Highs, h4Ph)
+        seen4h := h4Ph
+    if not na(h4Pl) and (na(seen4l) or h4Pl != seen4l)
+        f_keep3(h4Lows, h4Pl)
+        seen4l := h4Pl
+    if not na(h1Ph) and (na(seen1h) or h1Ph != seen1h)
+        f_keep3(h1Highs, h1Ph)
+        seen1h := h1Ph
+    if not na(h1Pl) and (na(seen1l) or h1Pl != seen1l)
+        f_keep3(h1Lows, h1Pl)
+        seen1l := h1Pl
+
+array.clear(rawName)
+array.clear(rawPx)
+if not na(pdh)
+    array.push(rawName, "PDH")
+    array.push(rawPx, pdh)
+if not na(pdl)
+    array.push(rawName, "PDL")
+    array.push(rawPx, pdl)
+if not na(pwh)
+    array.push(rawName, "PWH")
+    array.push(rawPx, pwh)
+if not na(pwl)
+    array.push(rawName, "PWL")
+    array.push(rawPx, pwl)
+if not na(asiaHi)
+    array.push(rawName, "ASIAH")
+    array.push(rawPx, asiaHi)
+if not na(asiaLo)
+    array.push(rawName, "ASIAL")
+    array.push(rawPx, asiaLo)
+if not na(lonHi)
+    array.push(rawName, "LONH")
+    array.push(rawPx, lonHi)
+if not na(lonLo)
+    array.push(rawName, "LONL")
+    array.push(rawPx, lonLo)
+if not na(onHi)
+    array.push(rawName, "ONH")
+    array.push(rawPx, onHi)
+if not na(onLo)
+    array.push(rawName, "ONL")
+    array.push(rawPx, onLo)
+if array.size(dHighs) > 0
+    for i = 0 to array.size(dHighs) - 1
+        array.push(rawName, "DH" + str.tostring(i + 1))
+        array.push(rawPx, array.get(dHighs, i))
+if array.size(dLows) > 0
+    for i = 0 to array.size(dLows) - 1
+        array.push(rawName, "DL" + str.tostring(i + 1))
+        array.push(rawPx, array.get(dLows, i))
+if array.size(h4Highs) > 0
+    for i = 0 to array.size(h4Highs) - 1
+        array.push(rawName, "H4H" + str.tostring(i + 1))
+        array.push(rawPx, array.get(h4Highs, i))
+if array.size(h4Lows) > 0
+    for i = 0 to array.size(h4Lows) - 1
+        array.push(rawName, "H4L" + str.tostring(i + 1))
+        array.push(rawPx, array.get(h4Lows, i))
+if array.size(h1Highs) > 0
+    for i = 0 to array.size(h1Highs) - 1
+        array.push(rawName, "H1H" + str.tostring(i + 1))
+        array.push(rawPx, array.get(h1Highs, i))
+if array.size(h1Lows) > 0
+    for i = 0 to array.size(h1Lows) - 1
+        array.push(rawName, "H1L" + str.tostring(i + 1))
+        array.push(rawPx, array.get(h1Lows, i))
+array.clear(zoneName)
+array.clear(zonePx)
+array.clear(zoneLo)
+array.clear(zoneHi)
+float halfZ = 0.1 * atr
+int rn = array.size(rawPx)
+if not na(halfZ) and rn > 0
+    if rn > 1
+        for pass = 1 to rn - 1
+            for b = 0 to rn - 2
+                if array.get(rawPx, b) > array.get(rawPx, b + 1)
+                    float swapPx = array.get(rawPx, b)
+                    string swapNm = array.get(rawName, b)
+                    array.set(rawPx, b, array.get(rawPx, b + 1))
+                    array.set(rawName, b, array.get(rawName, b + 1))
+                    array.set(rawPx, b + 1, swapPx)
+                    array.set(rawName, b + 1, swapNm)
+    string cName = array.get(rawName, 0)
+    float cSum = array.get(rawPx, 0)
+    int cCount = 1
+    float cLo = cSum - halfZ
+    float cHi = cSum + halfZ
+    if rn > 1
+        for i = 1 to rn - 1
+            float px = array.get(rawPx, i)
+            float lo = px - halfZ
+            float hi = px + halfZ
+            if lo <= cHi
+                cName := cName + "+" + array.get(rawName, i)
+                cLo := math.min(cLo, lo)
+                cHi := math.max(cHi, hi)
+                cSum := cSum + px
+                cCount += 1
+            else
+                array.push(zoneName, cName)
+                array.push(zonePx, cSum / cCount)
+                array.push(zoneLo, cLo)
+                array.push(zoneHi, cHi)
+                cName := array.get(rawName, i)
+                cSum := px
+                cCount := 1
+                cLo := lo
+                cHi := hi
+    array.push(zoneName, cName)
+    array.push(zonePx, cSum / cCount)
+    array.push(zoneLo, cLo)
+    array.push(zoneHi, cHi)
 
 bool sideOkBull = longsOk and (not biasFilterIn or bias == 1)
 bool sideOkBear = shortsOk and (not biasFilterIn or bias == -1)
@@ -775,10 +1057,9 @@ if canArm and shelfOk and winOpen and winBeyond and winDisp and winSideOk
     moveZoneFrom := winZoneFrom
     moveFlag1 := strongDisp
     f_replace_older(side, moveIdNow)
-    bool fifth = bar_index - moveSwing <= swingAgeIn
     float tightCandle = side == 1 ? low : high
     if shelfOnIn
-        f_try_arm("shelf", side, moveShelf, tightCandle, tightCandle, moveAnchor, moveShelf, moveSwing, moveZoneHi, moveZoneLo, moveZoneFrom, moveFlag1, fifth)
+        f_try_arm("shelf", side, moveShelf, tightCandle, tightCandle, moveAnchor, moveShelf, moveSwing, moveZoneHi, moveZoneLo, moveZoneFrom, moveFlag1)
     winSide := 0
     winFrom := -1
 
@@ -794,7 +1075,7 @@ if gapOnIn and canArm and inGapWindow and gapNow and gapHeightOk and ((moveDir =
     float midEdge = (gapTop + gapBot) / 2.0
     float gapEntry = entryLevelIn == "FVG Midpoint (CE)" ? midEdge : entryLevelIn == "FVG Far Edge (Deep)" ? farEdge : nearEdge
     float gapMed = moveDir == 1 ? low[1] : high[1]
-    f_try_arm("gap", moveDir, gapEntry, farEdge, gapMed, moveAnchor, moveShelf, moveSwing, gapTop, gapBot, math.max(0, bar_index - 2), moveFlag1, true)
+    f_try_arm("gap", moveDir, gapEntry, farEdge, gapMed, moveAnchor, moveShelf, moveSwing, gapTop, gapBot, math.max(0, bar_index - 2), moveFlag1)
 
 if array.size(plans) > 0
     for i = 0 to array.size(plans) - 1
@@ -850,19 +1131,19 @@ if array.size(plans) > 0
                         if newStop != p.liveStop
                             p.liveStop := newStop
                             if sendStopUpdIn
-                                f_send(f_payload(p, "stop_update", ',"reason":"trail","realizedR":' + str.tostring(offR, "0.00")))
+                                f_send(f_payload(p, "stop_update", ',"reason":"trail","realizedR":' + str.tostring(offR, "0.00"), ""))
         if p.state == "ARMED" and bar_index > p.createdBar
             bool staleBars = bar_index > p.expiryBar
             if sessionEnded
                 p.state := "EXPIRED"
                 p.reason := "session"
                 p.resolvedBar := bar_index
-                f_send(f_payload(p, "plan_cancel", ',"reason":"session"'))
+                f_send(f_payload(p, "plan_cancel", ',"reason":"session"', ""))
             else if f_wrong(p.dir, p.inv)
                 p.state := "INVALIDATED"
                 p.reason := "reclaim close"
                 p.resolvedBar := bar_index
-                f_send(f_payload(p, "plan_cancel", ',"reason":"reclaim close"'))
+                f_send(f_payload(p, "plan_cancel", ',"reason":"reclaim close"', ""))
             else if f_entry_hit(p) and f_hit(p.stop)
                 p.ready := false
             else if not inPause and inSession and tradesToday < pMaxTrades and f_live_n() < maxLiveIn and f_entry_hit(p) and not f_wrong(p.dir, p.inv)
@@ -872,12 +1153,12 @@ if array.size(plans) > 0
                 p.scenario := "D"
                 p.reason := "ran without retest"
                 p.resolvedBar := bar_index
-                f_send(f_payload(p, "plan_cancel", ',"reason":"ran without retest"'))
+                f_send(f_payload(p, "plan_cancel", ',"reason":"ran without retest"', ""))
             else if staleBars
                 p.state := "EXPIRED"
                 p.reason := "expired"
                 p.resolvedBar := bar_index
-                f_send(f_payload(p, "plan_cancel", ',"reason":"expired"'))
+                f_send(f_payload(p, "plan_cancel", ',"reason":"expired"', ""))
         array.set(plans, i, p)
 
 int guard = 0
@@ -906,7 +1187,7 @@ while room > 0 and tradesToday < pMaxTrades and guard < 12
             if not na(chosen.lbFill)
                 label.delete(chosen.lbFill)
             chosen.lbFill := label.new(bar_index, chosen.dir == 1 ? low : high, chosen.dir == 1 ? "LONG" : "SHORT", style = chosen.dir == 1 ? label.style_label_up : label.style_label_down, color = chosen.dir == 1 ? color.new(#4C8DFF, 0) : color.new(#FF8A3D, 0), textcolor = color.white, size = size.small, text_font_family = font.family_monospace)
-        f_send(f_payload(chosen, "entry", ""))
+        f_send(f_payload(chosen, "entry", "", ""))
         array.set(plans, best, chosen)
         if array.size(plans) > 0
             for i = 0 to array.size(plans) - 1
@@ -916,7 +1197,7 @@ while room > 0 and tradesToday < pMaxTrades and guard < 12
                     sib.ready := false
                     sib.reason := "sibling filled"
                     sib.resolvedBar := bar_index
-                    f_send(f_payload(sib, "plan_cancel", ',"reason":"sibling filled"'))
+                    f_send(f_payload(sib, "plan_cancel", ',"reason":"sibling filled"', ""))
                     array.set(plans, i, sib)
         room := maxLiveIn - f_live_n()
 
@@ -925,6 +1206,21 @@ if array.size(plans) > 0
         staxPlan p = array.get(plans, i)
         p := f_draw(p)
         array.set(plans, i, p)
+
+if array.size(htfLn) > 0
+    for i = array.size(htfLn) - 1 to 0
+        line.delete(array.get(htfLn, i))
+        array.remove(htfLn, i)
+if array.size(htfLb) > 0
+    for i = array.size(htfLb) - 1 to 0
+        label.delete(array.get(htfLb, i))
+        array.remove(htfLb, i)
+if showHtfIn and showDrawingsIn and array.size(zonePx) > 0
+    for i = 0 to array.size(zonePx) - 1
+        float y = array.get(zonePx, i)
+        int zLeft = math.max(0, bar_index - 30)
+        array.push(htfLn, line.new(zLeft, y, bar_index, y, color = color.new(#7F8AA3, 75), style = line.style_dotted, width = 1))
+        array.push(htfLb, label.new(zLeft, y, array.get(zoneName, i), style = label.style_none, color = color.new(#7F8AA3, 100), textcolor = color.new(#7F8AA3, 40), size = size.tiny))
 
 int cold = 0
 if array.size(plans) > 0
@@ -995,7 +1291,9 @@ string sideWord = have ? (view.dir == 1 ? "LONG" : "SHORT") : ""
 string stateTxt = have ? stateWord + "  ·  " + sideWord : stateWord
 float openR = have and view.refRisk > 0 ? view.dir * (close - view.entry) / view.refRisk : 0.0
 float stopR = have and view.refRisk > 0 ? view.dir * (view.liveStop - view.entry) / view.refRisk : 0.0
-string gradeTxt = have and (view.state == "LIVE" or view.state == "TRIGGERED") ? view.grade + "   " + f_signed(openR) : have ? "Grade " + view.grade : str.tostring(tradesToday) + " / " + str.tostring(pMaxTrades)
+string extTag = have and view.extended ? " extended" : ""
+string lvlTag = have and view.level != "" ? " " + view.level : ""
+string gradeTxt = have and (view.state == "LIVE" or view.state == "TRIGGERED") ? view.grade + extTag + lvlTag + "   " + f_signed(openR) : have ? "Grade " + view.grade + extTag + lvlTag : str.tostring(tradesToday) + " / " + str.tostring(pMaxTrades)
 string foot = hudStale ? "INPUTS CHANGED" : have ? str.tostring(view.rUnit, "0.#") + "R · " + view.preset + " · " + (trailOn ? "Trail" : beOn ? "BE" : "BE off") + " · " + sessShort + "  ·  " + pDir : str.tostring(pTp, "0.#") + "R  ·  " + pSl + "  ·  " + sessShort + "  ·  " + pDir
 string tpName = have ? (view.on1 and not view.hit1 ? "TP1" : view.on2 and not view.hit2 ? "TP2" : view.on3 and not view.hit3 ? "TP3" : "TP") : "Trades"
 float tpShow = have ? (view.on1 and not view.hit1 ? view.tp1 : view.on2 and not view.hit2 ? view.tp2 : view.on3 and not view.hit3 ? view.tp3 : f_near(view)) : na
@@ -1077,10 +1375,10 @@ if showTableIn and not na(infoTbl)
         string[] hudVal = array.new_string(0)
         if have
             if view.on3
-                array.push(hudLab, "TP3   " + str.tostring(view.rUnit * 3.0, "0.#") + "R   w" + str.tostring(view.w3))
+                array.push(hudLab, "TP3   " + (view.struct3 ? "level" : str.tostring(view.rUnit * 3.0, "0.#") + "R") + "   w" + str.tostring(view.w3))
                 array.push(hudVal, f_num(view.tp3))
             if view.on2
-                array.push(hudLab, "TP2   " + str.tostring(view.rUnit * 2.0, "0.#") + "R   w" + str.tostring(view.w2))
+                array.push(hudLab, "TP2   " + (view.struct2 ? "level" : str.tostring(view.rUnit * 2.0, "0.#") + "R") + "   w" + str.tostring(view.w2))
                 array.push(hudVal, f_num(view.tp2))
             if view.on1
                 array.push(hudLab, "TP1   " + str.tostring(view.rUnit, "0.#") + "R   w" + str.tostring(view.w1))
