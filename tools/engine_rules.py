@@ -1,6 +1,6 @@
-"""Decision rules for StaxBot 2.4.6.
+"""Decision rules for StaxBot 2.4.7.
 
-The Pine script staxbot_2_4_6.pine follows these rules. This file is the check
+The Pine script staxbot_2_4_7.pine follows these rules. This file is the check
 that can run here. It does not read market data and it does not place trades.
 """
 
@@ -44,17 +44,12 @@ def medium_distance_ok(distance: float, atr: float, min_atr: float, max_atr: flo
     return True
 
 
-def nearest_swing(direction: int, entry: float, zone_hi: float | None, zone_lo: float | None) -> float | None:
-    """Nearest stored swing on the stop side of entry. None when neither pivot is beyond it."""
-    pick = None
-    for px in (zone_hi, zone_lo):
-        if px is None:
-            continue
-        beyond = px < entry if direction == 1 else px > entry
-        closer = pick is None or (direction == 1 and px > pick) or (direction == -1 and px < pick)
-        if beyond and closer:
-            pick = px
-    return pick
+def scenario_allowed(mode: str, origin: str) -> bool:
+    if mode == "Gap only":
+        return origin == "gap"
+    if mode == "Shelf only":
+        return origin == "shelf"
+    return origin in ("shelf", "gap")
 
 
 def targets(entry: float, ref_risk: float, direction: int, tp_r: float) -> tuple[float, float, float]:
@@ -134,6 +129,7 @@ class Plan:
     grade: str
     state: str
     shelf: float
+    inv: float = 0.0
     alerts: list[str] = field(default_factory=list)
 
 
@@ -162,17 +158,21 @@ def arm(book: Book, origin: str, direction: int, entry: float, anchor: float, sh
     ref = (entry - medium) * direction
     tp1, tp2, tp3 = targets(entry, ref, direction, tp_r)
     stop = tight if preset == "Tight" else large if preset == "Large" else medium
-    if not geometry_ok(direction, stop, entry, tp1, tp2, tp3, ref, tp_r):
+    if not geometry_ok(direction, medium, entry, tp1, tp2, tp3, ref, tp_r):
         book.reject = "PLAN REJECTED: geometry."
         return None
     if not medium_distance_ok(ref, atr, min_stop_atr, max_stop_atr):
         book.reject = "PLAN REJECTED: stop distance."
         return None
+    min_dist = min_stop_atr * atr
+    if (entry - stop) * direction < min_dist:
+        stop = entry - direction * min_dist
     g = grade(disp, bias, volume, session, fifth)
     take = min_grade == "Off" or g == "A+" or (min_grade == "A" and g == "A")
     if not take:
         return None
-    plan = Plan(plan_id, book.next_move - 1, scenario, origin, direction, entry, stop, preset, stop, tp1, tp2, tp3, ref, g, "ARMED", shelf)
+    inv = tight_px if origin == "gap" else shelf
+    plan = Plan(plan_id, book.next_move - 1, scenario, origin, direction, entry, stop, preset, stop, tp1, tp2, tp3, ref, g, "ARMED", shelf, inv)
     plan.alerts.append("plan")
     book.plans.append(plan)
     book.reject = ""
@@ -203,14 +203,15 @@ def step_plan(plan: Plan, low: float, high: float, close: float, pause: bool, li
     """Return the event produced this bar. Empty string means the plan stayed armed."""
     if plan.state != "ARMED":
         return ""
-    if _wrong(plan.direction, close, plan.shelf, tol):
+    level = plan.inv
+    if _wrong(plan.direction, close, level, tol):
         plan.state = "INVALIDATED"
         plan.alerts.append("plan_cancel")
         return "invalidated"
     touched = entry_traded(plan, low, high, tol)
     if touched and _trades(plan.stop, low, high):
         return "ambiguous"
-    if not pause and live_room and touched and not _wrong(plan.direction, close, plan.shelf, tol):
+    if not pause and live_room and touched and not _wrong(plan.direction, close, level, tol):
         plan.state = "TRIGGERED"
         plan.alerts.append("entry")
         return "fill"
@@ -236,18 +237,15 @@ def on_fill(book: Book, filled: Plan) -> None:
 
 
 def test_stop_presets_move_only_the_stop() -> None:
-    # Short shelf. Entry 7750. Break-candle high 7756. Nearest swing beyond entry 7764. Leg extreme 7780.
+    # Short shelf. Entry 7750. Break-candle high 7756. Displacement-candle high 7764. Leg extreme 7780.
     entry, atr = 7750.0, 8.0
     tight_px, med_px, leg_px = 7756.0, 7764.0, 7780.0
-    assert nearest_swing(-1, entry, med_px, entry) == med_px
-    assert nearest_swing(1, 7758.0, 7764.0, 7750.0) == 7750.0
-    assert nearest_swing(-1, 7770.0, 7764.0, 7750.0) is None
     ref = reference_risk(entry, med_px, -1, atr, 0.1)
     tp = targets(entry, ref, -1, 1.0)
     stops = {}
     for preset in ("Tight", "Medium", "Large"):
         book = Book()
-        plan = arm(book, "shelf", -1, entry, leg_px, entry, preset, atr, 0.05, 0.1, 0.5, 1.0, True, True, True, True, True, "Off", tight_anchor=tight_px, med_anchor=med_px)
+        plan = arm(book, "shelf", -1, entry, leg_px, entry, preset, atr, 0.05, 0.1, 0.25, 1.0, True, True, True, True, True, "Off", tight_anchor=tight_px, med_anchor=med_px)
         assert plan is not None
         assert (plan.tp1, plan.tp2, plan.tp3) == tp
         assert plan.entry == entry
@@ -255,18 +253,47 @@ def test_stop_presets_move_only_the_stop() -> None:
         stops[preset] = plan.stop
     assert stops["Tight"] == 7756.4
     assert stops["Medium"] == 7764.8
-    assert stops["Large"] == 7784.0
+    assert stops["Large"] == 7782.0
     assert stops["Tight"] <= stops["Medium"] <= stops["Large"]
-    # A tight anchor past the medium swing is pulled back to the medium stop.
-    clamped = arm(Book(), "shelf", -1, entry, leg_px, entry, "Tight", atr, 0.05, 0.1, 0.5, 1.0, True, True, True, True, True, "Off", tight_anchor=7770.0, med_anchor=med_px)
+    # A tight anchor past the medium candle is pulled back to the medium stop.
+    clamped = arm(Book(), "shelf", -1, entry, leg_px, entry, "Tight", atr, 0.05, 0.1, 0.25, 1.0, True, True, True, True, True, "Off", tight_anchor=7770.0, med_anchor=med_px)
     assert clamped is not None and clamped.stop == stops["Medium"]
-    # Gap tight uses the far edge. Targets stay on the medium swing.
+    # Gap tight uses the far edge. Targets stay on the medium candle.
     gap_entry, far_edge = 7752.0, 7758.0
     gap_ref = reference_risk(gap_entry, med_px, -1, atr, 0.1)
-    gap = arm(Book(), "gap", -1, gap_entry, leg_px, entry, "Tight", atr, 0.05, 0.1, 0.5, 1.0, True, True, True, True, True, "Off", tight_anchor=far_edge, med_anchor=med_px)
+    gap = arm(Book(), "gap", -1, gap_entry, leg_px, entry, "Tight", atr, 0.05, 0.1, 0.25, 1.0, True, True, True, True, True, "Off", tight_anchor=far_edge, med_anchor=med_px)
     assert gap is not None
     assert gap.stop == far_edge + 0.05 * atr
     assert gap.tp1 == targets(gap_entry, gap_ref, -1, 1.0)[0]
+
+
+def test_selected_stop_widens_to_the_minimum() -> None:
+    entry, atr = 7750.0, 8.0
+    plan = arm(Book(), "shelf", -1, entry, 7780.0, entry, "Tight", atr, 0.05, 0.1, 0.25, 1.0, True, True, True, True, True, "Off", tight_anchor=7751.0, med_anchor=7760.0)
+    assert plan is not None
+    assert plan.stop == entry + 0.5 * atr
+    for preset in ("Tight", "Medium", "Large"):
+        book = Book()
+        got = arm(book, "shelf", -1, entry, 7780.0, entry, preset, atr, 0.05, 0.1, 0.25, 1.0, True, True, True, True, True, "Off", tight_anchor=7751.0, med_anchor=7752.0)
+        assert got is None
+        assert book.reject == "PLAN REJECTED: stop distance."
+
+
+def test_gap_invalidates_beyond_the_far_edge() -> None:
+    atr = 8.0
+    tol = 0.25 * atr
+    gap = arm(Book(), "gap", -1, 30899.75, 30940.0, 30870.0, "Medium", atr, 0.05, 0.1, 0.25, 1.0, True, True, True, True, True, "Off", tight_anchor=30910.0, med_anchor=30920.0)
+    assert gap is not None and gap.inv == 30910.0
+    # Close is back through the shelf at 30870 and short of the far edge.
+    assert step_plan(gap, low=30879, high=30890, close=30885, pause=False, live_room=True, expired=False, tol=tol) == ""
+    assert step_plan(gap, low=30900, high=30920, close=30910.0 + tol, pause=False, live_room=True, expired=False, tol=tol) == "invalidated"
+    assert gap.scenario == "A"
+
+
+def test_allowed_scenarios() -> None:
+    assert scenario_allowed("Shelf + Gap", "shelf") and scenario_allowed("Shelf + Gap", "gap")
+    assert scenario_allowed("Gap only", "gap") and not scenario_allowed("Gap only", "shelf")
+    assert scenario_allowed("Shelf only", "shelf") and not scenario_allowed("Shelf only", "gap")
 
 
 def test_medium_distance_gates_every_preset() -> None:
@@ -409,6 +436,9 @@ def test_grade_fifth_flag_changes_the_letter() -> None:
 
 if __name__ == "__main__":
     test_stop_presets_move_only_the_stop()
+    test_selected_stop_widens_to_the_minimum()
+    test_gap_invalidates_beyond_the_far_edge()
+    test_allowed_scenarios()
     test_medium_distance_gates_every_preset()
     test_shelf_zone_fills_inside_the_tolerance()
     test_wrong_side_stop_is_rejected()
