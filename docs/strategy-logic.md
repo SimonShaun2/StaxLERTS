@@ -1,22 +1,22 @@
-# Strategy logic, StaxBot 2.4.4
+# Strategy logic, StaxBot 2.4.5
 
-`staxbot_2_4_4.pine` runs once per bar, on the bar's close. It does not call `strategy.entry` or `strategy.exit`. The drawing is the plan. Alerts are `alert()` calls.
+`staxbot_2_4_5.pine` runs once per bar, on the bar's close. It does not call `strategy.entry` or `strategy.exit`. The drawing is the plan. Alerts are `alert()` calls.
 
-`staxbot_2_1.pine` is the untouched base this version was built from. Load **StaxBot 2.4.4**, saved as a new script. The legend reads **Stax 2.4.4**. The HUD reads **STAXBOT 2.4.4**.
+`staxbot_2_1.pine` is the untouched base this version was built from. Load the file as a new script. The legend reads **StaxBot**. The HUD reads **STAXBOT 2.4.5**. The version is in the file name, this header, and that HUD header.
 
 ## 1. Settings
 
-A strategy preset can change direction, session, which stop buffer is selected, breakeven, trailing stop, and the daily cap.
+A strategy preset can change direction, session, which stop is selected, breakeven, trailing stop, and the daily cap.
 
 It cannot change Take Profit (R), the entry, or the scenario. Take Profit (R) is always the input.
 
-Tight, Medium, and Large all use the same stop anchor: the extreme of the leg that broke the shelf. The preset changes only the buffer.
+Tight, Medium, and Large choose the stop distance. They do not choose the entry or the targets.
 
-- Tight adds its tick buffer.
-- Medium adds its tick buffer. Targets are measured from this distance.
-- Large adds its ATR buffer.
+- Tight, on a gap plan, is the gap's far edge plus the tight tick buffer. On a shelf plan it is the break candle's extreme plus that same tick buffer. A long uses the candle low. A short uses the candle high. The break candle is the bar that arms the plan.
+- Medium is the nearest stored swing beyond the entry, plus the medium tick buffer. That swing is the other side of the range the shelf formed on. Targets are R multiples of this distance on every preset.
+- Large is the leg extreme plus the large ATR buffer. That is the previous large stop.
 
-The HUD shows the reference R of the targets and the actual R of the selected stop. Switching the preset moves the stop and the actual R. It does not move the entry or the targets.
+Switching the preset on a fresh calculation moves only the stop line. The entry and the target lines stay on the Medium distance. The geometry check uses the selected stop.
 
 ## 2. Latest swing
 
@@ -44,14 +44,14 @@ Older armed plans in that same direction, from an older move, become `REPLACED`.
 The shelf plan then arms when the session is open, the pause is not active, a target is enabled, the volume filter passes, the direction is allowed, the optional shelf-height filter passes, the grade passes, and the geometry check passes.
 
 - Entry is the broken swing.
-- Stop anchor is the leg extreme.
+- Tight stop is beyond the break candle. Medium stop is beyond the nearest swing past that entry. Large stop is beyond the leg extreme.
 - A missing gap does not block this plan.
 
 ## 5. Gap plan (A)
 
 A fair-value gap in the move's direction, inside `Gap Window After The Break`, arms a second plan on the same move. The bull gap is `low > high[2]` with a bullish middle bar. The bear gap is `high < low[2]` with a bearish middle bar.
 
-The gap entry is the near edge, the midpoint, or the far edge. The stop anchor is the same leg extreme as the shelf plan. It is not the gap edge.
+The gap entry is the near edge, the midpoint, or the far edge. The tight stop is beyond the far edge. The medium stop is the nearest swing beyond that entry, the same shelf structure as the shelf plan. The large stop is the leg extreme.
 
 `Min Gap Height` defaults to off, so a tight gap is not rejected.
 
@@ -79,7 +79,7 @@ A plan also expires after `Plan Expires After N Bars`, or when a filtered sessio
 
 ## 8. Geometry
 
-Before a plan arms, a short must satisfy `stop > entry > TP1 > TP2 > TP3`. A long is the mirror. Each target's distance divided by the reference risk must equal its R multiple.
+Before a plan arms, a short must satisfy `selected stop > entry > TP1 > TP2 > TP3`. A long is the mirror. The selected stop is the one from the active preset. Each target's distance divided by the Medium reference risk must equal its R multiple. A Medium pivot that is not beyond the entry rejects the plan, because the targets have no distance.
 
 If that fails, the plan is not armed. The Pine log records the plan id, and the HUD reads `PLAN REJECTED: geometry.`
 
@@ -111,11 +111,11 @@ The D / 4H / 1H / 15m / 5m cloud is display only unless `Only Trade With EMA Bia
 
 ## 11. Drawings and HUD
 
-A shelf plan draws a `RANGE` box. A gap plan draws a `GAP` box. Entry, stop, and enabled targets are lines.
+A shelf plan draws a `RANGE` box. A gap plan draws a `GAP` box. The box border is 2px, solid, with a 70% fill. Lines start 24 bars before the arm bar. Entry is a 2px `#E6EAF2` line. The stop is 3px `#FF5C6C`. TP1 is 2px `#3DDC97`. TP2 is 3px `#3DDC97`. TP3 is 3px `#147A4E`. Price tags sit on the right and the target tags include the R multiple. A `BREAK` note sits on the arm bar at the shelf. A trailed stop turns `#9AA3B5`.
 
-`TRIGGERED` and `LIVE` and `ARMED` stay in color. `EXPIRED`, `INVALIDATED`, `REPLACED`, `CANCELLED`, and `CLOSED` stop extending. They turn grey and keep a state label, or they are removed, from the `Resolved Plans` input.
+`TRIGGERED`, `LIVE`, and `ARMED` stay in color. `Resolved Plans` defaults to Remove, which deletes the drawing. Grey keeps a faint grey entry line and a short state tag (`CLOSED`, `EXPIRED`, `INVALIDATED`, `REPLACED`, or `CANCELLED`), with no price tags, and only the last three resolved plans.
 
-The HUD state is `WATCH`, `ARMED`, `TRIGGERED`, `LIVE`, `PAUSE`, or the resolve reason on the bar it happens. An armed move reads like `Move 3: shelf plan 7750 and gap plan 7758`. Changing an input after a plan exists shows `INPUTS CHANGED`. Recreate the alert.
+The HUD follows that same row layout. Its header reads `STAXBOT 2.4.5`. The state word is `WATCH`, `ARMED`, `TRIGGERED`, `LIVE`, `PAUSE`, or the resolve reason on the bar it happens. Full size lists TP3, then TP2, then TP1, then entry, then stop, and shows or hides rows when a target is toggled. An armed move reads like `Move 3: shelf plan 7750 and gap plan 7758`. Changing an input after a plan exists shows `INPUTS CHANGED`. Recreate the alert.
 
 Scenario C is an input and it is not built. Turning it on does not arm a sweep-and-reclaim plan. The HUD says so.
 
