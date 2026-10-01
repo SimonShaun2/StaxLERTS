@@ -23,7 +23,7 @@ original's exact rules are not public, this README says what this version does i
 | `staxbot_2_3.pine` | The plan. Saved in TradingView as **StaxBot 2.3**. The legend reads **Stax 2.3**. The HUD reads **STAXBOT 2.3**. A short rests on the broken shelf. The stop is the far side of that range. The break is the plan, and a later retest is the entry. |
 | `staxbot_2_2.pine` | Previous chart. Its Medium stop is the displacement candle, and that is the script that filled the day at 5/5. |
 | `bot/execution_bot.py` | The paper desk at `http://127.0.0.1:8791`. It sizes contracts from its own risk setting and uses the prices in the alert. |
-| `bot/watch.py` | Python scan for MNQ, MGC, MES, M2K, and MYM. A new resting plan is held for the alerts chat once. It is not a TradingView-confirmed alert and it does not book a fill. |
+| `bot/watch.py` | Offline diagnostic helpers. They are not the live plan source and do not run in the alerts check. |
 | `docs/strategy-logic.md` | Bar-by-bar description of every rule and setting. |
 | `docs/alerts-thread.md` | Standing split: this repo's chart is accepted, and the alerts chat does not edit Pine. |
 | `tools/mock_stax_webhook.py` | Payload checker for the Stax options webhook format. |

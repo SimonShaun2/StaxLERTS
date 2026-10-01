@@ -48,28 +48,24 @@ python3 bot/execution_bot.py --selftest
 python3 bot/execution_bot.py --port 8791
 
 The desk is http://127.0.0.1:8791. Do not restart it. A restart clears Sam's URL and key.
+TradingView is the only plan source. The webhook is POST /webhook/trade-signal on the public HTTPS tunnel.
+Do not run python3 bot/watch.py. Do not fetch Yahoo bars. Do not present a Yahoo or Python scan plan.
 
-Each check, from the repo root, run python3 bot/watch.py again and print its status line in this chat.
-The line has a 1m part and a 5m part for MNQ, MGC, MES, M2K, and MYM.
-A part marked scanning and no fresh plan has no new resting plan. Prices on that line are status only.
-They are not a live position and not an alert. Do not present those prices as a Python scan alert.
+Each check, read only http://127.0.0.1:8791/api/state. Use the inbox and the current plan. Do not recompute prices.
+Deduplicate by eventId and setupId. A repeated event is not a new alert.
 
-Only a line that starts with SCAN_NEW is a Python scan alert. It is a resting plan armed on the latest closed bar.
-Present that plan once: market, side, grade, entry, stop, each target with its R, and the contract count.
-Label it Python scan. It is not TradingView-confirmed.
-If there is no SCAN_NEW line, say there is no new Python scan plan.
-Do not paper-fill a scan. Do not POST it to the desk. Do not call /api/release. Do not send it to Sam.
+When a new plan webhook is in the inbox, post:
+Watching [market]: [side], [grade], entry [x], stop [x], targets [x (R)...].
+Label it a TradingView/StaxBot plan and say it is awaiting entry.
 
-Then read http://127.0.0.1:8791/api/state.
-If inbox has a TradingView webhook, present it in this chat as TradingView-confirmed:
-market, side, grade, entry, stop, each target with its R, and the contract count.
+When a new entry, plan_cancel, stop_update, or exit webhook is in the inbox, post that status with the webhook prices.
 A ping is a connection test, not a trade: say that and do not invent prices.
-Do not call /api/release. Do not POST the body to Sam. Leave the inbox item where it is.
-
-If there is no SCAN_NEW line and the inbox is empty during the halt, say the desk is in the halt.
+If the same setup is still armed, say it is still being watched and repeat the plan's webhook prices.
+If the inbox is empty and no plan is armed during the halt, say the desk is in the halt.
 If both are empty outside the halt, say the desk is waiting. Do not invent a setup.
 
-Keep watching every 2.5 minutes. Run the scan, then read the inbox, on every check, including the Central halt.
+Do not call /api/release. Do not POST a body to Sam. Do not paper-fill. Do not send a sample webhook.
+Keep this check every 5 minutes, including the Central halt.
 
 Read docs/alerts-thread.md before you change anything.
 ```
@@ -81,7 +77,7 @@ The desk is already running with Sam’s URL and sender key in memory. Do not pu
 ```
 Pull the latest main. Do not change Pine. Do not send a webhook and do not release anything to Sam.
 
-Each check, from the repo root, run python3 bot/watch.py again. Print the status line. A part marked scanning and no fresh plan is not an alert and not a live position. Present a plan only when the output has a new SCAN_NEW line. If it does not, say there is no new Python scan plan. Do not paper-fill, do not POST the scan to the desk, and do not call /api/release. Then read the inbox. Present a TradingView webhook as TradingView-confirmed and leave it there. Do not restart the desk.
+Each check, read only http://127.0.0.1:8791/api/state. Do not run python3 bot/watch.py. Do not fetch Yahoo bars. Present a plan only from a TradingView webhook in the inbox: Watching [market]: [side], [grade], entry [x], stop [x], targets [x (R)...]. It is a TradingView/StaxBot plan awaiting entry. On entry, cancellation, stop update, or exit, post that status with the webhook prices. If the same setup is still armed, say it is still being watched and use the plan prices already on the desk. Deduplicate by eventId and setupId. Do not invent prices. Do not paper-fill, do not POST a scan or a sample webhook, and do not call /api/release. Do not restart the desk.
 
 The halt is 3:00 PM to 5:00 PM Central. During the halt, keep the check. Then Globex, Asia, London, and NY. Arm the next check either way.
 ```

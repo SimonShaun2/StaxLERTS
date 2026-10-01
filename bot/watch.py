@@ -1,20 +1,15 @@
-"""Python scan for the alerts chat, separate from a TradingView-confirmed plan.
+"""TradingView is the live plan source; this module mirrors its webhook plan.
 
-The scan reads Yahoo bars for the five configured roots and can hold a newly
-resting plan for this chat. It does not book a fill, and it does not forward
-to Sam. Yahoo prices are not the StaxBot 2.3 chart, so a scan plan stays
-labeled Python scan.
+The legacy scanner helpers remain for offline diagnostics only. They do not run
+in the live watcher and must not be treated as synchronized plan settings.
 """
 from __future__ import annotations
 
-import fcntl
 import json
-import os
 import threading
 import time
 import urllib.request
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -506,43 +501,29 @@ def apply_actions(desk, actions: list[dict[str, Any]]) -> None:
             })
 
 
-def _target_text(items: list[dict[str, Any]]) -> str:
-    parts = []
-    for item in items:
-        price = float(item["price"])
-        r_value = item.get("r")
-        r_text = f" {float(r_value):g}R" if isinstance(r_value, (int, float)) else ""
-        qty = item.get("qty")
-        qty_text = f" x{qty}" if qty is not None else ""
-        parts.append(f"{item.get('id') or 'TP'} {price:.2f}{r_text}{qty_text}")
-    return ", ".join(parts)
-
-
-# A plan is new only when it was armed on the latest closed bar.
-# Older bar history, including a filled setup from that pass, is not an alert.
-FRESH_PLAN_BARS = 0
-
-
-def fresh_plan(market: Market, bars: list[dict[str, Any]]) -> dict[str, Any] | None:
-    pending = market.pending
-    if not pending or not pending.get("grade") or not bars:
-        return None
-    age = len(bars) - 1 - int(pending.get("i", -10**9))
-    if age < 0 or age > FRESH_PLAN_BARS:
-        return None
-    return pending
-
-
 def describe(market: Market, bars: list[dict[str, Any]]) -> str:
     root = market.spec["root"]
     last = bars[-1]["c"]
-    pending = fresh_plan(market, bars)
-    if pending:
+    trade = market.open_trade
+    if trade:
         return (
-            f"{root} fresh {pending['grade']} {pending['side']} {pending['qty']} "
-            f"@ {pending['entry']:.2f} stop {pending['stop']:.2f} targets " + _target_text(pending.get("targets") or [])
+            f"{root} {trade['grade']} {trade['side']} {trade.get('remaining_qty', trade['qty'])}/{trade['qty']} @ {trade['entry']:.2f} "
+            f"stop {trade['stop']:.2f} targets " + ", ".join(f"{item['id']} {item['price']:.2f} x{item['qty']}" for item in trade.get("remaining_targets", trade["targets"]))
         )
-    return f"{root} {last:.1f}"
+    pending = market.pending
+    if pending and pending.get("grade"):
+        return (
+            f"{root} resting {pending['grade']} {pending['side']} {pending['qty']} "
+            f"@ {pending['entry']:.2f} stop {pending['stop']:.2f} target {pending['target']:.2f}"
+        )
+    signaled = market.last_signal
+    if signaled and signaled.get("grade") and len(bars) - 1 - int(signaled["i"]) <= 30:
+        return (
+            f"{root} {signaled['grade']} {signaled['side']} {signaled['qty']} "
+            f"@ {signaled['entry']:.2f} stop {signaled['stop']:.2f} target {signaled['target']:.2f} "
+            f"unfilled, last {last:.1f}"
+        )
+    return f"{root} {last:.1f} flat"
 
 
 def rules_from(desk) -> dict[str, Any]:
@@ -575,12 +556,10 @@ def _shown_grade(market: Market, live_from: datetime | None) -> str | None:
     return None
 
 
-def scan(desk, rules: dict[str, Any], live_from: datetime | None, interval: str = "5m") -> tuple[list[str], str | None, list[dict[str, Any]]]:
-    """Report each root. A resting plan is returned once per market, not the 5-day fill history."""
-    del desk, live_from
+def scan(desk, rules: dict[str, Any], live_from: datetime | None, interval: str = "5m") -> tuple[list[str], str | None]:
     lines = []
     grade = None
-    plans: list[dict[str, Any]] = []
+    replay_events = []
     for root in rules["roots"]:
         spec = CATALOG[root]
         try:
@@ -590,141 +569,34 @@ def scan(desk, rules: dict[str, Any], live_from: datetime | None, interval: str 
                 continue
             enrich(bars)
             market = Market(spec, rules)
-            market.replay(bars, None)
-            pending = fresh_plan(market, bars)
-            if pending:
-                plans.append({**pending, "interval": interval})
+            market.replay(bars, live_from)
+            if desk is not None and live_from is not None:
+                replay_events.extend(event for event in market.trade_events if event["when"] >= live_from)
             lines.append(describe(market, bars))
-            shown = _shown_grade(market, None)
+            shown = _shown_grade(market, live_from)
             if shown:
                 grade = shown
         except Exception as exc:
             lines.append(f"{root} feed error")
             print(root, exc)
-    return lines, grade, plans
+    if desk is not None and live_from is not None:
+        sync_events(desk, replay_events)
+    return lines, grade
 
 
-def seen_path() -> Path:
-    return Path(os.environ.get("STAX_SCAN_SEEN", "/tmp/staxbot-scan-seen.json"))
-
-
-def claim_scan_id(event_id: str) -> bool:
-    """Remember a scan setup across checks and timeframes. True only the first time."""
-    path = seen_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        handle.seek(0)
-        raw = handle.read()
-        try:
-            seen = json.loads(raw) if raw.strip() else []
-        except json.JSONDecodeError:
-            seen = []
-        if not isinstance(seen, list):
-            seen = []
-        if event_id in seen:
-            return False
-        seen.append(event_id)
-        if len(seen) > 200:
-            seen = seen[-200:]
-        handle.seek(0)
-        handle.truncate()
-        json.dump(seen, handle)
-        return True
-
-
-def release_scan_id(event_id: str) -> None:
-    """Give an id back when the destination did not accept it."""
-    path = seen_path()
-    if not path.exists():
-        return
-    with path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        handle.seek(0)
-        raw = handle.read()
-        try:
-            seen = json.loads(raw) if raw.strip() else []
-        except json.JSONDecodeError:
-            return
-        if not isinstance(seen, list) or event_id not in seen:
-            return
-        seen = [item for item in seen if item != event_id]
-        handle.seek(0)
-        handle.truncate()
-        json.dump(seen, handle)
-
-
-def scan_plan_payload(plan: dict[str, Any]) -> dict[str, Any]:
-    root = str(plan.get("root") or "")
-    side = str(plan.get("side") or "")
-    entry = round(float(plan["entry"]), 2)
-    stop = round(float(plan["stop"]), 2)
-    targets = []
-    for item in plan.get("targets") or []:
-        targets.append({
-            "id": item.get("id"),
-            "price": item.get("price"),
-            "r": item.get("r"),
-            "allocation": item.get("qty", item.get("allocation")),
-        })
-    return {
-        "source": "python-scan",
-        "label": "Python scan",
-        "matchesChart": False,
-        "event": "plan",
-        "eventId": f"scan:{root}:{side}:{entry:.2f}:{stop:.2f}",
-        "setupId": plan.get("setup_id"),
-        "side": side,
-        "ticker": root,
-        "root": root,
-        "grade": plan.get("grade"),
-        "entry": entry,
-        "stop": stop,
-        "target": plan.get("target"),
-        "targets": targets,
-        "qty": plan.get("qty"),
-        "timeframe": plan.get("interval"),
-        "reason": "python_scan_plan",
-    }
-
-
-def watch_once(desk=None) -> tuple[str, list[dict[str, Any]]]:
+def watch_once(desk=None) -> str:
     rules = rules_from(desk)
     parts = []
     grade = None
-    fresh: list[dict[str, Any]] = []
     for interval in ("1m", "5m"):
-        lines, shown, plans = scan(desk, rules, None, interval)
+        lines, shown = scan(desk, rules, None, interval)
         if shown:
             grade = shown
-        body = " · ".join(lines)
-        if not plans:
-            body = f"{body} · scanning · no fresh plan" if body else "scanning · no fresh plan"
-        parts.append(interval + " " + body)
-        for plan in plans:
-            payload = scan_plan_payload(plan)
-            event_id = str(payload["eventId"])
-            hold = getattr(desk, "hold_scan_plan", None) if desk is not None else None
-            # The running desk has no hold_scan_plan. Do not consume the id there.
-            # The CLI scan is the destination and claims when it emits SCAN_NEW.
-            if desk is not None and hold is None:
-                continue
-            if not claim_scan_id(event_id):
-                continue
-            if hold is not None:
-                try:
-                    accepted = bool(hold(payload))
-                except Exception:
-                    release_scan_id(event_id)
-                    continue
-                if not accepted:
-                    release_scan_id(event_id)
-                    continue
-            fresh.append(payload)
+        parts.append(interval + " " + " · ".join(lines))
     note = " | ".join(parts)
     if desk:
         desk.set_watch({"symbol": " ".join(rules["roots"]), "grade": grade, "note": note})
-    return note, fresh
+    return note
 
 
 def _root_of(row: dict[str, Any]) -> str:
@@ -750,7 +622,7 @@ def _already_closed(desk, closed: dict[str, Any]) -> bool:
 
 
 def sync_events(desk, events: list[dict[str, Any]]) -> None:
-    """Offline fill replay. The live scan does not call this, so a scan plan is not a trade entry."""
+    """Replay stable events chronologically; desk eventId tracking prevents rebooking."""
     events.sort(key=lambda event: (event["when"], 0 if event["kind"] == "fill" else 1, event["event_id"]))
     for event in events:
         if event["kind"] == "fill":
@@ -769,11 +641,10 @@ def sync_events(desk, events: list[dict[str, Any]]) -> None:
 
 
 def start_watcher(desk) -> None:
-    """Report each market. A new resting scan plan is held for chat and is not a fill."""
+    """Reflect a TradingView webhook plan already on the desk. This does not fetch bars or create a plan."""
     def loop() -> None:
         while True:
             try:
-                note, _fresh = watch_once(desk)
                 plan = desk.snapshot().get("plan")
                 if plan:
                     targets = ", ".join(
@@ -784,7 +655,10 @@ def start_watcher(desk) -> None:
                         "symbol": ticker,
                         "price": plan.get("entry"),
                         "grade": plan.get("grade"),
-                        "note": f"{note} · TradingView {str(plan.get('side') or '').upper()} {ticker} @ {float(plan['entry']):.2f} stop {float(plan['stop']):.2f}; {targets}",
+                        "note": (
+                            f"TradingView {str(plan.get('side') or '').upper()} {ticker} "
+                            f"@ {float(plan['entry']):.2f} stop {float(plan['stop']):.2f}; {targets}"
+                        ),
                     })
             except Exception as exc:
                 desk.set_watch({"note": f"Watch error: {exc}"})
@@ -794,7 +668,4 @@ def start_watcher(desk) -> None:
 
 
 if __name__ == "__main__":
-    note, fresh = watch_once(None)
-    print(note)
-    for payload in fresh:
-        print("SCAN_NEW " + json.dumps(payload, separators=(",", ":")))
+    print("Offline scan helpers only. Live plans come from the TradingView webhook.")
