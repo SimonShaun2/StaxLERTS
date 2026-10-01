@@ -519,6 +519,47 @@ def test_room_and_location() -> None:
     assert (tp1, tp2, tp3) == (94.0, 98.0, 102.0) and ladder2 and ladder3
 
 
+def c_grade(swept_htf: bool) -> str:
+    return "A+" if swept_htf else "B"
+
+
+def sweep_reclaim(bars_since: int, window: int, later_bar: bool, back_inside: bool) -> bool:
+    return 0 <= bars_since < window and later_bar and back_inside
+
+
+def test_scenario_c_grade_and_window() -> None:
+    assert c_grade(True) == "A+"
+    assert c_grade(False) == "B"
+    assert sweep_reclaim(0, 3, False, True) is False
+    assert sweep_reclaim(1, 3, True, True) is True
+    assert sweep_reclaim(3, 3, True, True) is False
+    assert downgrade("A+") == "A"
+
+
+def range_watch_due(compressed: bool, shelves: bool, sent: bool, broke: bool, new_shelves: bool) -> bool:
+    active = sent
+    if broke or not compressed or (active and new_shelves):
+        active = False
+    return compressed and shelves and not active
+
+
+def forming_side(body_ok: bool, up_pen: float | None, dn_pen: float | None) -> int:
+    if body_ok and up_pen is not None and (dn_pen is None or up_pen >= dn_pen):
+        return 1
+    if body_ok and dn_pen is not None:
+        return -1
+    return 0
+
+
+def test_watch_and_forming() -> None:
+    assert range_watch_due(True, True, False, False, False) is True
+    assert range_watch_due(True, True, True, False, False) is False
+    assert range_watch_due(True, True, True, True, False) is True
+    assert forming_side(True, 2.0, 1.0) == 1
+    assert forming_side(True, 1.0, 3.0) == -1
+    assert forming_side(False, 2.0, 3.0) == 0
+
+
 def test_grade_fifth_flag_changes_the_letter() -> None:
     assert grade(True, True, True, True, True) == "A+"
     assert grade(True, True, True, True, False) == "A"
@@ -543,5 +584,7 @@ if __name__ == "__main__":
     test_gap_through_stop_uses_the_open()
     test_count_resets_at_chicago_open()
     test_room_and_location()
+    test_scenario_c_grade_and_window()
+    test_watch_and_forming()
     test_grade_fifth_flag_changes_the_letter()
     print("engine rules ok")

@@ -11,7 +11,7 @@
 strategy("StaxBot", shorttitle = "StaxBot", overlay = true,
      initial_capital = 50000, default_qty_type = strategy.fixed, default_qty_value = 1, pyramiding = 0,
      margin_long = 1, margin_short = 1,
-     calc_on_every_tick = false, calc_on_order_fills = false, process_orders_on_close = false,
+     calc_on_every_tick = true, calc_on_order_fills = false, process_orders_on_close = false,
      commission_type = strategy.commission.cash_per_contract, commission_value = 0.0, slippage = 0,
      max_boxes_count = 300, max_lines_count = 500, max_labels_count = 500)
 
@@ -67,8 +67,12 @@ fvgWindowIn      = input.int(1, "Gap Window After The Break (bars)", minval = 1,
 setupExpiryIn    = input.int(12, "Plan Expires After N Bars", minval = 1, group = G_STRUCT)
 entryLevelIn     = input.string("FVG Near Edge (Aggressive)", "Gap Entry", group = G_STRUCT,
      options = ["FVG Near Edge (Aggressive)", "FVG Midpoint (CE)", "FVG Far Edge (Deep)"])
-enableCIn        = input.bool(false, "Scenario C (not built)", group = G_STRUCT,
-     tooltip = "Sweep and reclaim is off. Turning this on does not arm a plan.")
+enableCIn        = input.bool(true, "Scenario C: Sweep & Reclaim", group = G_STRUCT,
+     tooltip = "A close beyond a range, a higher-timeframe zone, or an armed shelf, then a later close back inside within the sweep window, arms the reversal at the reclaimed level.")
+sweepWinIn       = input.int(3, "Sweep Window (bars)", minval = 1, group = G_STRUCT,
+     tooltip = "The reclaim close must land inside this many bars of the sweep, including the sweep bar, and it must be a later bar.")
+momentumOnIn     = input.bool(false, "Momentum Entry", group = G_STRUCT,
+     tooltip = "Off. On enters at the break close, with the stop beyond the opposite range edge. The plan is scenario M and it counts on the break bar.")
 shelfOnIn        = input.bool(true, "Scenario B: Shelf", group = G_STRUCT,
      tooltip = "Arms the break. Off skips the shelf plan. The break still opens the gap window.")
 gapOnIn          = input.bool(true, "Scenario A: Gap", group = G_STRUCT,
@@ -116,6 +120,12 @@ strikesOtmIn     = input.int(0, "Strikes OTM", minval = 0, group = G_STAX)
 strikeStepIn     = input.float(1.0, "Strike Step", minval = 0.5, step = 0.5, group = G_STAX)
 sendExitAlertsIn = input.bool(true, "Send Exit Alerts", group = G_STAX)
 sendStopUpdIn    = input.bool(false, "Send Stop-Update Alerts", group = G_STAX)
+rangeOnIn        = input.bool(true, "Range Watch", group = G_STAX,
+     tooltip = "One watch when the last bars compress and a shelf is waiting. It is not a trade.")
+rangeBarsIn      = input.int(6, "Range Watch Bars", minval = 2, group = G_STAX)
+rangeAtrIn       = input.float(1.5, "Range Watch Height (ATR x)", minval = 0.1, step = 0.1, group = G_STAX)
+intrabarOnIn     = input.bool(true, "Intrabar Break", group = G_STAX,
+     tooltip = "On a realtime bar, price through a shelf by the reclaim tolerance with a displacement body sends one provisional break_forming alert. The close arms the plan or sends break_cancelled.")
 
 showTableIn    = input.bool(true, "Show HUD", group = G_DISPLAY)
 hudSizeIn      = input.string("Full", "HUD size", options = ["Full", "Compact"], group = G_DISPLAY)
@@ -235,6 +245,8 @@ emaSlow = ta.ema(close, emaSlowIn)
 bias = close > emaFast and emaFast > emaSlow ? 1 : close < emaFast and emaFast < emaSlow ? -1 : 0
 atr = ta.atr(14)
 armAtr = atr[1]
+compHi = ta.highest(high, rangeBarsIn)
+compLo = ta.lowest(low, rangeBarsIn)
 volSma = ta.sma(volume, volLenIn)
 
 f_htf() =>
@@ -405,6 +417,23 @@ var float seen4h = na
 var float seen4l = na
 var float seen1h = na
 var float seen1l = na
+var int sweepSide = 0
+var int sweepFrom = -1
+var float sweepLvl = na
+var float sweepExtreme = na
+var string sweepKind = ""
+var bool watchOn = false
+var string watchZone = ""
+var float watchHi = na
+var float watchLo = na
+var float watchShelfHi = na
+var float watchShelfLo = na
+varip bool formingNow = false
+varip int formingBar = -1
+varip int formSide = 0
+varip float formEntry = na
+varip float formStop = na
+varip float formTp = na
 var array<line> htfLn = array.new_line()
 var array<label> htfLb = array.new_label()
 
@@ -428,7 +457,7 @@ f_grade(bool dispOk, bool biasOk, bool volFlag, bool sessOk, bool fifth) =>
     int score = (dispOk ? 1 : 0) + (biasOk ? 1 : 0) + (volFlag ? 1 : 0) + (sessOk ? 1 : 0) + (fifth ? 1 : 0)
     score == 5 ? "A+" : score == 4 and (dispOk or sessOk) ? "A" : "B"
 f_fp() =>
-    str.tostring(pTp, "0.00") + "|" + pSl + "|" + str.tostring(tightAtrIn, "0.00") + "|" + str.tostring(medAtrIn, "0.00") + "|" + str.tostring(largeAtrIn, "0.00") + "|" + minGradeIn + "|" + entryLevelIn + "|" + pBe + "|" + pTrail + "|" + pDir + "|" + sessShort + "|" + dispModeIn + "|" + str.tostring(dispBodyAtrIn, "0.0") + "|" + str.tostring(maxLiveIn) + "|" + (reclaimExitIn ? "1" : "0") + "|" + (pauseOnIn ? "1" : "0") + "|" + (enableCIn ? "1" : "0") + "|" + str.tostring(breakWinIn) + "|" + str.tostring(strongAtrIn, "0.0") + "|" + str.tostring(reclaimAtrIn, "0.00") + "|" + str.tostring(minStopAtrIn, "0.0") + "|" + str.tostring(maxStopAtrIn, "0.0") + "|" + (shelfOnIn ? "1" : "0") + "|" + (gapOnIn ? "1" : "0") + "|" + roomModeIn + "|" + (extOnIn ? "1" : "0") + "|" + str.tostring(extAtrIn, "0.0") + "|" + (structOnIn ? "1" : "0") + "|" + (showHtfIn ? "1" : "0")
+    str.tostring(pTp, "0.00") + "|" + pSl + "|" + str.tostring(tightAtrIn, "0.00") + "|" + str.tostring(medAtrIn, "0.00") + "|" + str.tostring(largeAtrIn, "0.00") + "|" + minGradeIn + "|" + entryLevelIn + "|" + pBe + "|" + pTrail + "|" + pDir + "|" + sessShort + "|" + dispModeIn + "|" + str.tostring(dispBodyAtrIn, "0.0") + "|" + str.tostring(maxLiveIn) + "|" + (reclaimExitIn ? "1" : "0") + "|" + (pauseOnIn ? "1" : "0") + "|" + (enableCIn ? "1" : "0") + "|" + str.tostring(breakWinIn) + "|" + str.tostring(strongAtrIn, "0.0") + "|" + str.tostring(reclaimAtrIn, "0.00") + "|" + str.tostring(minStopAtrIn, "0.0") + "|" + str.tostring(maxStopAtrIn, "0.0") + "|" + (shelfOnIn ? "1" : "0") + "|" + (gapOnIn ? "1" : "0") + "|" + roomModeIn + "|" + (extOnIn ? "1" : "0") + "|" + str.tostring(extAtrIn, "0.0") + "|" + (structOnIn ? "1" : "0") + "|" + (showHtfIn ? "1" : "0") + "|" + (momentumOnIn ? "1" : "0") + "|" + str.tostring(sweepWinIn) + "|" + (rangeOnIn ? "1" : "0") + "|" + str.tostring(rangeBarsIn) + "|" + str.tostring(rangeAtrIn, "0.0") + "|" + (intrabarOnIn ? "1" : "0")
 f_signed(float r) =>
     (r >= 0 ? "+" : "") + str.tostring(r, "0.0") + "R"
 f_stop(float anchor, int side, string which) =>
@@ -533,7 +562,19 @@ f_keep3(array<float> src, float v) =>
         if array.size(src) > 3
             array.shift(src)
     true
-f_try_arm(string origin, int side, float entry, float tightPx, float medPx, float anchor, float shelf, int swingBar, float zoneHi, float zoneLo, int zoneFrom, bool flag1) =>
+f_cancel_failed(int side) =>
+    if array.size(plans) > 0
+        for i = 0 to array.size(plans) - 1
+            staxPlan p = array.get(plans, i)
+            if p.dir == side and p.state == "ARMED"
+                p.state := "CANCELLED"
+                p.reason := "failed breakout"
+                p.ready := false
+                p.resolvedBar := bar_index
+                f_send(f_payload(p, "plan_cancel", ',"reason":"failed breakout"', ""))
+                array.set(plans, i, p)
+    true
+f_try_arm(string origin, int side, float entry, float tightPx, float medPx, float anchor, float shelf, int swingBar, float zoneHi, float zoneLo, int zoneFrom, bool flag1, bool htfSweep) =>
     eng.planSeq += 1
     float med = f_stop(medPx, side, "Medium")
     float rawTight = f_stop(tightPx, side, "Tight")
@@ -584,6 +625,8 @@ f_try_arm(string origin, int side, float entry, float tightPx, float medPx, floa
     bool gradeSess = (clock >= 180 and clock < 360) or (clock >= 500 and clock < 690)
     string atLevel = f_at_level(entry)
     string g = f_grade(flag1, side == 1 ? bias == 1 : bias == -1, volume > volSma, gradeSess, atLevel != "")
+    if origin == "sweep"
+        g := htfSweep ? "A+" : "B"
     string roomName = geometryOk and distanceOk ? f_room_name(side, entry, t1) : ""
     bool roomHit = roomName != ""
     if roomHit and roomModeIn == "Downgrade"
@@ -779,6 +822,48 @@ f_review(staxPlan p) =>
     p.lbRange := label.new(tagAt, p.entry, tagTxt, style = label.style_none, color = color.new(#7F8AA3, 100), textcolor = ink, size = size.small)
     p.greyed := true
     p
+f_kind(string origin) =>
+    origin == "gap" ? "gap" : origin == "sweep" ? "sweep" : origin == "momentum" ? "momentum" : "shelf"
+f_thin(staxPlan p) =>
+    f_drop_line(p.lnSl)
+    f_drop_line(p.ln1)
+    f_drop_line(p.ln2)
+    f_drop_line(p.ln3)
+    f_drop_lab(p.lbEn)
+    f_drop_lab(p.lbSl)
+    f_drop_lab(p.lb1)
+    f_drop_lab(p.lb2)
+    f_drop_lab(p.lb3)
+    f_drop_lab(p.lbFill)
+    f_drop_lab(p.lbRange)
+    f_drop_lab(p.lbBos)
+    f_drop_box(p.rangeBox)
+    p.lnSl := na
+    p.ln1 := na
+    p.ln2 := na
+    p.ln3 := na
+    p.lbEn := na
+    p.lbSl := na
+    p.lb1 := na
+    p.lb2 := na
+    p.lb3 := na
+    p.lbFill := na
+    p.lbRange := na
+    p.lbBos := na
+    p.rangeBox := na
+    color ink = color.new(#7F8AA3, 35)
+    int left = math.max(0, p.createdBar - 24)
+    if na(p.lnEn)
+        p.lnEn := line.new(left, p.entry, bar_index, p.entry, color = ink, style = line.style_dashed, width = 1)
+    else
+        line.set_color(p.lnEn, ink)
+        line.set_style(p.lnEn, line.style_dashed)
+        line.set_width(p.lnEn, 1)
+        line.set_x1(p.lnEn, left)
+        line.set_x2(p.lnEn, bar_index)
+        line.set_y1(p.lnEn, p.entry)
+        line.set_y2(p.lnEn, p.entry)
+    p
 f_draw(staxPlan p) =>
     if not showDrawingsIn or p.erased
         p
@@ -791,10 +876,16 @@ f_draw(staxPlan p) =>
             f_grey(p)
         else
             p
+    else if f_live_n() > 0 and p.state == "ARMED"
+        f_thin(p)
     else
         int left = math.max(0, p.createdBar - 24)
         int right = bar_index
         color sideInk = p.dir == 1 ? color.new(#4C8DFF, 0) : color.new(#FF8A3D, 0)
+        string stopTxt = p.liveStop != p.stop ? "STOP (trail)  " + f_num(p.liveStop) : "STOP  " + f_num(p.liveStop)
+        if not na(p.lnEn) and na(p.lnSl)
+            line.delete(p.lnEn)
+            p.lnEn := na
         if na(p.lnEn)
             float top = math.max(p.zoneHi, p.zoneLo)
             float bot = math.min(p.zoneHi, p.zoneLo)
@@ -803,9 +894,9 @@ f_draw(staxPlan p) =>
             p.lbRange := f_note(boxLeft, (top + bot) / 2.0, p.origin == "gap" ? "GAP" : "RANGE")
             p.lbBos := f_note(p.createdBar, p.shelf, "BREAK")
             p.lnEn := line.new(left, p.entry, right, p.entry, color = color.new(#E6EAF2, 0), style = line.style_solid, width = 2)
-            p.lnSl := line.new(left, p.liveStop, right, p.liveStop, color = color.new(#FF5C6C, 0), style = line.style_solid, width = 3)
+            p.lnSl := line.new(left, p.liveStop, right, p.liveStop, color = p.liveStop != p.stop ? color.new(#9AA3B5, 0) : color.new(#FF5C6C, 0), style = line.style_solid, width = 3)
             p.lbEn := f_price_tag(right, p.entry, "ENTRY  " + f_num(p.entry), color.new(#E6EAF2, 0))
-            p.lbSl := f_price_tag(right, p.liveStop, "STOP  " + f_num(p.liveStop), color.new(#FF5C6C, 0))
+            p.lbSl := f_price_tag(right, p.liveStop, stopTxt, p.liveStop != p.stop ? color.new(#9AA3B5, 0) : color.new(#FF5C6C, 0))
             if p.on1
                 p.ln1 := line.new(left, p.tp1, right, p.tp1, color = color.new(#3DDC97, 0), style = line.style_solid, width = 2)
                 p.lb1 := f_price_tag(right, p.tp1, "TP1  " + f_num(p.tp1) + "   " + str.tostring(p.rUnit, "0.#") + "R", color.new(#3DDC97, 0))
@@ -836,7 +927,8 @@ f_draw(staxPlan p) =>
             label.set_x(p.lbEn, right)
             label.set_x(p.lbSl, right)
             label.set_y(p.lbSl, p.liveStop)
-            label.set_text(p.lbSl, "STOP  " + f_num(p.liveStop))
+            label.set_text(p.lbSl, stopTxt)
+            label.set_textcolor(p.lbSl, p.liveStop != p.stop ? color.new(#9AA3B5, 0) : color.new(#FF5C6C, 0))
             if not na(p.lb1)
                 label.set_x(p.lb1, right)
             if not na(p.lb2)
@@ -873,365 +965,534 @@ f_mark_tp(staxPlan p, string which, float px, float rr) =>
         f_send(f_payload(p, "exit", extra, which + ":TP"))
     p
 
-int ctOpenMin = hour(time, "America/Chicago") * 60 + minute(time, "America/Chicago")
-int ctPrevMin = hour(time[1], "America/Chicago") * 60 + minute(time[1], "America/Chicago")
-if ctOpenMin >= 17 * 60 and (na(ctPrevMin) or ctPrevMin < 17 * 60)
-    tradesToday := 0
-array.clear(outbox)
+if barstate.isrealtime and not barstate.isconfirmed and intrabarOnIn
+    if bar_index != formingBar
+        formingBar := bar_index
+        formingNow := false
+        formSide := 0
+    if not formingNow and not na(armAtr) and not na(atr)
+        float tolF = reclaimAtrIn * armAtr
+        bool bodyOk = math.abs(close - open) >= dispBodyAtrIn * atr
+        float upPen = (not na(rangeHigh) and high >= rangeHigh + tolF) ? high - rangeHigh : na
+        float dnPen = (not na(rangeLow) and low <= rangeLow - tolF) ? rangeLow - low : na
+        int pick = 0
+        if bodyOk and not na(upPen) and (na(dnPen) or upPen >= dnPen)
+            pick := 1
+        else if bodyOk and not na(dnPen)
+            pick := -1
+        if pick != 0
+            formingNow := true
+            formSide := pick
+            formEntry := pick == 1 ? rangeHigh : rangeLow
+            float medPx = pick == 1 ? low : high
+            formStop := f_stop(medPx, pick, "Medium")
+            float refF = (formEntry - formStop) * pick
+            formTp := formEntry + pick * pTp * refF
+            string fLvl = f_at_level(formEntry)
+            string fLvlJson = fLvl == "" ? "null" : '"' + fLvl + '"'
+            string fSide = pick == 1 ? "long" : "short"
+            string formMsg = '{"source":"staxbot","event":"break_forming","eventId":"break_forming:' + str.tostring(bar_index) + '","version":"2.5.0","fp":"' + f_fp() + '","provisional":true,"side":"' + fSide + '","entry":' + f_num(formEntry) + ',"stop":' + f_num(formStop) + ',"target":' + f_num(formTp) + ',"level":' + fLvlJson + ',"timestamp":"' + f_ts() + '"}'
+            alert(formMsg, alert.freq_once_per_bar)
 
 if barstate.isconfirmed
-    if bar_index > 0 and inAsiaSess[1] and not inAsiaSess
-        asiaHi := asiaRunHi
-        asiaLo := asiaRunLo
-        asiaRunHi := na
-        asiaRunLo := na
-    if inAsiaSess
-        asiaRunHi := na(asiaRunHi) ? high : math.max(asiaRunHi, high)
-        asiaRunLo := na(asiaRunLo) ? low : math.min(asiaRunLo, low)
-    if bar_index > 0 and inLonSess[1] and not inLonSess
-        lonHi := lonRunHi
-        lonLo := lonRunLo
-        lonRunHi := na
-        lonRunLo := na
-    if inLonSess
-        lonRunHi := na(lonRunHi) ? high : math.max(lonRunHi, high)
-        lonRunLo := na(lonRunLo) ? low : math.min(lonRunLo, low)
-    if bar_index > 0 and inOnSess[1] and not inOnSess
-        onHi := onRunHi
-        onLo := onRunLo
-        onRunHi := na
-        onRunLo := na
-    if inOnSess
-        onRunHi := na(onRunHi) ? high : math.max(onRunHi, high)
-        onRunLo := na(onRunLo) ? low : math.min(onRunLo, low)
-    if not na(dPh) and (na(seenDph) or dPh != seenDph)
-        f_keep3(dHighs, dPh)
-        seenDph := dPh
-    if not na(dPl) and (na(seenDpl) or dPl != seenDpl)
-        f_keep3(dLows, dPl)
-        seenDpl := dPl
-    if not na(h4Ph) and (na(seen4h) or h4Ph != seen4h)
-        f_keep3(h4Highs, h4Ph)
-        seen4h := h4Ph
-    if not na(h4Pl) and (na(seen4l) or h4Pl != seen4l)
-        f_keep3(h4Lows, h4Pl)
-        seen4l := h4Pl
-    if not na(h1Ph) and (na(seen1h) or h1Ph != seen1h)
-        f_keep3(h1Highs, h1Ph)
-        seen1h := h1Ph
-    if not na(h1Pl) and (na(seen1l) or h1Pl != seen1l)
-        f_keep3(h1Lows, h1Pl)
-        seen1l := h1Pl
+    int ctOpenMin = hour(time, "America/Chicago") * 60 + minute(time, "America/Chicago")
+    int ctPrevMin = hour(time[1], "America/Chicago") * 60 + minute(time[1], "America/Chicago")
+    if ctOpenMin >= 17 * 60 and (na(ctPrevMin) or ctPrevMin < 17 * 60)
+        tradesToday := 0
+    array.clear(outbox)
+    bool wasForming = formingNow
+    int wasSide = formSide
+    float wasEntry = formEntry
+    float wasStop = formStop
+    float wasTp = formTp
+    formingNow := false
 
-array.clear(rawName)
-array.clear(rawPx)
-if not na(pdh)
-    array.push(rawName, "PDH")
-    array.push(rawPx, pdh)
-if not na(pdl)
-    array.push(rawName, "PDL")
-    array.push(rawPx, pdl)
-if not na(pwh)
-    array.push(rawName, "PWH")
-    array.push(rawPx, pwh)
-if not na(pwl)
-    array.push(rawName, "PWL")
-    array.push(rawPx, pwl)
-if not na(asiaHi)
-    array.push(rawName, "ASIAH")
-    array.push(rawPx, asiaHi)
-if not na(asiaLo)
-    array.push(rawName, "ASIAL")
-    array.push(rawPx, asiaLo)
-if not na(lonHi)
-    array.push(rawName, "LONH")
-    array.push(rawPx, lonHi)
-if not na(lonLo)
-    array.push(rawName, "LONL")
-    array.push(rawPx, lonLo)
-if not na(onHi)
-    array.push(rawName, "ONH")
-    array.push(rawPx, onHi)
-if not na(onLo)
-    array.push(rawName, "ONL")
-    array.push(rawPx, onLo)
-if array.size(dHighs) > 0
-    for i = 0 to array.size(dHighs) - 1
-        array.push(rawName, "DH" + str.tostring(i + 1))
-        array.push(rawPx, array.get(dHighs, i))
-if array.size(dLows) > 0
-    for i = 0 to array.size(dLows) - 1
-        array.push(rawName, "DL" + str.tostring(i + 1))
-        array.push(rawPx, array.get(dLows, i))
-if array.size(h4Highs) > 0
-    for i = 0 to array.size(h4Highs) - 1
-        array.push(rawName, "H4H" + str.tostring(i + 1))
-        array.push(rawPx, array.get(h4Highs, i))
-if array.size(h4Lows) > 0
-    for i = 0 to array.size(h4Lows) - 1
-        array.push(rawName, "H4L" + str.tostring(i + 1))
-        array.push(rawPx, array.get(h4Lows, i))
-if array.size(h1Highs) > 0
-    for i = 0 to array.size(h1Highs) - 1
-        array.push(rawName, "H1H" + str.tostring(i + 1))
-        array.push(rawPx, array.get(h1Highs, i))
-if array.size(h1Lows) > 0
-    for i = 0 to array.size(h1Lows) - 1
-        array.push(rawName, "H1L" + str.tostring(i + 1))
-        array.push(rawPx, array.get(h1Lows, i))
-array.clear(zoneName)
-array.clear(zonePx)
-array.clear(zoneLo)
-array.clear(zoneHi)
-float halfZ = 0.1 * atr
-int rn = array.size(rawPx)
-if not na(halfZ) and rn > 0
-    if rn > 1
-        for pass = 1 to rn - 1
-            for b = 0 to rn - 2
-                if array.get(rawPx, b) > array.get(rawPx, b + 1)
-                    float swapPx = array.get(rawPx, b)
-                    string swapNm = array.get(rawName, b)
-                    array.set(rawPx, b, array.get(rawPx, b + 1))
-                    array.set(rawName, b, array.get(rawName, b + 1))
-                    array.set(rawPx, b + 1, swapPx)
-                    array.set(rawName, b + 1, swapNm)
-    string cName = array.get(rawName, 0)
-    float cSum = array.get(rawPx, 0)
-    int cCount = 1
-    float cLo = cSum - halfZ
-    float cHi = cSum + halfZ
-    if rn > 1
-        for i = 1 to rn - 1
-            float px = array.get(rawPx, i)
-            float lo = px - halfZ
-            float hi = px + halfZ
-            if lo <= cHi
-                cName := cName + "+" + array.get(rawName, i)
-                cLo := math.min(cLo, lo)
-                cHi := math.max(cHi, hi)
-                cSum := cSum + px
-                cCount += 1
-            else
-                array.push(zoneName, cName)
-                array.push(zonePx, cSum / cCount)
-                array.push(zoneLo, cLo)
-                array.push(zoneHi, cHi)
-                cName := array.get(rawName, i)
-                cSum := px
-                cCount := 1
-                cLo := lo
-                cHi := hi
-    array.push(zoneName, cName)
-    array.push(zonePx, cSum / cCount)
-    array.push(zoneLo, cLo)
-    array.push(zoneHi, cHi)
+    if barstate.isconfirmed
+        if bar_index > 0 and inAsiaSess[1] and not inAsiaSess
+            asiaHi := asiaRunHi
+            asiaLo := asiaRunLo
+            asiaRunHi := na
+            asiaRunLo := na
+        if inAsiaSess
+            asiaRunHi := na(asiaRunHi) ? high : math.max(asiaRunHi, high)
+            asiaRunLo := na(asiaRunLo) ? low : math.min(asiaRunLo, low)
+        if bar_index > 0 and inLonSess[1] and not inLonSess
+            lonHi := lonRunHi
+            lonLo := lonRunLo
+            lonRunHi := na
+            lonRunLo := na
+        if inLonSess
+            lonRunHi := na(lonRunHi) ? high : math.max(lonRunHi, high)
+            lonRunLo := na(lonRunLo) ? low : math.min(lonRunLo, low)
+        if bar_index > 0 and inOnSess[1] and not inOnSess
+            onHi := onRunHi
+            onLo := onRunLo
+            onRunHi := na
+            onRunLo := na
+        if inOnSess
+            onRunHi := na(onRunHi) ? high : math.max(onRunHi, high)
+            onRunLo := na(onRunLo) ? low : math.min(onRunLo, low)
+        if not na(dPh) and (na(seenDph) or dPh != seenDph)
+            f_keep3(dHighs, dPh)
+            seenDph := dPh
+        if not na(dPl) and (na(seenDpl) or dPl != seenDpl)
+            f_keep3(dLows, dPl)
+            seenDpl := dPl
+        if not na(h4Ph) and (na(seen4h) or h4Ph != seen4h)
+            f_keep3(h4Highs, h4Ph)
+            seen4h := h4Ph
+        if not na(h4Pl) and (na(seen4l) or h4Pl != seen4l)
+            f_keep3(h4Lows, h4Pl)
+            seen4l := h4Pl
+        if not na(h1Ph) and (na(seen1h) or h1Ph != seen1h)
+            f_keep3(h1Highs, h1Ph)
+            seen1h := h1Ph
+        if not na(h1Pl) and (na(seen1l) or h1Pl != seen1l)
+            f_keep3(h1Lows, h1Pl)
+            seen1l := h1Pl
 
-bool sideOkBull = longsOk and (not biasFilterIn or bias == 1)
-bool sideOkBear = shortsOk and (not biasFilterIn or bias == -1)
-bool canArm = inSession and not inPause and targetsOk and volOk
+    array.clear(rawName)
+    array.clear(rawPx)
+    if not na(pdh)
+        array.push(rawName, "PDH")
+        array.push(rawPx, pdh)
+    if not na(pdl)
+        array.push(rawName, "PDL")
+        array.push(rawPx, pdl)
+    if not na(pwh)
+        array.push(rawName, "PWH")
+        array.push(rawPx, pwh)
+    if not na(pwl)
+        array.push(rawName, "PWL")
+        array.push(rawPx, pwl)
+    if not na(asiaHi)
+        array.push(rawName, "ASIAH")
+        array.push(rawPx, asiaHi)
+    if not na(asiaLo)
+        array.push(rawName, "ASIAL")
+        array.push(rawPx, asiaLo)
+    if not na(lonHi)
+        array.push(rawName, "LONH")
+        array.push(rawPx, lonHi)
+    if not na(lonLo)
+        array.push(rawName, "LONL")
+        array.push(rawPx, lonLo)
+    if not na(onHi)
+        array.push(rawName, "ONH")
+        array.push(rawPx, onHi)
+    if not na(onLo)
+        array.push(rawName, "ONL")
+        array.push(rawPx, onLo)
+    if array.size(dHighs) > 0
+        for i = 0 to array.size(dHighs) - 1
+            array.push(rawName, "DH" + str.tostring(i + 1))
+            array.push(rawPx, array.get(dHighs, i))
+    if array.size(dLows) > 0
+        for i = 0 to array.size(dLows) - 1
+            array.push(rawName, "DL" + str.tostring(i + 1))
+            array.push(rawPx, array.get(dLows, i))
+    if array.size(h4Highs) > 0
+        for i = 0 to array.size(h4Highs) - 1
+            array.push(rawName, "H4H" + str.tostring(i + 1))
+            array.push(rawPx, array.get(h4Highs, i))
+    if array.size(h4Lows) > 0
+        for i = 0 to array.size(h4Lows) - 1
+            array.push(rawName, "H4L" + str.tostring(i + 1))
+            array.push(rawPx, array.get(h4Lows, i))
+    if array.size(h1Highs) > 0
+        for i = 0 to array.size(h1Highs) - 1
+            array.push(rawName, "H1H" + str.tostring(i + 1))
+            array.push(rawPx, array.get(h1Highs, i))
+    if array.size(h1Lows) > 0
+        for i = 0 to array.size(h1Lows) - 1
+            array.push(rawName, "H1L" + str.tostring(i + 1))
+            array.push(rawPx, array.get(h1Lows, i))
+    array.clear(zoneName)
+    array.clear(zonePx)
+    array.clear(zoneLo)
+    array.clear(zoneHi)
+    float halfZ = 0.1 * atr
+    int rn = array.size(rawPx)
+    if not na(halfZ) and rn > 0
+        if rn > 1
+            for pass = 1 to rn - 1
+                for b = 0 to rn - 2
+                    if array.get(rawPx, b) > array.get(rawPx, b + 1)
+                        float swapPx = array.get(rawPx, b)
+                        string swapNm = array.get(rawName, b)
+                        array.set(rawPx, b, array.get(rawPx, b + 1))
+                        array.set(rawName, b, array.get(rawName, b + 1))
+                        array.set(rawPx, b + 1, swapPx)
+                        array.set(rawName, b + 1, swapNm)
+        string cName = array.get(rawName, 0)
+        float cSum = array.get(rawPx, 0)
+        int cCount = 1
+        float cLo = cSum - halfZ
+        float cHi = cSum + halfZ
+        if rn > 1
+            for i = 1 to rn - 1
+                float px = array.get(rawPx, i)
+                float lo = px - halfZ
+                float hi = px + halfZ
+                if lo <= cHi
+                    cName := cName + "+" + array.get(rawName, i)
+                    cLo := math.min(cLo, lo)
+                    cHi := math.max(cHi, hi)
+                    cSum := cSum + px
+                    cCount += 1
+                else
+                    array.push(zoneName, cName)
+                    array.push(zonePx, cSum / cCount)
+                    array.push(zoneLo, cLo)
+                    array.push(zoneHi, cHi)
+                    cName := array.get(rawName, i)
+                    cSum := px
+                    cCount := 1
+                    cLo := lo
+                    cHi := hi
+        array.push(zoneName, cName)
+        array.push(zonePx, cSum / cCount)
+        array.push(zoneLo, cLo)
+        array.push(zoneHi, cHi)
 
-if bullThrough or bearThrough
-    winSide := bullThrough ? 1 : -1
-    winFrom := bar_index
-    winLevel := bullThrough ? rangeHigh : rangeLow
-    winSwing := bullThrough ? rangeHighBar : rangeLowBar
-    winZoneHi := rangeHigh
-    winZoneLo := rangeLow
-    winZoneFrom := winSwing
-bool winOpen = winSide != 0 and winFrom >= 0 and bar_index - winFrom < breakWinIn
-bool winBeyond = winSide == 1 ? close > winLevel : winSide == -1 ? close < winLevel : false
-bool winDisp = winSide == 1 ? bullDisp : winSide == -1 ? bearDisp : false
-bool winSideOk = (winSide == 1 and sideOkBull) or (winSide == -1 and sideOkBear)
-if canArm and shelfOk and winOpen and winBeyond and winDisp and winSideOk
-    int side = winSide
-    moveSeq += 1
-    moveIdNow := moveSeq
-    moveDir := side
-    moveBar := bar_index
-    moveAnchor := side == 1 ? legLowNow : legHighNow
-    moveShelf := winLevel
-    moveSwing := winSwing
-    moveZoneHi := winZoneHi
-    moveZoneLo := winZoneLo
-    moveZoneFrom := winZoneFrom
-    moveFlag1 := strongDisp
-    f_replace_older(side, moveIdNow)
-    float tightCandle = side == 1 ? low : high
-    if shelfOnIn
-        f_try_arm("shelf", side, moveShelf, tightCandle, tightCandle, moveAnchor, moveShelf, moveSwing, moveZoneHi, moveZoneLo, moveZoneFrom, moveFlag1)
-    winSide := 0
-    winFrom := -1
+    if rangeOnIn
+        bool shelves = not na(rangeHigh) or not na(rangeLow)
+        bool compressed = not na(compHi) and not na(compLo) and not na(atr) and compHi - compLo <= rangeAtrIn * atr
+        bool broke = watchOn and not na(watchHi) and (close > watchHi or close < watchLo)
+        bool newShelf = watchOn and (rangeHigh != watchShelfHi or rangeLow != watchShelfLo)
+        if broke or not compressed
+            watchOn := false
+        else if newShelf
+            watchOn := false
+        if compressed and shelves and not watchOn
+            watchOn := true
+            watchHi := compHi
+            watchLo := compLo
+            watchShelfHi := rangeHigh
+            watchShelfLo := rangeLow
+            watchZone := f_at_level((compHi + compLo) / 2.0)
+            float longStop = na(rangeLow) ? na : rangeLow - medAtrIn * armAtr
+            float shortStop = na(rangeHigh) ? na : rangeHigh + medAtrIn * armAtr
+            string lvl = watchZone == "" ? "null" : '"' + watchZone + '"'
+            string watchMsg = '{"source":"staxbot","event":"watch","eventId":"watch:' + str.tostring(bar_index) + '","version":"2.5.0","fp":"' + f_fp() + '","provisional":false,"level":' + lvl + ',"range_high":' + f_num(compHi) + ',"range_low":' + f_num(compLo) + ',"break_high":' + f_num(rangeHigh) + ',"break_low":' + f_num(rangeLow) + ',"long_stop":' + f_num(longStop) + ',"short_stop":' + f_num(shortStop) + ',"timestamp":"' + f_ts() + '"}'
+            f_send(watchMsg)
 
-bool gapNow = moveDir == 1 ? bullFvg : bearFvg
-float gapTop = moveDir == 1 ? low : low[2]
-float gapBot = moveDir == 1 ? high[2] : high
-float gapHeight = math.abs(gapTop - gapBot)
-bool gapHeightOk = minGapAtrIn <= 0 or gapHeight >= minGapAtrIn * atr
-bool inGapWindow = moveBar >= 0 and bar_index - moveBar <= fvgWindowIn
-if gapOnIn and canArm and inGapWindow and gapNow and gapHeightOk and ((moveDir == 1 and sideOkBull) or (moveDir == -1 and sideOkBear))
-    float nearEdge = moveDir == 1 ? gapTop : gapBot
-    float farEdge = moveDir == 1 ? gapBot : gapTop
-    float midEdge = (gapTop + gapBot) / 2.0
-    float gapEntry = entryLevelIn == "FVG Midpoint (CE)" ? midEdge : entryLevelIn == "FVG Far Edge (Deep)" ? farEdge : nearEdge
-    float gapMed = moveDir == 1 ? low[1] : high[1]
-    f_try_arm("gap", moveDir, gapEntry, farEdge, gapMed, moveAnchor, moveShelf, moveSwing, gapTop, gapBot, math.max(0, bar_index - 2), moveFlag1)
+    bool sideOkBull = longsOk and (not biasFilterIn or bias == 1)
+    bool sideOkBear = shortsOk and (not biasFilterIn or bias == -1)
+    bool canArm = inSession and not inPause and targetsOk and volOk
 
-if array.size(plans) > 0
-    for i = 0 to array.size(plans) - 1
-        staxPlan p = array.get(plans, i)
-        p.ready := false
-        if p.state == "TRIGGERED" and bar_index > p.fillBar
-            p.state := "LIVE"
-        if p.state == "LIVE" and bar_index > p.fillBar
-            bool stopped = f_stop_hit(p.dir, p.liveStop)
-            if stopped
-                bool moved = p.liveStop != p.stop
-                float rr = p.refRisk > 0 ? p.dir * (p.liveStop - p.entry) / p.refRisk : 0.0
-                string why = not moved ? "SL" : math.abs(rr) < 0.05 ? "BE" : "TRAILED"
-                float exitPx = p.dir == 1 ? math.min(open, p.liveStop) : math.max(open, p.liveStop)
-                p := f_close_trade(p, exitPx, why, "STOP")
-            else
-                if p.on1 and not p.hit1 and f_tp_hit(p.dir, p.tp1) and p.state == "LIVE"
-                    p.hit1 := true
-                    if f_done(p)
-                        p.state := "CLOSED"
-                        p.reason := "targets"
-                        p.resolvedBar := bar_index
-                    p := f_mark_tp(p, "TP1", p.tp1, p.rUnit)
-                if p.on2 and not p.hit2 and f_tp_hit(p.dir, p.tp2) and p.state == "LIVE"
-                    p.hit2 := true
-                    if f_done(p)
-                        p.state := "CLOSED"
-                        p.reason := "targets"
-                        p.resolvedBar := bar_index
-                    p := f_mark_tp(p, "TP2", p.tp2, p.rUnit * 2.0)
-                if p.on3 and not p.hit3 and f_tp_hit(p.dir, p.tp3) and p.state == "LIVE"
-                    p.hit3 := true
-                    if f_done(p)
-                        p.state := "CLOSED"
-                        p.reason := "targets"
-                        p.resolvedBar := bar_index
-                    p := f_mark_tp(p, "TP3", p.tp3, p.rUnit * 3.0)
-                else if p.state == "LIVE" and reclaimExitIn and f_wrong(p.dir, p.inv)
-                    p := f_close_trade(p, close, "RECLAIM", "RECLAIM")
-                else if p.state == "LIVE" and sessionEnded and flatAtSessEndIn
-                    p := f_close_trade(p, close, "FLAT", "FLAT")
-                else if p.state == "LIVE"
-                    float favR = p.dir == 1 ? (high - p.entry) / p.refRisk : (p.entry - low) / p.refRisk
-                    float offR = na
-                    if trailOn
-                        offR := favR >= trailT3 ? trailO3 : favR >= trailT2 ? trailO2 : favR >= trailT1 ? trailO1 : favR >= trailBe ? 0.0 : na
-                    else if beOn
-                        offR := favR >= beR ? 0.0 : na
-                    if not na(offR)
-                        float buffer = offR == 0 and beTickIn ? p.dir * tick : 0.0
-                        float cand = p.entry + p.dir * offR * p.refRisk + buffer
-                        float newStop = p.dir == 1 ? math.max(p.liveStop, cand) : math.min(p.liveStop, cand)
-                        if newStop != p.liveStop
-                            p.liveStop := newStop
-                            if sendStopUpdIn
-                                f_send(f_payload(p, "stop_update", ',"reason":"trail","realizedR":' + str.tostring(offR, "0.00"), ""))
-        if p.state == "ARMED" and bar_index > p.createdBar
-            bool staleBars = bar_index > p.expiryBar
-            if sessionEnded
-                p.state := "EXPIRED"
-                p.reason := "session"
-                p.resolvedBar := bar_index
-                f_send(f_payload(p, "plan_cancel", ',"reason":"session"', ""))
-            else if f_wrong(p.dir, p.inv)
-                p.state := "INVALIDATED"
-                p.reason := "reclaim close"
-                p.resolvedBar := bar_index
-                f_send(f_payload(p, "plan_cancel", ',"reason":"reclaim close"', ""))
-            else if f_entry_hit(p) and f_hit(p.stop)
-                p.ready := false
-            else if not inPause and inSession and tradesToday < pMaxTrades and f_live_n() < maxLiveIn and f_entry_hit(p) and not f_wrong(p.dir, p.inv)
-                p.ready := true
-            else if f_tp_hit(p.dir, f_near(p)) and not f_entry_hit(p)
-                p.state := "EXPIRED"
-                p.scenario := "D"
-                p.reason := "ran without retest"
-                p.resolvedBar := bar_index
-                f_send(f_payload(p, "plan_cancel", ',"reason":"ran without retest"', ""))
-            else if staleBars
-                p.state := "EXPIRED"
-                p.reason := "expired"
-                p.resolvedBar := bar_index
-                f_send(f_payload(p, "plan_cancel", ',"reason":"expired"', ""))
-        array.set(plans, i, p)
+    if bullThrough or bearThrough
+        winSide := bullThrough ? 1 : -1
+        winFrom := bar_index
+        winLevel := bullThrough ? rangeHigh : rangeLow
+        winSwing := bullThrough ? rangeHighBar : rangeLowBar
+        winZoneHi := rangeHigh
+        winZoneLo := rangeLow
+        winZoneFrom := winSwing
+    bool winOpen = winSide != 0 and winFrom >= 0 and bar_index - winFrom < breakWinIn
+    bool winBeyond = winSide == 1 ? close > winLevel : winSide == -1 ? close < winLevel : false
+    bool winDisp = winSide == 1 ? bullDisp : winSide == -1 ? bearDisp : false
+    bool winSideOk = (winSide == 1 and sideOkBull) or (winSide == -1 and sideOkBear)
+    if canArm and shelfOk and winOpen and winBeyond and winDisp and winSideOk
+        int side = winSide
+        moveSeq += 1
+        moveIdNow := moveSeq
+        moveDir := side
+        moveBar := bar_index
+        moveAnchor := side == 1 ? legLowNow : legHighNow
+        moveShelf := winLevel
+        moveSwing := winSwing
+        moveZoneHi := winZoneHi
+        moveZoneLo := winZoneLo
+        moveZoneFrom := winZoneFrom
+        moveFlag1 := strongDisp
+        f_replace_older(side, moveIdNow)
+        float tightCandle = side == 1 ? low : high
+        if shelfOnIn
+            f_try_arm("shelf", side, moveShelf, tightCandle, tightCandle, moveAnchor, moveShelf, moveSwing, moveZoneHi, moveZoneLo, moveZoneFrom, moveFlag1, false)
+        if momentumOnIn and not na(winZoneLo) and not na(winZoneHi)
+            float oppEdge = side == 1 ? winZoneLo : winZoneHi
+            f_try_arm("momentum", side, close, tightCandle, oppEdge, moveAnchor, moveShelf, moveSwing, moveZoneHi, moveZoneLo, moveZoneFrom, moveFlag1, false)
+            if array.size(plans) > 0
+                for i = 0 to array.size(plans) - 1
+                    staxPlan mom = array.get(plans, i)
+                    if mom.origin == "momentum" and mom.state == "ARMED" and mom.createdBar == bar_index and tradesToday < pMaxTrades and f_live_n() < maxLiveIn
+                        mom.state := "TRIGGERED"
+                        mom.fillBar := bar_index
+                        mom.ready := false
+                        tradesToday += 1
+                        f_send(f_payload(mom, "entry", "", ""))
+                        array.set(plans, i, mom)
+                        for j = 0 to array.size(plans) - 1
+                            staxPlan sib = array.get(plans, j)
+                            if j != i and sib.moveId == mom.moveId and sib.state == "ARMED"
+                                sib.state := "CANCELLED"
+                                sib.ready := false
+                                sib.reason := "sibling filled"
+                                sib.resolvedBar := bar_index
+                                f_send(f_payload(sib, "plan_cancel", ',"reason":"sibling filled"', ""))
+                                array.set(plans, j, sib)
+        winSide := 0
+        winFrom := -1
 
-int guard = 0
-int room = maxLiveIn - f_live_n()
-while room > 0 and tradesToday < pMaxTrades and guard < 12
-    guard += 1
-    int best = -1
-    float bestPx = na
-    bool down = close <= open
+    bool gapNow = moveDir == 1 ? bullFvg : bearFvg
+    float gapTop = moveDir == 1 ? low : low[2]
+    float gapBot = moveDir == 1 ? high[2] : high
+    float gapHeight = math.abs(gapTop - gapBot)
+    bool gapHeightOk = minGapAtrIn <= 0 or gapHeight >= minGapAtrIn * atr
+    bool inGapWindow = moveBar >= 0 and bar_index - moveBar <= fvgWindowIn
+    if gapOnIn and canArm and inGapWindow and gapNow and gapHeightOk and ((moveDir == 1 and sideOkBull) or (moveDir == -1 and sideOkBear))
+        float nearEdge = moveDir == 1 ? gapTop : gapBot
+        float farEdge = moveDir == 1 ? gapBot : gapTop
+        float midEdge = (gapTop + gapBot) / 2.0
+        float gapEntry = entryLevelIn == "FVG Midpoint (CE)" ? midEdge : entryLevelIn == "FVG Far Edge (Deep)" ? farEdge : nearEdge
+        float gapMed = moveDir == 1 ? low[1] : high[1]
+        f_try_arm("gap", moveDir, gapEntry, farEdge, gapMed, moveAnchor, moveShelf, moveSwing, gapTop, gapBot, math.max(0, bar_index - 2), moveFlag1, false)
+
+    if enableCIn
+        bool sweepOpen = sweepSide != 0 and sweepFrom >= 0 and bar_index - sweepFrom < sweepWinIn
+        if sweepSide != 0 and not sweepOpen
+            sweepSide := 0
+            sweepFrom := -1
+        if sweepSide != 0
+            sweepExtreme := sweepSide == 1 ? (na(sweepExtreme) ? high : math.max(sweepExtreme, high)) : (na(sweepExtreme) ? low : math.min(sweepExtreme, low))
+            float tolC = reclaimAtrIn * armAtr
+            bool backIn = bar_index > sweepFrom and not na(tolC) and (sweepSide == 1 ? sweepLvl - close >= tolC : close - sweepLvl >= tolC)
+            if backIn
+                int rev = -sweepSide
+                bool revOk = (rev == 1 and sideOkBull) or (rev == -1 and sideOkBear)
+                bool exists = false
+                if array.size(plans) > 0
+                    for i = 0 to array.size(plans) - 1
+                        staxPlan q = array.get(plans, i)
+                        if q.origin == "sweep" and f_active(q.state) and math.abs(q.entry - sweepLvl) <= tick
+                            exists := true
+                if canArm and revOk and not exists
+                    int savedMove = moveIdNow
+                    int beforeN = array.size(plans)
+                    moveSeq += 1
+                    moveIdNow := moveSeq
+                    float largePx = rev == 1 ? legLowNow : legHighNow
+                    bool htfGrade = sweepKind == "htf" or f_at_level(sweepLvl) != ""
+                    f_try_arm("sweep", rev, sweepLvl, sweepExtreme, sweepExtreme, largePx, sweepLvl, bar_index, math.max(sweepLvl, sweepExtreme), math.min(sweepLvl, sweepExtreme), math.max(0, sweepFrom), strongDisp, htfGrade)
+                    moveIdNow := savedMove
+                    if array.size(plans) > beforeN
+                        f_cancel_failed(sweepSide)
+                sweepSide := 0
+                sweepFrom := -1
+        if sweepSide == 0
+            float lvl = na
+            int sdir = 0
+            string skind = ""
+            if not na(rangeHigh) and close > rangeHigh and (na(close[1]) or close[1] <= rangeHigh)
+                lvl := rangeHigh
+                sdir := 1
+                skind := "chart"
+            else if not na(rangeLow) and close < rangeLow and (na(close[1]) or close[1] >= rangeLow)
+                lvl := rangeLow
+                sdir := -1
+                skind := "chart"
+            else if array.size(zoneHi) > 0
+                for i = 0 to array.size(zoneHi) - 1
+                    if na(lvl)
+                        float zHi = array.get(zoneHi, i)
+                        float zLo = array.get(zoneLo, i)
+                        if close > zHi and (na(close[1]) or close[1] <= zHi)
+                            lvl := zHi
+                            sdir := 1
+                            skind := "htf"
+                        else if close < zLo and (na(close[1]) or close[1] >= zLo)
+                            lvl := zLo
+                            sdir := -1
+                            skind := "htf"
+            if na(lvl) and array.size(plans) > 0
+                for i = 0 to array.size(plans) - 1
+                    if na(lvl)
+                        staxPlan q = array.get(plans, i)
+                        if q.state == "ARMED" and close > q.shelf and (na(close[1]) or close[1] <= q.shelf)
+                            lvl := q.shelf
+                            sdir := 1
+                            skind := "chart"
+                        else if q.state == "ARMED" and close < q.shelf and (na(close[1]) or close[1] >= q.shelf)
+                            lvl := q.shelf
+                            sdir := -1
+                            skind := "chart"
+            if not na(lvl)
+                sweepSide := sdir
+                sweepFrom := bar_index
+                sweepLvl := lvl
+                sweepExtreme := sdir == 1 ? high : low
+                sweepKind := skind
+
     if array.size(plans) > 0
         for i = 0 to array.size(plans) - 1
             staxPlan p = array.get(plans, i)
-            if p.ready and (best == -1 or (down and p.entry > bestPx) or (not down and p.entry < bestPx))
-                best := i
-                bestPx := p.entry
-    if best == -1
-        room := 0
-    else
-        staxPlan chosen = array.get(plans, best)
-        chosen.state := "TRIGGERED"
-        chosen.ready := false
-        chosen.fillBar := bar_index
-        chosen.liveStop := chosen.stop
-        tradesToday += 1
-        if showDrawingsIn
-            if not na(chosen.lbFill)
-                label.delete(chosen.lbFill)
-            chosen.lbFill := label.new(bar_index, chosen.dir == 1 ? low : high, chosen.dir == 1 ? "LONG" : "SHORT", style = chosen.dir == 1 ? label.style_label_up : label.style_label_down, color = chosen.dir == 1 ? color.new(#4C8DFF, 0) : color.new(#FF8A3D, 0), textcolor = color.white, size = size.small, text_font_family = font.family_monospace)
-        f_send(f_payload(chosen, "entry", "", ""))
-        array.set(plans, best, chosen)
+            p.ready := false
+            if p.state == "TRIGGERED" and bar_index > p.fillBar
+                p.state := "LIVE"
+            if p.state == "LIVE" and bar_index > p.fillBar
+                bool stopped = f_stop_hit(p.dir, p.liveStop)
+                if stopped
+                    bool moved = p.liveStop != p.stop
+                    float rr = p.refRisk > 0 ? p.dir * (p.liveStop - p.entry) / p.refRisk : 0.0
+                    string why = not moved ? "SL" : math.abs(rr) < 0.05 ? "BE" : "TRAILED"
+                    float exitPx = p.dir == 1 ? math.min(open, p.liveStop) : math.max(open, p.liveStop)
+                    p := f_close_trade(p, exitPx, why, "STOP")
+                else
+                    if p.on1 and not p.hit1 and f_tp_hit(p.dir, p.tp1) and p.state == "LIVE"
+                        p.hit1 := true
+                        if f_done(p)
+                            p.state := "CLOSED"
+                            p.reason := "targets"
+                            p.resolvedBar := bar_index
+                        p := f_mark_tp(p, "TP1", p.tp1, p.rUnit)
+                    if p.on2 and not p.hit2 and f_tp_hit(p.dir, p.tp2) and p.state == "LIVE"
+                        p.hit2 := true
+                        if f_done(p)
+                            p.state := "CLOSED"
+                            p.reason := "targets"
+                            p.resolvedBar := bar_index
+                        p := f_mark_tp(p, "TP2", p.tp2, p.rUnit * 2.0)
+                    if p.on3 and not p.hit3 and f_tp_hit(p.dir, p.tp3) and p.state == "LIVE"
+                        p.hit3 := true
+                        if f_done(p)
+                            p.state := "CLOSED"
+                            p.reason := "targets"
+                            p.resolvedBar := bar_index
+                        p := f_mark_tp(p, "TP3", p.tp3, p.rUnit * 3.0)
+                    else if p.state == "LIVE" and reclaimExitIn and f_wrong(p.dir, p.inv)
+                        p := f_close_trade(p, close, "RECLAIM", "RECLAIM")
+                    else if p.state == "LIVE" and sessionEnded and flatAtSessEndIn
+                        p := f_close_trade(p, close, "FLAT", "FLAT")
+                    else if p.state == "LIVE"
+                        float favR = p.dir == 1 ? (high - p.entry) / p.refRisk : (p.entry - low) / p.refRisk
+                        float offR = na
+                        if trailOn
+                            offR := favR >= trailT3 ? trailO3 : favR >= trailT2 ? trailO2 : favR >= trailT1 ? trailO1 : favR >= trailBe ? 0.0 : na
+                        else if beOn
+                            offR := favR >= beR ? 0.0 : na
+                        if not na(offR)
+                            float buffer = offR == 0 and beTickIn ? p.dir * tick : 0.0
+                            float cand = p.entry + p.dir * offR * p.refRisk + buffer
+                            float newStop = p.dir == 1 ? math.max(p.liveStop, cand) : math.min(p.liveStop, cand)
+                            if newStop != p.liveStop
+                                p.liveStop := newStop
+                                if sendStopUpdIn
+                                    float lockedR = p.refRisk > 0 ? p.dir * (p.liveStop - p.entry) / p.refRisk : 0.0
+                                    f_send(f_payload(p, "stop_update", ',"reason":"trail","realizedR":' + str.tostring(offR, "0.00") + ',"locked_r":' + str.tostring(lockedR, "0.00"), ""))
+            if p.state == "ARMED" and bar_index > p.createdBar
+                bool staleBars = bar_index > p.expiryBar
+                if sessionEnded
+                    p.state := "EXPIRED"
+                    p.reason := "session"
+                    p.resolvedBar := bar_index
+                    f_send(f_payload(p, "plan_cancel", ',"reason":"session"', ""))
+                else if f_wrong(p.dir, p.inv)
+                    p.state := "INVALIDATED"
+                    p.reason := "reclaim close"
+                    p.resolvedBar := bar_index
+                    f_send(f_payload(p, "plan_cancel", ',"reason":"reclaim close"', ""))
+                else if f_entry_hit(p) and f_hit(p.stop)
+                    p.ready := false
+                else if not inPause and inSession and tradesToday < pMaxTrades and f_live_n() < maxLiveIn and f_entry_hit(p) and not f_wrong(p.dir, p.inv)
+                    p.ready := true
+                else if f_tp_hit(p.dir, f_near(p)) and not f_entry_hit(p)
+                    p.state := "EXPIRED"
+                    p.scenario := "D"
+                    p.reason := "ran without retest"
+                    p.resolvedBar := bar_index
+                    f_send(f_payload(p, "plan_cancel", ',"reason":"ran without retest"', ""))
+                else if staleBars
+                    p.state := "EXPIRED"
+                    p.reason := "expired"
+                    p.resolvedBar := bar_index
+                    f_send(f_payload(p, "plan_cancel", ',"reason":"expired"', ""))
+            array.set(plans, i, p)
+
+    int guard = 0
+    int room = maxLiveIn - f_live_n()
+    while room > 0 and tradesToday < pMaxTrades and guard < 12
+        guard += 1
+        int best = -1
+        float bestPx = na
+        bool down = close <= open
         if array.size(plans) > 0
             for i = 0 to array.size(plans) - 1
-                staxPlan sib = array.get(plans, i)
-                if i != best and sib.moveId == chosen.moveId and sib.state == "ARMED"
-                    sib.state := "CANCELLED"
-                    sib.ready := false
-                    sib.reason := "sibling filled"
-                    sib.resolvedBar := bar_index
-                    f_send(f_payload(sib, "plan_cancel", ',"reason":"sibling filled"', ""))
-                    array.set(plans, i, sib)
-        room := maxLiveIn - f_live_n()
+                staxPlan p = array.get(plans, i)
+                if p.ready and (best == -1 or (down and p.entry > bestPx) or (not down and p.entry < bestPx))
+                    best := i
+                    bestPx := p.entry
+        if best == -1
+            room := 0
+        else
+            staxPlan chosen = array.get(plans, best)
+            chosen.state := "TRIGGERED"
+            chosen.ready := false
+            chosen.fillBar := bar_index
+            chosen.liveStop := chosen.stop
+            tradesToday += 1
+            if showDrawingsIn
+                if not na(chosen.lbFill)
+                    label.delete(chosen.lbFill)
+                chosen.lbFill := label.new(bar_index, chosen.dir == 1 ? low : high, chosen.dir == 1 ? "LONG" : "SHORT", style = chosen.dir == 1 ? label.style_label_up : label.style_label_down, color = chosen.dir == 1 ? color.new(#4C8DFF, 0) : color.new(#FF8A3D, 0), textcolor = color.white, size = size.small, text_font_family = font.family_monospace)
+            f_send(f_payload(chosen, "entry", "", ""))
+            array.set(plans, best, chosen)
+            if array.size(plans) > 0
+                for i = 0 to array.size(plans) - 1
+                    staxPlan sib = array.get(plans, i)
+                    if i != best and sib.moveId == chosen.moveId and sib.state == "ARMED"
+                        sib.state := "CANCELLED"
+                        sib.ready := false
+                        sib.reason := "sibling filled"
+                        sib.resolvedBar := bar_index
+                        f_send(f_payload(sib, "plan_cancel", ',"reason":"sibling filled"', ""))
+                        array.set(plans, i, sib)
+            room := maxLiveIn - f_live_n()
 
-if array.size(plans) > 0
-    for i = 0 to array.size(plans) - 1
-        staxPlan p = array.get(plans, i)
-        p := f_draw(p)
-        array.set(plans, i, p)
+    bool armedBreak = false
+    if array.size(plans) > 0
+        for i = 0 to array.size(plans) - 1
+            staxPlan made = array.get(plans, i)
+            if made.createdBar == bar_index and (made.origin == "shelf" or made.origin == "gap" or made.origin == "momentum" or made.origin == "sweep")
+                armedBreak := true
+    if wasForming and not armedBreak
+        string cSide = wasSide == 1 ? "long" : "short"
+        string cLvl = f_at_level(wasEntry)
+        string cLvlJson = cLvl == "" ? "null" : '"' + cLvl + '"'
+        string cancelMsg = '{"source":"staxbot","event":"break_cancelled","eventId":"break_cancelled:' + str.tostring(bar_index) + '","version":"2.5.0","fp":"' + f_fp() + '","provisional":false,"side":"' + cSide + '","entry":' + f_num(wasEntry) + ',"stop":' + f_num(wasStop) + ',"target":' + f_num(wasTp) + ',"level":' + cLvlJson + ',"timestamp":"' + f_ts() + '"}'
+        f_send(cancelMsg)
 
-if array.size(htfLn) > 0
-    for i = array.size(htfLn) - 1 to 0
-        line.delete(array.get(htfLn, i))
-        array.remove(htfLn, i)
-if array.size(htfLb) > 0
-    for i = array.size(htfLb) - 1 to 0
-        label.delete(array.get(htfLb, i))
-        array.remove(htfLb, i)
-if showHtfIn and showDrawingsIn and array.size(zonePx) > 0
-    for i = 0 to array.size(zonePx) - 1
-        float y = array.get(zonePx, i)
-        int zLeft = math.max(0, bar_index - 30)
-        array.push(htfLn, line.new(zLeft, y, bar_index, y, color = color.new(#7F8AA3, 75), style = line.style_dotted, width = 1))
-        array.push(htfLb, label.new(zLeft, y, array.get(zoneName, i), style = label.style_none, color = color.new(#7F8AA3, 100), textcolor = color.new(#7F8AA3, 40), size = size.tiny))
+    if array.size(plans) > 0
+        for i = 0 to array.size(plans) - 1
+            staxPlan p = array.get(plans, i)
+            p := f_draw(p)
+            array.set(plans, i, p)
 
-int cold = 0
-if array.size(plans) > 0
-    for i = array.size(plans) - 1 to 0
-        staxPlan p = array.get(plans, i)
-        if not f_active(p.state)
-            cold += 1
-            int keepN = resolvedIn == "Review" ? 5 : 3
-            if cold > keepN
-                f_erase(p)
-                array.remove(plans, i)
+    if array.size(htfLn) > 0
+        for i = array.size(htfLn) - 1 to 0
+            line.delete(array.get(htfLn, i))
+            array.remove(htfLn, i)
+    if array.size(htfLb) > 0
+        for i = array.size(htfLb) - 1 to 0
+            label.delete(array.get(htfLb, i))
+            array.remove(htfLb, i)
+    if showHtfIn and showDrawingsIn and array.size(zonePx) > 0
+        for i = 0 to array.size(zonePx) - 1
+            float y = array.get(zonePx, i)
+            int zLeft = math.max(0, bar_index - 30)
+            array.push(htfLn, line.new(zLeft, y, bar_index, y, color = color.new(#7F8AA3, 75), style = line.style_dotted, width = 1))
+            array.push(htfLb, label.new(zLeft, y, array.get(zoneName, i), style = label.style_none, color = color.new(#7F8AA3, 100), textcolor = color.new(#7F8AA3, 40), size = size.tiny))
+
+    int cold = 0
+    if array.size(plans) > 0
+        for i = array.size(plans) - 1 to 0
+            staxPlan p = array.get(plans, i)
+            if not f_active(p.state)
+                cold += 1
+                int keepN = resolvedIn == "Review" ? 5 : 3
+                if cold > keepN
+                    f_erase(p)
+                    array.remove(plans, i)
 
 f_focus() =>
     int idx = -1
@@ -1252,23 +1513,53 @@ f_focus() =>
                     idx := i
     idx
 f_move_line() =>
-    int id = -1
+    string s = ""
+    int idx = -1
     if array.size(plans) > 0
         for i = 0 to array.size(plans) - 1
             staxPlan p = array.get(plans, i)
-            if f_active(p.state)
-                id := math.max(id, p.moveId)
+            if idx == -1 and p.state == "TRIGGERED"
+                idx := i
+        if idx == -1
+            for i = 0 to array.size(plans) - 1
+                staxPlan p = array.get(plans, i)
+                if idx == -1 and p.state == "LIVE"
+                    idx := i
+    if idx >= 0
+        staxPlan live = array.get(plans, idx)
+        s := "Move " + str.tostring(live.moveId) + ": " + f_kind(live.origin) + " plan " + f_num(live.entry)
+    else
+        int id = -1
+        if array.size(plans) > 0
+            for i = 0 to array.size(plans) - 1
+                staxPlan p = array.get(plans, i)
+                if f_active(p.state)
+                    id := math.max(id, p.moveId)
+        if id >= 0
+            s := "Move " + str.tostring(id) + ":"
+            int n = 0
+            for i = 0 to array.size(plans) - 1
+                staxPlan p = array.get(plans, i)
+                if p.moveId == id and f_active(p.state)
+                    n += 1
+                    s := s + (n > 1 ? " and " : " ") + f_kind(p.origin) + " plan " + f_num(p.entry)
+    s
+f_also_armed() =>
     string s = ""
-    if id >= 0
-        s := "Move " + str.tostring(id) + ":"
-        int n = 0
+    bool live = false
+    if array.size(plans) > 0
         for i = 0 to array.size(plans) - 1
             staxPlan p = array.get(plans, i)
-            if p.moveId == id and f_active(p.state)
-                n += 1
-                string kind = p.origin == "gap" ? "gap" : "shelf"
-                s := s + (n > 1 ? " and " : " ") + kind + " plan " + f_num(p.entry)
-    s
+            if p.state == "LIVE" or p.state == "TRIGGERED"
+                live := true
+        if live
+            for i = 0 to array.size(plans) - 1
+                staxPlan p = array.get(plans, i)
+                if p.state == "ARMED"
+                    string side = p.dir == 1 ? "long" : "short"
+                    string bit = side + " " + f_num(p.entry) + " (" + f_kind(p.origin) + ")"
+                    s := s == "" ? bit : s + ", " + bit
+    s == "" ? "" : "Also armed: " + s
 
 f_resolved_line() =>
     string s = ""
@@ -1284,16 +1575,20 @@ staxPlan view = have ? array.get(plans, focus) : staxPlan.new()
 string resolvedLine = f_resolved_line()
 bool hudStale = have and view.fp != f_fp()
 string moveLine = f_move_line()
-string noteBody = hudStale ? "INPUTS CHANGED. Recreate the alert." : eng.hudReject != "" ? eng.hudReject : not targetsOk ? "Enable TP1, TP2, or TP3." : inPause ? "Pause. No new plans and no fills." : moveLine != "" ? moveLine : "Waiting for the retest."
-string note = enableCIn ? "Scenario C is not built. " + noteBody : noteBody
-string stateWord = have and view.state == "TRIGGERED" ? "TRIGGERED" : have and view.state == "LIVE" ? "LIVE" : have and view.state == "ARMED" ? "ARMED" : resolvedLine != "" ? resolvedLine : inPause ? "PAUSE" : "WATCH"
+string alsoLine = f_also_armed()
+string shownMove = alsoLine == "" ? moveLine : moveLine == "" ? alsoLine : moveLine + " | " + alsoLine
+string noteBody = hudStale ? "INPUTS CHANGED. Recreate the alert." : eng.hudReject != "" ? eng.hudReject : not targetsOk ? "Enable TP1, TP2, or TP3." : inPause ? "Pause. No new plans and no fills." : formingNow ? "BREAK FORMING" : shownMove != "" ? shownMove : watchOn ? "RANGE WATCH" + (watchZone == "" ? "" : " " + watchZone) : "Waiting for the retest."
+string note = noteBody
+string baseWord = have and view.state == "TRIGGERED" ? "TRIGGERED" : have and view.state == "LIVE" ? "LIVE" : have and view.state == "ARMED" ? "ARMED" : resolvedLine != "" ? resolvedLine : watchOn ? "RANGE WATCH" : inPause ? "PAUSE" : "WATCH"
+bool liveOwn = have and (view.state == "LIVE" or view.state == "TRIGGERED")
+string stateWord = formingNow and not liveOwn ? "BREAK FORMING" : baseWord
 string sideWord = have ? (view.dir == 1 ? "LONG" : "SHORT") : ""
 string stateTxt = have ? stateWord + "  ·  " + sideWord : stateWord
 float openR = have and view.refRisk > 0 ? view.dir * (close - view.entry) / view.refRisk : 0.0
 float stopR = have and view.refRisk > 0 ? view.dir * (view.liveStop - view.entry) / view.refRisk : 0.0
 string extTag = have and view.extended ? " extended" : ""
 string lvlTag = have and view.level != "" ? " " + view.level : ""
-string gradeTxt = have and (view.state == "LIVE" or view.state == "TRIGGERED") ? view.grade + extTag + lvlTag + "   " + f_signed(openR) : have ? "Grade " + view.grade + extTag + lvlTag : str.tostring(tradesToday) + " / " + str.tostring(pMaxTrades)
+string gradeTxt = have and (view.state == "LIVE" or view.state == "TRIGGERED") ? view.grade + extTag + lvlTag + "   " + f_signed(openR) + (view.liveStop != view.stop ? "  Locked " + f_signed(stopR) : "") : have ? "Grade " + view.grade + extTag + lvlTag : str.tostring(tradesToday) + " / " + str.tostring(pMaxTrades)
 string foot = hudStale ? "INPUTS CHANGED" : have ? str.tostring(view.rUnit, "0.#") + "R · " + view.preset + " · " + (trailOn ? "Trail" : beOn ? "BE" : "BE off") + " · " + sessShort + "  ·  " + pDir : str.tostring(pTp, "0.#") + "R  ·  " + pSl + "  ·  " + sessShort + "  ·  " + pDir
 string tpName = have ? (view.on1 and not view.hit1 ? "TP1" : view.on2 and not view.hit2 ? "TP2" : view.on3 and not view.hit3 ? "TP3" : "TP") : "Trades"
 float tpShow = have ? (view.on1 and not view.hit1 ? view.tp1 : view.on2 and not view.hit2 ? view.tp2 : view.on3 and not view.hit3 ? view.tp3 : f_near(view)) : na
@@ -1357,9 +1652,9 @@ if showTableIn and not na(infoTbl)
         f_cell(infoTbl, 0, p + 2, tpName, have ? liveGreen : muted, keyBg, "l")
         f_cell(infoTbl, 1, p + 2, have ? f_num(tpShow) : str.tostring(tradesToday) + " / " + str.tostring(pMaxTrades), ink, rowBg, "r")
         f_cell(infoTbl, 2, p + 2, have ? str.tostring(view.rUnit, "0.#") + "R" : "", muted, rowBg, "r")
-        f_cell(infoTbl, 0, p + 3, hudStale ? "INPUTS CHANGED" : "STOP", hudStale ? color.new(#e6b35a, 0) : color.new(#FF5C6C, 0), keyBg, "l")
-        f_cell(infoTbl, 1, p + 3, have ? f_num(view.liveStop) : pSl, have ? color.new(#FF5C6C, 0) : ink, rowBg, "r")
-        f_cell(infoTbl, 2, p + 3, have ? f_signed(stopR) : "", muted, rowBg, "r")
+        f_cell(infoTbl, 0, p + 3, hudStale ? "INPUTS CHANGED" : have and view.liveStop != view.stop ? "STOP (trail)" : "STOP", hudStale ? color.new(#e6b35a, 0) : have and view.liveStop != view.stop ? color.new(#9AA3B5, 0) : color.new(#FF5C6C, 0), keyBg, "l")
+        f_cell(infoTbl, 1, p + 3, have ? f_num(view.liveStop) : pSl, have and view.liveStop != view.stop ? color.new(#9AA3B5, 0) : have ? color.new(#FF5C6C, 0) : ink, rowBg, "r")
+        f_cell(infoTbl, 2, p + 3, have and view.liveStop != view.stop ? "Locked " + f_signed(stopR) : have ? f_signed(stopR) : "", muted, rowBg, "r")
     else
         f_cell(infoTbl, 0, p, "STAXBOT 2.5.0", ink, headBg, "l")
         f_cell(infoTbl, 1, p, stateWord, stateInk, headBg, "r")
@@ -1385,8 +1680,8 @@ if showTableIn and not na(infoTbl)
                 array.push(hudVal, f_num(view.tp1))
             array.push(hudLab, "ENTRY")
             array.push(hudVal, f_num(view.entry))
-            array.push(hudLab, "STOP")
-            array.push(hudVal, f_num(view.liveStop))
+            array.push(hudLab, view.liveStop != view.stop ? "STOP (trail)" : "STOP")
+            array.push(hudVal, f_num(view.liveStop) + (view.liveStop != view.stop ? "  Locked " + f_signed(stopR) : ""))
         else
             array.push(hudLab, "Trades")
             array.push(hudVal, str.tostring(tradesToday) + " / " + str.tostring(pMaxTrades))
@@ -1405,9 +1700,9 @@ pS = plot(emaSlow, "EMA Slow", color = color.new(cloudColorIn, 35), linewidth = 
 fill(pF, pS, color = color.new(cloudColorIn, 85), title = "EMA Cloud")
 bgcolor(showSessBgIn and ((sessionFilterOn and inSession) or inPause) ? color.new(inPause ? #e6b35a : cloudColorIn, 92) : na, title = "Session")
 
-if array.size(outbox) == 1
+if barstate.isconfirmed and array.size(outbox) == 1
     alert(array.get(outbox, 0), alert.freq_once_per_bar_close)
-else if array.size(outbox) > 1
+else if barstate.isconfirmed and array.size(outbox) > 1
     string joined = ""
     for i = 0 to array.size(outbox) - 1
         joined := joined + (i == 0 ? "" : ",") + array.get(outbox, i)
