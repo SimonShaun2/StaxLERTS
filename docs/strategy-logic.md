@@ -1,8 +1,8 @@
-# Strategy logic, StaxBot 2.4.1
+# Strategy logic, StaxBot 2.4.2
 
-`staxbot_2_4_1.pine` runs once per bar, on the bar's close. It does not call `strategy.entry` or `strategy.exit`. The drawing is the plan. Alerts are `alert()` calls.
+`staxbot_2_4_2.pine` runs once per bar, on the bar's close. It does not call `strategy.entry` or `strategy.exit`. The drawing is the plan. Alerts are `alert()` calls.
 
-`staxbot_2_1.pine` is the untouched base this version was built from. Load **StaxBot 2.4.1**, saved as a new script. The legend reads **Stax 2.4.1**. The HUD reads **STAXBOT 2.4.1**.
+`staxbot_2_1.pine` is the untouched base this version was built from. Load **StaxBot 2.4.2**, saved as a new script. The legend reads **Stax 2.4.2**. The HUD reads **STAXBOT 2.4.2**.
 
 ## 1. Settings
 
@@ -26,16 +26,18 @@ The leg extreme is the lowest low, or the highest high, from that swing to the b
 
 ## 3. One displaced close
 
-`Displaced Close` is the only definition, used for the break, a later re-arm, and grade flag 1.
+`Displaced Close` is the only definition of the bar that arms a plan inside the break window.
 
 - `Body >= ATR x` (default 1.0): the candle body is at least that multiple of ATR(14).
 - `Close beyond zone by zone width`: the close is past the broken swing by at least the swing-range height.
 
-A level can arm again after its plan has resolved, when a new displaced close goes through it from the other side.
+Grade flag 1 is separate. It is a strong displacement: the arming bar's body is at least `Strong Displacement` times ATR (default 1.5). A displaced close smaller than that can still arm, so flag 1 can be false.
+
+A level can arm again after its plan has resolved, when a new close goes through it from the other side and a displaced close follows inside the window.
 
 ## 4. Shelf plan (B)
 
-A displaced close through the latest swing, the first such close of this departure, opens a new move.
+A close through the latest swing opens a break window of `Break Window` bars (default 3), including the crossing bar. A displaced close that is still beyond that shelf inside the window opens a new move, even when the crossing bar itself was not displaced.
 
 Older armed plans in that same direction, from an older move, become `REPLACED`.
 
@@ -59,19 +61,19 @@ Several plans can be armed, in both directions. `Live Positions At Once` default
 
 On a bar where more than one armed plan could fill, the script fills the entry closest to the open in the direction the bar traded. A down bar takes the higher entry first. An up bar takes the lower entry first. The other armed plan from that same move is `CANCELLED`.
 
-The daily count increases only when a plan becomes `TRIGGERED`. Plans can still arm after the daily cap. They cannot fill until the next day.
+The daily count increases only when a plan becomes `TRIGGERED`. Plans can still arm after the daily cap. They cannot fill until the count resets. The count resets when a bar opens at or after 5:00 PM America/Chicago, which is the futures session open. It does not reset at midnight New York.
 
 ## 7. Fill order
 
 On an armed plan, starting the bar after it was created:
 
-1. A close back through the shelf sets `INVALIDATED`, scenario E, reason `reclaim close`. No fill.
-2. A bar that trades both the entry and the stop does not fill.
-3. A fill requires the bar to trade the entry (`low <= entry <= high`) and the close to stay on the trade side of the shelf. The state is `TRIGGERED` on that bar and `LIVE` from the next bar. Exit checks start on the next bar.
+1. A close beyond the shelf by at least `Reclaim Tolerance` (default 2 ticks) sets `INVALIDATED`. The scenario stays A or B. The reason is `reclaim close`. No fill.
+2. A bar that trades both the entry and the stop (`low <= price <= high` on each) does not fill.
+3. A fill requires the bar to trade the entry (`low <= entry <= high`) and the close to stay within the reclaim tolerance of the shelf. The state is `TRIGGERED` on that bar and `LIVE` from the next bar. Exit checks start on the next bar.
 
 The 3:00–5:00 PM Chicago pause, while enabled, blocks step 3 and blocks new plans. The window and the timezone are inputs.
 
-If price trades the nearest target and does not trade the entry, the plan becomes `EXPIRED`, scenario D, reason `ran without retest`. The alert is `plan_cancel`. There is no entry alert and the count does not move.
+If price is at or beyond the nearest enabled target, and the entry has not traded, the plan becomes `EXPIRED`, scenario D, reason `ran without retest`. A short target is hit when `low <= target`. A long target is hit when `high >= target`. The alert is `plan_cancel`. There is no entry alert and the count does not move.
 
 A plan also expires after `Plan Expires After N Bars`, or when a filtered session ends.
 
@@ -87,13 +89,15 @@ A stop that passes that order but breaks the min or max stop distance is not arm
 
 Stop, then targets, then the reclaim exit, then breakeven or trail. Trail steps use reference R, so 1R is the TP1 distance. The stop never moves backward.
 
-`Reclaim Exit On Live Trades` defaults to on. A live close back through the shelf exits at that close. Off leaves that rule for the pre-fill check only.
+Stops and targets are one-sided. A short stop is hit when `high >= live stop`, and a short target when `low <= target`. A long is the mirror. The entry fill and the entry-and-stop same-bar check still require the price to trade inside the bar.
+
+`Reclaim Exit On Live Trades` defaults to on. A live close beyond the shelf by at least the reclaim tolerance exits at that close. Off leaves that rule for the pre-fill check only.
 
 ## 10. Grade
 
 | Flag | Meaning |
 | --- | --- |
-| 1 | The move's displaced close |
+| 1 | Strong displacement on the arming bar (body >= 1.5× ATR by default) |
 | 2 | EMA bias agrees with the plan |
 | 3 | Volume is above its average |
 | 4 | London 03:00–06:00 or New York 08:20–11:30 in the chart timezone |
@@ -115,7 +119,9 @@ Scenario C is an input and it is not built. Turning it on does not arm a sweep-a
 
 ## 12. Alert payload
 
-Every `alert()` JSON includes `plan_id`, `move_id`, `scenario`, `state`, `entry`, `stop`, `stop_preset`, `targets`, `grade`, and `timeframe`, plus the existing `event`, `setupId`, `side`, `ticker`, and `root` fields.
+Every alert JSON object includes `plan_id`, `move_id`, `scenario`, `state`, `entry`, `stop`, `stop_preset`, `targets`, `grade`, and `timeframe`, plus the existing `event`, `setupId`, `side`, `ticker`, and `root` fields.
+
+`alert.freq_once_per_bar_close` does not promise that every `alert()` call on that bar is delivered. The script therefore makes one `alert()` call per bar. One event sends that JSON object. Two or more events on the same bar send one JSON array of those objects.
 
 | Event | When |
 | --- | --- |

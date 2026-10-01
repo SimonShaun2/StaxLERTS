@@ -9,3 +9,4 @@
 - `docs/strategy-logic.md` and the README now describe StaxBot 2.4.0.
 - 2.4.1. `planSeq` and `hudReject` are fields on `Engine`. Functions update those fields instead of the globals. `moveSeq` and `moveIdNow` stay globals because only the main script writes them.
 - 2.4.1 is its own file, `staxbot_2_4_1.pine`. `staxbot_2_4_0.pine` is the 2.4.0 script again.
+- 2.4.2 in `staxbot_2_4_2.pine`. Exits and scenario D use one-sided tests. A close through the shelf opens a break window; a displaced close inside it arms. Grade flag 1 is strong displacement. Reclaim needs the tolerance. The daily count resets at 5:00 PM America/Chicago. An invalidated plan keeps scenario A or B. One `alert()` call per bar, and a JSON array when that bar has more than one event.

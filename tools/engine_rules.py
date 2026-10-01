@@ -1,6 +1,6 @@
-"""Decision rules for StaxBot 2.4.0.
+"""Decision rules for StaxBot 2.4.2.
 
-The Pine script staxbot_2_4_1.pine follows these rules. This file is the check
+The Pine script staxbot_2_4_2.pine follows these rules. This file is the check
 that can run here. It does not read market data and it does not place trades.
 """
 
@@ -58,6 +58,27 @@ def displaced(mode: str, body: float, atr: float, body_mult: float, beyond: floa
     return body >= body_mult * atr
 
 
+def strong_displacement(body: float, atr: float, mult: float = 1.5) -> bool:
+    return body >= mult * atr
+
+
+def break_arms(bars_since_cross: int, window: int, close: float, shelf: float, direction: int, displaced_bar: bool) -> bool:
+    beyond = close > shelf if direction == 1 else close < shelf
+    return 0 <= bars_since_cross < window and beyond and displaced_bar
+
+
+def stop_hit(direction: int, low: float, high: float, px: float) -> bool:
+    return low <= px if direction == 1 else high >= px
+
+
+def target_hit(direction: int, low: float, high: float, px: float) -> bool:
+    return high >= px if direction == 1 else low <= px
+
+
+def session_count_reset(open_min_ct: int, prev_open_min_ct: int | None) -> bool:
+    return open_min_ct >= 17 * 60 and (prev_open_min_ct is None or prev_open_min_ct < 17 * 60)
+
+
 @dataclass
 class Plan:
     plan_id: int
@@ -113,26 +134,25 @@ def _trades(price: float, low: float, high: float) -> bool:
     return low <= price <= high
 
 
-def _wrong(direction: int, close: float, shelf: float) -> bool:
-    return close < shelf if direction == 1 else close > shelf
+def _wrong(direction: int, close: float, shelf: float, tol: float = 0.0) -> bool:
+    return shelf - close >= tol if direction == 1 else close - shelf >= tol
 
 
-def step_plan(plan: Plan, low: float, high: float, close: float, pause: bool, live_room: bool, expired: bool) -> str:
+def step_plan(plan: Plan, low: float, high: float, close: float, pause: bool, live_room: bool, expired: bool, tol: float = 0.0) -> str:
     """Return the event produced this bar. Empty string means the plan stayed armed."""
     if plan.state != "ARMED":
         return ""
-    if _wrong(plan.direction, close, plan.shelf):
+    if _wrong(plan.direction, close, plan.shelf, tol):
         plan.state = "INVALIDATED"
-        plan.scenario = "E"
         plan.alerts.append("plan_cancel")
         return "invalidated"
     if _trades(plan.entry, low, high) and _trades(plan.stop, low, high):
         return "ambiguous"
-    if not pause and live_room and _trades(plan.entry, low, high) and not _wrong(plan.direction, close, plan.shelf):
+    if not pause and live_room and _trades(plan.entry, low, high) and not _wrong(plan.direction, close, plan.shelf, tol):
         plan.state = "TRIGGERED"
         plan.alerts.append("entry")
         return "fill"
-    if _trades(plan.tp1, low, high) and not _trades(plan.entry, low, high):
+    if target_hit(plan.direction, low, high, plan.tp1) and not _trades(plan.entry, low, high):
         plan.state = "EXPIRED"
         plan.scenario = "D"
         plan.alerts.append("plan_cancel")
@@ -198,6 +218,10 @@ def test_ran_through_target_does_not_count() -> None:
     assert plan.scenario == "D"
     assert "entry" not in plan.alerts
     assert book.fills == 0
+    beyond = arm(book, "shelf", -1, 7764.0, 7780.0, 7764.0, "Medium", 0.25, 8.0, 1, 2, 0.5, 1.0, False, True, False, False, False, "Off")
+    assert beyond is not None
+    # The whole bar is past TP1, so the target is not inside the bar. The one-sided test still expires it.
+    assert step_plan(beyond, low=beyond.tp1 - 5, high=beyond.tp1 - 1, close=beyond.tp1 - 2, pause=False, live_room=True, expired=False) == "ran"
 
 
 def test_fill_order_and_sibling_cancel() -> None:
@@ -208,7 +232,7 @@ def test_fill_order_and_sibling_cancel() -> None:
     assert shelf is not None and gap is not None
     # Reclaim of the shelf invalidates before any fill.
     assert step_plan(shelf, low=7740, high=7760, close=7752, pause=False, live_room=True, expired=False) == "invalidated"
-    assert shelf.scenario == "E" and "entry" not in shelf.alerts
+    assert shelf.scenario == "B" and "entry" not in shelf.alerts
     # A bar through the gap entry and the stop does not fill.
     assert step_plan(gap, low=min(gap.entry, gap.stop) - 1, high=max(gap.entry, gap.stop) + 1, close=shelf.shelf - 1, pause=False, live_room=True, expired=False) == "ambiguous"
     assert gap.state == "ARMED" and book.fills == 0
@@ -238,6 +262,33 @@ def test_displacement_uses_one_definition() -> None:
     assert displaced("Close beyond zone by zone width", body=99, atr=1, body_mult=0, beyond=9, zone_width=10) is False
 
 
+def test_one_sided_exits_and_reclaim_tolerance() -> None:
+    assert stop_hit(-1, 7740, 7764, 7764) is True
+    assert stop_hit(-1, 7740, 7763.75, 7764) is False
+    assert target_hit(-1, 7690, 7695, 7700) is True
+    assert stop_hit(1, 7700, 7760, 7700) is True
+    assert target_hit(1, 7740, 7800, 7800) is True
+    assert _wrong(-1, 7750.25, 7750, 0.5) is False
+    assert _wrong(-1, 7750.5, 7750, 0.5) is True
+    assert _wrong(1, 7749.75, 7750, 0.5) is False
+    assert _wrong(1, 7749.5, 7750, 0.5) is True
+
+
+def test_break_window_and_strong_flag() -> None:
+    assert break_arms(0, 3, 7748, 7750, -1, False) is False
+    assert break_arms(1, 3, 7748, 7750, -1, True) is True
+    assert break_arms(3, 3, 7748, 7750, -1, True) is False
+    assert displaced("Body >= ATR x", body=5, atr=4, body_mult=1, beyond=0, zone_width=10) is True
+    assert strong_displacement(5, 4, 1.5) is False
+    assert grade(False, True, True, True, True) == "A"
+
+
+def test_count_resets_at_chicago_open() -> None:
+    assert session_count_reset(17 * 60, 16 * 60 + 55) is True
+    assert session_count_reset(0, 23 * 60 + 55) is False
+    assert session_count_reset(18 * 60, 17 * 60) is False
+
+
 def test_grade_fifth_flag_changes_the_letter() -> None:
     assert grade(True, True, True, True, True) == "A+"
     assert grade(True, True, True, True, False) == "A"
@@ -252,5 +303,8 @@ if __name__ == "__main__":
     test_fill_order_and_sibling_cancel()
     test_pause_blocks_the_fill()
     test_displacement_uses_one_definition()
+    test_one_sided_exits_and_reclaim_tolerance()
+    test_break_window_and_strong_flag()
+    test_count_resets_at_chicago_open()
     test_grade_fifth_flag_changes_the_letter()
     print("engine rules ok")
