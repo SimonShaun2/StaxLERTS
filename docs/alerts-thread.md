@@ -51,21 +51,18 @@ The desk is http://127.0.0.1:8791. Do not restart it. A restart clears Sam's URL
 TradingView is the only plan source. The webhook is POST /webhook/trade-signal on the public HTTPS tunnel.
 Do not run python3 bot/watch.py. Do not fetch Yahoo bars. Do not present a Yahoo or Python scan plan.
 
-Each check, read only http://127.0.0.1:8791/api/state. Use the inbox and the current plan. Do not recompute prices.
-Deduplicate by eventId and setupId. A repeated event is not a new alert.
+Each check, read only http://127.0.0.1:8791/api/state. Do not recompute prices.
+StaxBot 2.4.5 Pine source is not in this repo. Do not invent its payload. Do not present a Yahoo plan.
 
-When a new plan webhook is in the inbox, post:
-Watching [market]: [side], [grade], entry [x], stop [x], targets [x (R)...].
-Label it a TradingView/StaxBot plan and say it is awaiting entry.
+SILENCE when nothing changed. No new inbox event and no setup transition means no chat message.
+Do not print desk up, waiting, halt, no new plan, prices, or unchanged still watching.
 
-When a new entry, plan_cancel, stop_update, or exit webhook is in the inbox, post that status with the webhook prices.
-A ping is a connection test, not a trade: say that and do not invent prices.
-If the same setup is still armed, say it is still being watched and repeat the plan's webhook prices.
-If the inbox is empty and no plan is armed during the halt, say the desk is in the halt.
-If both are empty outside the halt, say the desk is waiting. Do not invent a setup.
+When a new transition is stored, post one message and omit missing values:
+- Plan: The paper desk is watching [market]. A [grade] [side] is armed: entry [entry], stop [stop], [targets with R]. Waiting for the retest.
+- Entry, rejection, cancellation, stop move, target, or final exit: the matching status, using webhook prices only.
 
 Do not call /api/release. Do not POST a body to Sam. Do not paper-fill. Do not send a sample webhook.
-Keep this check every 5 minutes, including the Central halt.
+Keep this check every 5 minutes, including the Central halt, and stay silent while it is idle.
 
 Read docs/alerts-thread.md before you change anything.
 ```
@@ -77,7 +74,7 @@ The desk is already running with Sam’s URL and sender key in memory. Do not pu
 ```
 Pull the latest main. Do not change Pine. Do not send a webhook and do not release anything to Sam.
 
-Each check, read only http://127.0.0.1:8791/api/state. Do not run python3 bot/watch.py. Do not fetch Yahoo bars. Present a plan only from a TradingView webhook in the inbox: Watching [market]: [side], [grade], entry [x], stop [x], targets [x (R)...]. It is a TradingView/StaxBot plan awaiting entry. On entry, cancellation, stop update, or exit, post that status with the webhook prices. If the same setup is still armed, say it is still being watched and use the plan prices already on the desk. Deduplicate by eventId and setupId. Do not invent prices. Do not paper-fill, do not POST a scan or a sample webhook, and do not call /api/release. Do not restart the desk.
+Each check, read only http://127.0.0.1:8791/api/state. Do not run python3 bot/watch.py. Do not fetch Yahoo bars. Stay silent when the inbox has no new event and the setup has not changed. Do not print waiting, desk up, or unchanged prices. Speak only for a new plan, entry, rejection, cancellation, stop move, target, or final exit, using the webhook prices. Do not invent a 2.4.5 payload. Do not paper-fill, do not POST a scan or a sample webhook, and do not call /api/release. Do not restart the desk.
 
 The halt is 3:00 PM to 5:00 PM Central. During the halt, keep the check. Then Globex, Asia, London, and NY. Arm the next check either way.
 ```

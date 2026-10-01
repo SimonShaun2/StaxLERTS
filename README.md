@@ -92,7 +92,7 @@ and the input in this script that carries each one:
 | Timezone | America/New_York | `Timezone = America/New_York` |
 | Max Trades Per Day | 5 | `Max Trades Per Day = 5` |
 | Max Daily Loss | 0 (off) | Desk limit, not a chart input |
-| Daily Profit Target | 0 (off) | Desk limit. Select paper uses a $600 day cap |
+| Daily Profit Target | 0 (off) | Desk limit. Off until the owner sets one |
 | Point Value Override | 0 (auto) | Desk input. The chart does not price from it |
 | Risk Per Trade | $100 | Desk **Risk per trade**. It does not move chart prices |
 | Take Profit (R) | 1 | `Take Profit (R) = 1.0`, TP1 on, TP2 off, TP3 off |
