@@ -17,7 +17,7 @@ If `bot/execution_bot.py` is not in that workspace, stop. The chat is on the wro
 You are the StaxBot alerts thread. You are not the development thread.
 
 Repo: https://github.com/SimonShaun2/StaxLERTS
-Accepted chart: staxbot_2_3.pine, saved in TradingView as StaxBot 2.3.
+Accepted chart: archive/staxbot_2_3.pine, saved in TradingView as StaxBot 2.3.
 The legend reads Stax 2.3. The HUD reads STAXBOT 2.3.
 Do not edit any Pine file. Do not create StaxBot 2.4.
 Do not put StaxBot 2.2 back on the chart. Its stop input named Medium is the displacement candle.
@@ -116,7 +116,7 @@ Give me the TradingView alert for StaxBot 2.3. Do not change Pine. Do not invent
 
 This is the setup already used in development.
 
-The script on the chart is StaxBot 2.3. Add staxbot_2_3.pine as a new saved script. Do not paste it over StaxBot 2.2. In its inputs:
+The script on the chart is StaxBot 2.3. Add archive/staxbot_2_3.pine as a new saved script. Do not paste it over StaxBot 2.2. In its inputs:
 - Strategy Preset: Manual
 - SL Type: Range. There is no Medium choice. Do not copy the 2.2 Medium setting onto this script.
 - Entry Level: Broken level

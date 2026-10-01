@@ -1,155 +1,136 @@
-# Strategy logic, bar by bar
+# Strategy logic, StaxBot 2.4.4
 
-Everything below runs once per bar, on the bar's close, in the order listed. This mirrors the
-original bot's v1.9 change to "run once per bar on closed data" so that the chart copy and
-TradingView's alert-server copy agree.
+`staxbot_2_4_4.pine` runs once per bar, on the bar's close. It does not call `strategy.entry` or `strategy.exit`. The drawing is the plan. Alerts are `alert()` calls.
 
-## 0. Settings resolution
+`staxbot_2_1.pine` is the untouched base this version was built from. Load **StaxBot 2.4.4**, saved as a new script. The legend reads **Stax 2.4.4**. The HUD reads **STAXBOT 2.4.4**.
 
-* A **Strategy Preset** other than `Manual` overrides Direction, Session, Breakeven,
-  Trailing Stop and Max Trades Per Day. Take Profit (R) and the Range stop stay on the inputs.
-* If a **Trailing Stop** preset is on, **Breakeven** is ignored — the ladder's first step is
-  breakeven. (The original's rule: "Trail ON? Breakeven OFF.")
-* **Point value and dollar risk** are not chart inputs. The paper desk owns contract size.
-* **Session** presets (times in the `Timezone` input):
+## 1. Settings
 
-  | Preset | Session string |
-  | --- | --- |
-  | 24/5 (No Filter) | none |
-  | NY AM | 09:30–12:00 |
-  | NY PM | 13:00–16:00 |
-  | London | 03:00–06:00 |
-  | Asia | 20:00–00:00 |
-  | Overnight | 18:00–03:00 |
-  | Custom | the `Custom Session` input |
+A strategy preset can change direction, session, which stop buffer is selected, breakeven, trailing stop, and the daily cap.
 
-## 1. Indicators
+It cannot change Take Profit (R), the entry, or the scenario. Take Profit (R) is always the input.
 
-* EMA cloud: `EMA Cloud Fast` (9) and `EMA Cloud Slow` (21). Bias = Bull when
-  `close > fast > slow`, Bear when `close < fast < slow`, otherwise Flat. Bias is shown in
-  the table; it only gates trades when `Only Trade With EMA Bias` is on.
-* ATR(14) for the optional range-height and displacement filters.
-* SMA(volume, `Volume Average Length`) for the volume filter.
+Tight, Medium, and Large all use the same stop anchor: the extreme of the leg that broke the shelf. The preset changes only the buffer.
 
-## 2. Range structure
+- Tight adds its tick buffer.
+- Medium adds its tick buffer. Targets are measured from this distance.
+- Large adds its ATR buffer.
 
-`ta.pivothigh/low(Swing Length, Swing Length)` gives confirmed swings `Swing Length` bars after
-they print. The most recent swing high and swing low are the **range**. Each new swing
-re-arms its side (a broken high can be broken again only after a new swing high forms).
+The HUD shows the reference R of the targets and the actual R of the selected stop. Switching the preset moves the stop and the actual R. It does not move the entry or the targets.
 
-Optional: `Min Range Height (ATR x)` rejects ranges that are too tight.
+## 2. Latest swing
 
-## 3. Break of structure
+`ta.pivothigh` and `ta.pivotlow` confirm a swing `Swing Length` bars after it prints. Every new pivot replaces that side of the range. A later lower high replaces the high. A later higher low replaces the low. The script does not keep an older extreme, and the first close through a level does not spend it.
 
-* Bullish BOS: `close > rangeHigh` and the high side is not yet broken.
-* Bearish BOS: `close < rangeLow` and the low side is not yet broken.
-* Optional displacement filter: `|close - open| >= Min Break Candle Body × ATR`.
+The leg extreme is the lowest low, or the highest high, from that swing to the break, capped by `Leg Lookback`. The price is stored on the plan. Later bars do not move it.
 
-On a break the bot snapshots the shelf and the rally high. Those prices are the plan. A later pivot does not move them.
+## 3. One displaced close
 
-## 4. No fair value gap
+`Displaced Close` is the only definition of the bar that arms a plan inside the break window.
 
-StaxBot 2.3 does not detect a fair value gap and does not draw one. The broken swing is the entry. Grade timing is the age of that swing (`Break Within N Bars Of The Swing`), not the age of a gap. When Minimum Grade is Off, that timing point does not block the plan.
+- `Body >= ATR x` (default 1.0): the candle body is at least that multiple of ATR(14).
+- `Close beyond zone by zone width`: the close is past the broken swing by at least the swing-range height.
 
-## 5. Coach filters (checked before a setup is created)
+Grade flag 1 is separate. It is a strong displacement: the arming bar's body is at least `Strong Displacement` times ATR (default 1.5). A displaced close smaller than that can still arm, so flag 1 can be false.
 
-| Filter | Rule |
+A level can arm again after its plan has resolved, when a new close goes through it from the other side and a displaced close follows inside the window.
+
+## 4. Shelf plan (B)
+
+A close through the latest swing opens a break window of `Break Window` bars (default 3), including the crossing bar. A displaced close that is still beyond that shelf inside the window opens a new move, even when the crossing bar itself was not displaced.
+
+Older armed plans in that same direction, from an older move, become `REPLACED`.
+
+The shelf plan then arms when the session is open, the pause is not active, a target is enabled, the volume filter passes, the direction is allowed, the optional shelf-height filter passes, the grade passes, and the geometry check passes.
+
+- Entry is the broken swing.
+- Stop anchor is the leg extreme.
+- A missing gap does not block this plan.
+
+## 5. Gap plan (A)
+
+A fair-value gap in the move's direction, inside `Gap Window After The Break`, arms a second plan on the same move. The bull gap is `low > high[2]` with a bullish middle bar. The bear gap is `high < low[2]` with a bearish middle bar.
+
+The gap entry is the near edge, the midpoint, or the far edge. The stop anchor is the same leg extreme as the shelf plan. It is not the gap edge.
+
+`Min Gap Height` defaults to off, so a tight gap is not rejected.
+
+## 6. Plans at once
+
+Several plans can be armed, in both directions. `Live Positions At Once` defaults to 1. A live trade blocks new fills. It does not block new plans.
+
+On a bar where more than one armed plan could fill, the script fills the entry closest to the open in the direction the bar traded. A down bar takes the higher entry first. An up bar takes the lower entry first. The other armed plan from that same move is `CANCELLED`.
+
+The daily count increases only when a plan becomes `TRIGGERED`. Plans can still arm after the daily cap. They cannot fill until the count resets. The count resets when a bar opens at or after 5:00 PM America/Chicago, which is the futures session open. It does not reset at midnight New York.
+
+## 7. Fill order
+
+On an armed plan, starting the bar after it was created:
+
+1. A close beyond the shelf by at least `Reclaim Tolerance` (default 2 ticks) sets `INVALIDATED`. The scenario stays A or B. The reason is `reclaim close`. No fill.
+2. A bar that trades both the entry and the stop (`low <= price <= high` on each) does not fill.
+3. A fill requires the bar to trade the entry (`low <= entry <= high`) and the close to stay within the reclaim tolerance of the shelf. The state is `TRIGGERED` on that bar and `LIVE` from the next bar. Exit checks start on the next bar.
+
+The 3:00–5:00 PM Chicago pause, while enabled, blocks step 3 and blocks new plans. The window and the timezone are inputs.
+
+If price is at or beyond the nearest enabled target, and the entry has not traded, the plan becomes `EXPIRED`, scenario D, reason `ran without retest`. A short target is hit when `low <= target`. A long target is hit when `high >= target`. The alert is `plan_cancel`. There is no entry alert and the count does not move.
+
+A plan also expires after `Plan Expires After N Bars`, or when a filtered session ends.
+
+## 8. Geometry
+
+Before a plan arms, a short must satisfy `stop > entry > TP1 > TP2 > TP3`. A long is the mirror. Each target's distance divided by the reference risk must equal its R multiple.
+
+If that fails, the plan is not armed. The Pine log records the plan id, and the HUD reads `PLAN REJECTED: geometry.`
+
+A stop that passes that order but breaks the min or max stop distance is not armed either. The HUD then reads `PLAN REJECTED: stop distance.`
+
+## 9. Live trade
+
+Stop, then targets, then the reclaim exit, then breakeven or trail. Trail steps use reference R, so 1R is the TP1 distance. The stop never moves backward.
+
+Stops and targets are one-sided. A short stop is hit when `high >= live stop`, and a short target when `low <= target`. A long is the mirror. The entry fill and the entry-and-stop same-bar check still require the price to trade inside the bar.
+
+When the bar opens beyond the live stop, the exit price is the open: `max(open, stop)` for a short and `min(open, stop)` for a long. A stop that is only traded inside the bar still exits at the stop. Realized R uses that exit price. A target exit keeps the target price.
+
+`Reclaim Exit On Live Trades` defaults to on. A live close beyond the shelf by at least the reclaim tolerance exits at that close. Off leaves that rule for the pre-fill check only.
+
+## 10. Grade
+
+| Flag | Meaning |
 | --- | --- |
-| Direction | Longs Only / Shorts Only / Both |
-| Session | bar must be inside the session (24/5 = always) |
-| Max Trades Per Day | filled trades today `<` the limit |
-| Minimum Grade | Off, A (A and A+), or A+ only |
-| Enabled targets | at least one of TP1, TP2, TP3 is on |
-| Volume Filter | break-bar volume `>` SMA × 1.0 (Above Average) or × 1.5 (Strong) |
-| EMA bias | optional, see §1 |
-| One at a time | no open position and no resting order |
+| 1 | Strong displacement on the arming bar (body >= 1.5× ATR by default) |
+| 2 | EMA bias agrees with the plan |
+| 3 | Volume is above its average |
+| 4 | London 03:00–06:00 or New York 08:20–11:30 in the chart timezone |
+| 5 | Gap present on scenario A, or swing age within the flag-5 input on scenario B |
 
-## 6. Setup construction
+Five flags is A+. Four flags, including displacement or the session flag, is A. Anything else is B. `Minimum Grade` defaults to off.
 
-| Element | Long | Short |
-| --- | --- | --- |
-| Entry | the broken high (`rangeHigh`), as a resting limit | the broken shelf (`rangeLow`), as a resting limit |
-| Stop | below the shelf, minus the buffer | above the rally high, plus the buffer |
-| TP1 / TP2 / TP3 | entry + n × TP(R) × risk, n = 1, 2, 3, only if that target is on | entry − the same distance |
-| Plan | the bar that closes through the level. HUD says ARMED. Alert is `plan` only | the same |
-| Entry | a later bar that trades the broken level and does not trade the stop. HUD says LIVE | the same |
+The D / 4H / 1H / 15m / 5m cloud is display only unless `Only Trade With EMA Bias` is on. That filter uses the chart timeframe.
 
-A minor pivot high does not replace the rally high, and a minor pivot low does not replace the shelf. A range smaller than Min Range Height (default 2 ATR) does not arm and does not increment the daily trade count. The break bar draws the plan and leaves it there. It does not set the trade live, and it does not send an entry. Take Profit (R) always comes from that input. A preset does not change it, so TP1 stays at that R, TP2 at twice that, and TP3 at three times that.
+## 11. Drawings and HUD
 
-`buffer = SL Buffer (ticks) × mintick`. The setup is skipped if the stop distance is below
-`Min Stop Distance (ticks)` or above `Max Stop Distance (points)`, or if every target toggle
-is off. Weights do not change the prices. A disabled target is omitted from the drawing,
-the HUD, and the alert.
+A shelf plan draws a `RANGE` box. A gap plan draws a `GAP` box. Entry, stop, and enabled targets are lines.
 
-No `strategy.entry` or `strategy.exit` is sent, so TradingView does not add order arrows
-or per-target fill tags, and the Strategy Tester has no orders to report. The lines are the
-plan. The setup id is `ticker + bar time + side`, and the prices plus a `settingsId` are
-frozen when the plan arms. The settings fingerprint also includes swing length, minimum
-range, the break window, the stop buffer, and the stop-distance limits.
+`TRIGGERED` and `LIVE` and `ARMED` stay in color. `EXPIRED`, `INVALIDATED`, `REPLACED`, `CANCELLED`, and `CLOSED` stop extending. They turn grey and keep a state label, or they are removed, from the `Resolved Plans` input.
 
-## 7. While the order rests
+The HUD state is `WATCH`, `ARMED`, `TRIGGERED`, `LIVE`, `PAUSE`, or the resolve reason on the bar it happens. An armed move reads like `Move 3: shelf plan 7750 and gap plan 7758`. Changing an input after a plan exists shows `INPUTS CHANGED`. Recreate the alert.
 
-The plan stays on the chart while price runs to a target without tagging the entry. That is still ARMED, not a fill, and it does not use a daily trade.
+Scenario C is an input and it is not built. Turning it on does not arm a sweep-and-reclaim plan. The HUD says so.
 
-Cancel the resting plan when any of these happen:
+## 12. Alert payload
 
-* `Setup Expires After N Bars` elapsed
-* a bar **closes** beyond the stop
-* a later bar trades both the entry and the stop (the path is unknown, so there is no fill)
-* an opposite break prints
-* the session ended
+Every alert JSON object includes `plan_id`, `move_id`, `scenario`, `state`, `entry`, `stop`, `stop_preset`, `targets`, `grade`, and `timeframe`, plus the existing `event`, `setupId`, `side`, `ticker`, and `root` fields.
 
-A later bar that trades the entry and does not trade the stop fills. That bar sends `entry` and nothing else. Stop and target checks start on the next bar.
+`alert.freq_once_per_bar_close` does not promise that every `alert()` call on that bar is delivered. The script therefore makes one `alert()` call per bar. One event sends that JSON object. Two or more events on the same bar send one JSON array of those objects.
 
-The plan drawing fades when it is cancelled or closed. Dollar loss and dollar profit caps
-are enforced by the paper desk, not by this plan.
-
-## 8. While in a trade
-
-* Filled trades increment the daily counter and draw a `LONG` or `SHORT` mark. The mark is
-  not a strategy order.
-* Favourable excursion in R is measured from the fill price using the bar's high (long) /
-  low (short). The **fill bar itself is skipped** so pre-entry price action never arms
-  breakeven (a bug the original fixed in v1.9).
-* Breakeven: at `beR` the stop moves to entry (+1 tick if `BE +1 Tick Buffer`).
-* Trailing ladder (stop only ever moves in the trade's favour):
-
-  | Preset | BE at | Step 1 | Step 2 | Step 3 |
-  | --- | --- | --- | --- | --- |
-  | Aggressive | 0.75R | 1.0R → +0.25R | 1.25R → +0.5R | 1.5R → +0.75R |
-  | Standard | 1.0R | 1.5R → +0.5R | 2.0R → +1.0R | 2.5R → +1.5R |
-  | Wide | 1.5R | 2.0R → +0.5R | 2.5R → +1.0R | 3.0R → +1.5R |
-
-* Once the stop moves, the stop line and STOP tag move to the new price and turn gray. Entry, stop, and targets stay lines.
-* Those lines start 24 bars before the signal and run through the current bar. They are solid: entry is 2px, stop and the higher targets are 3px. The price tag sits on the current bar and grows left, off the price scale. The HUD uses small type: title and LIVE, bias and session, the side and grade, then only the enabled targets, entry, and stop. Disabled targets do not leave a blank row.
-* Optional `Flatten Open Trade At Session End`.
-
-## 9. On exit
-
-The exit mark carries the result tag:
-
-| Tag | Meaning |
+| Event | When |
 | --- | --- |
-| `TP +xR` | target reached |
-| `SL -xR` | original stop hit |
-| `BE ±0.0R` | moved stop hit near entry |
-| `TRAILED +xR` | moved stop hit in profit |
-| `FLAT` | session-end flatten |
+| `plan` | The plan arms |
+| `entry` | The plan fills |
+| `plan_cancel` | Expired, invalidated, replaced, or a sibling is cancelled. Scenario D uses reason `ran without retest` |
+| `exit` | Stop, target, reclaim, or session flatten, when exit alerts are on |
+| `stop_update` | The live stop moves, when that alert is on |
 
-## 10. Alerts
-
-| Mode | Plan | Entry | Exit | Stop update |
-| --- | --- | --- | --- | --- |
-| Stax Options Webhook | drawn, not sent | `{timestamp, unmodifiedTicker}` — call for longs, put for shorts | not sent | not sent |
-| Generic JSON | `event: "plan"` with entry, stop, enabled targets, weights, R, `settingsId` | `event: "entry"` with the same frozen prices | `event: "exit"` with reason, target id, and realized R | `event: "stop_update"` when enabled |
-
-Delivery is `alert()` at bar close. Create the alert with **alert() function calls only**.
-There is no order-fill message. Changing an input after the alert exists does not change
-that alert; the HUD shows `INPUTS CHANGED` and the already drawn prices stay put.
-`plan_cancel` is sent if the resting plan expires, a bar closes beyond the stop, a bar
-trades both the entry and the stop, structure flips, or the session ends. A run to the
-target without a retest does not cancel it and does not send an entry.
-
-Option contract encoding (Stax mode): `root + YYMMDD + C/P + strike`. Expiration is today +
-`Days To Expiration`, rolled forward off weekends. Strike is `close` rounded up (calls) or down
-(puts) to `Strike Step`, then pushed `Strikes OTM` steps further out.
+The paper desk is a separate project and is not changed by this script. It still stores one plan. A second `plan` alert replaces that slot. A `plan_cancel` clears it only when the setup id matches. The alerts build has to accept a JSON array and process each event in order.
