@@ -34,6 +34,10 @@ The listening process is still the one started before the durable processor.
 If its inbox is empty and the setup has not changed, stay silent.
 Do not print desk up, waiting, halt, session brief, prices, or unchanged still watching.
 
+If state.delivery is "outbox" and inbox has a notice, post that notice text once,
+then POST /api/release with {"identity": "<that notice identity>"}.
+If delivery is absent, do not call /api/release. That process still forwards to Sam.
+
 When a new setup transition is actually present, post one notice in plain sentences:
 - Watching: the market, grade, side, entry, stop, and enabled targets with reference R.
 - Entered, rejected, cancelled, stop move, partial, or final exit: the matching sentence.

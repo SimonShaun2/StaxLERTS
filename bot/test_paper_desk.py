@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from execution_bot import route_post
+from execution_bot import route_get, route_post
 from paper_desk import (
     CONTRACT_STATUS,
     PaperDesk,
@@ -338,13 +338,13 @@ def test_every_cancel_and_exit_reason(tmp_path: Path) -> None:
     desk.close()
 
 
-def _exit(setup: str, reason: str, price: float, target: str = "STOP") -> str:
+def _exit(setup: str, reason: str, price: float, target: str | None = None) -> str:
+    if target is None:
+        target = {"SL": "STOP", "BE": "STOP", "TRAILED": "STOP", "RECLAIM": "RECLAIM", "FLAT": "FLAT"}.get(reason, "TP1")
     body = _event(
         event="exit", eventId=f"{setup}:exit:{reason}", setupId=setup, state="CLOSED",
         reason=reason, targetId=target, price=price,
     )
-    if reason == "TP":
-        body["targetId"] = target
     return json.dumps(body)
 
 
@@ -571,3 +571,87 @@ def test_two_plans_and_http_routes(tmp_path: Path) -> None:
 def test_paper_r_uses_original_risk() -> None:
     assert paper_r(50, 100) == 0.5
     assert paper_r(0, 0) is None
+
+
+def test_final_exit_target_ids_follow_the_pine_contract(tmp_path: Path) -> None:
+    desk = _desk(tmp_path)
+    _arm(desk)
+    desk.ingest(_raw(event="entry", eventId="e", setupId="s", state="TRIGGERED"))
+    wrong = desk.ingest(_exit("s", "FLAT", 100.0, "STOP"))
+    assert wrong["booked"] == 0
+    assert desk.positions()[0]["state"] == "OPEN"
+    assert any(row["status"] == "invalid-event" for row in desk.audits())
+    closed = desk.ingest(_exit("s", "FLAT", 101.0, "FLAT"))
+    assert closed["booked"] == 1
+    assert "session flatten" in closed["notifications"][0]
+    desk.ingest(_raw(event="entry", eventId="e2", setupId="s2", state="TRIGGERED"))
+    reclaim = desk.ingest(_exit("s2", "RECLAIM", 99.0, "RECLAIM"))
+    assert reclaim["booked"] == 1
+    assert "reclaim" in reclaim["notifications"][0]
+    desk.close()
+
+
+def test_sqlite_is_the_dashboard_settings_and_delivery_store(tmp_path: Path) -> None:
+    desk = _desk(tmp_path)
+    state, body = route_get("/api/state", desk)
+    assert state == 200
+    assert body["delivery"] == "outbox"
+    assert body["inbox"] == []
+    assert body["position"] is None
+    assert body["passTarget"] is None
+    assert body["paperReady"] is False
+    assert "forwardUrl" not in body
+    assert "forwardToken" not in body
+    saved, after = route_post("/api/settings", json.dumps({
+        "sizingMode": "fixed",
+        "fixedQty": 1,
+        "watchMarkets": ["MES"],
+        "maxTrades": 4,
+        "riskPerTrade": 250,
+        "forwardUrl": "https://example.invalid/hook",
+        "forwardToken": "secret-token",
+    }).encode(), desk)
+    assert saved == 200
+    assert after["paperReady"] is True
+    assert after["samKeySet"] is True
+    assert after["forwardUrlSet"] is True
+    assert "secret-token" not in json.dumps(after)
+    assert "example.invalid" not in json.dumps(after)
+    route_post("/webhook/trade-signal", _raw(event="plan", eventId="p", setupId="s").encode(), desk)
+    shown = route_get("/api/state", desk)[1]
+    assert shown["plan"]["setupId"] == "s"
+    assert shown["inbox"] and "Waiting for the retest" in shown["inbox"][0]["text"]
+    identity = shown["inbox"][0]["identity"]
+    released = route_post("/api/release", json.dumps({"identity": identity}).encode(), desk)[1]
+    assert released["data"]["released"] == 1
+    assert route_get("/api/state", desk)[1]["inbox"] == []
+    assert desk.ledger_count() == 0
+    flat = route_post("/api/flatten", b"{}", desk)[1]
+    assert flat["success"] is False
+    assert route_post("/api/reset", b"{}", desk)[0] == 410
+    desk.close()
+
+
+def test_legacy_snapshot_does_not_activate_limits_or_rebook(tmp_path: Path) -> None:
+    desk = _desk(tmp_path)
+    result = desk.import_legacy_snapshot({
+        "equity": 25000,
+        "riskPerTrade": 250,
+        "dailyTarget": 600,
+        "forwardUrl": "https://example.invalid/hook",
+        "forwardToken": "secret-token",
+        "position": {"ticker": "MESZ2026", "side": "long", "qty": 1},
+        "inbox": [{"payload": _event(event="plan", eventId="migrated", setupId="migrated")}],
+    })
+    assert result["sizingConfirmed"] is False
+    assert result["startingBalance"] is None
+    assert result["openPositionsNoted"] == 1
+    assert result["ingested"] == 1
+    assert desk.ledger_count() == 0
+    assert desk.positions() == []
+    view = desk.dashboard()
+    assert view["paperReady"] is False
+    assert view["samKeySet"] is True
+    assert "secret-token" not in json.dumps(view)
+    assert any("Waiting for the retest" in item["text"] for item in view["inbox"])
+    desk.close()

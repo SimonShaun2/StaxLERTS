@@ -46,6 +46,14 @@ SUPPORTED_ROOTS = tuple(POINT_VALUES)
 KNOWN_EVENTS = {"plan", "entry", "exit", "plan_cancel", "stop_update"}
 EXIT_REASONS = {"TP", "SL", "BE", "TRAILED", "RECLAIM", "FLAT"}
 FINAL_EXITS = {"SL", "BE", "TRAILED", "RECLAIM", "FLAT"}
+# Inspected 2.4.5: f_close_trade uses these targetIds. TP exits use TP1, TP2, or TP3.
+EXIT_TARGET_IDS = {
+    "SL": "STOP",
+    "BE": "STOP",
+    "TRAILED": "STOP",
+    "RECLAIM": "RECLAIM",
+    "FLAT": "FLAT",
+}
 CANCEL_REASONS = {
     "replaced",
     "reclaim close",
@@ -249,10 +257,12 @@ def _adapt(item: dict[str, Any]) -> tuple[dict[str, Any] | None, str, str]:
     if event == "exit":
         if reason not in EXIT_REASONS:
             return None, "unknown-event", f"Unsupported exit reason {reason!r}"
-        if reason == "TP" and target_id not in TARGET_ORDER:
-            return None, "unknown-event", f"Unsupported target {target_id!r}"
-        if reason in FINAL_EXITS and target_id not in {"STOP", ""} | set(TARGET_ORDER):
-            return None, "unknown-event", f"Unsupported exit target {target_id!r}"
+        if reason == "TP":
+            if target_id not in TARGET_ORDER:
+                return None, "unknown-event", f"Unsupported target {target_id!r}"
+        elif reason in FINAL_EXITS and target_id != EXIT_TARGET_IDS[reason]:
+            expected = EXIT_TARGET_IDS[reason]
+            return None, "invalid-event", f"{reason} exit targetId must be {expected}"
     if event == "plan_cancel":
         if reason not in CANCEL_REASONS:
             return None, "unknown-event", f"Unsupported cancel reason {reason!r}"
@@ -495,6 +505,10 @@ class PaperDesk:
                 attempts INTEGER NOT NULL,
                 next_attempt TEXT
             );
+            CREATE TABLE IF NOT EXISTS credentials (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             """
         )
         row = self.db.execute("SELECT id FROM settings WHERE id = 1").fetchone()
@@ -617,6 +631,272 @@ class PaperDesk:
             "reconciliation": flagged,
             "lastAudit": None if last is None else {"at": last["received_at"], "status": last["status"]},
         }
+
+    def apply_dashboard_settings(self, body: dict[str, Any]) -> None:
+        """Persist owner settings in SQLite. Sizing stays unconfirmed until sizingMode is sent."""
+        current = self.settings()
+        allowed = list(current["allowed_roots"])
+        if "watchMarkets" in body:
+            raw = body["watchMarkets"]
+            if isinstance(raw, str):
+                names = [part.strip().upper() for part in raw.replace(";", ",").split(",") if part.strip()]
+            else:
+                names = [str(part).strip().upper() for part in raw]
+            chosen = [name for name in SUPPORTED_ROOTS if name in names]
+            if chosen:
+                allowed = chosen
+        max_trades = current["max_trades"]
+        if "maxTrades" in body and body["maxTrades"] not in (None, ""):
+            max_trades = max(1, int(body["maxTrades"]))
+        max_daily_loss = current["max_daily_loss"] if current["max_daily_loss"] is not None else 0.0
+        if "maxDailyLoss" in body and body["maxDailyLoss"] not in (None, ""):
+            max_daily_loss = max(0.0, float(body["maxDailyLoss"]))
+        daily_target = current["daily_target"] if current["daily_target"] is not None else 0.0
+        if "dailyTarget" in body and body["dailyTarget"] not in (None, ""):
+            daily_target = max(0.0, float(body["dailyTarget"]))
+        risk = current["risk_per_trade"]
+        if "riskPerTrade" in body and body["riskPerTrade"] not in (None, ""):
+            risk = max(0.0, float(body["riskPerTrade"]))
+        fixed_qty = current["fixed_qty"]
+        if "fixedQty" in body and body["fixedQty"] not in (None, ""):
+            fixed_qty = max(0, int(body["fixedQty"]))
+        kill = current["kill_switch"]
+        if "killed" in body:
+            kill = bool(body["killed"])
+        mode = body.get("sizingMode")
+        confirmed = 1 if current["confirmed"] else 0
+        sizing_mode = current["sizing_mode"]
+        if mode in {"fixed", "risk"}:
+            if mode == "fixed" and (not fixed_qty or int(fixed_qty) < 1):
+                raise ValueError("Fixed quantity is not confirmed")
+            if mode == "risk" and (risk is None or float(risk) <= 0):
+                raise ValueError("Dollar risk per trade is not confirmed")
+            sizing_mode = mode
+            confirmed = 1
+        if "pointOverride" in body and body["pointOverride"] not in (None, ""):
+            self.db.execute(
+                "INSERT INTO meta (key, value) VALUES ('point_override', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (str(max(0.0, float(body["pointOverride"]))),),
+            )
+        if "forwardUrl" in body:
+            self._credential("forward_url", str(body.get("forwardUrl") or "").strip())
+        if body.get("forwardToken"):
+            self._credential("forward_token", str(body["forwardToken"]).strip())
+        self.db.execute(
+            """
+            UPDATE settings SET confirmed = ?, sizing_mode = ?, fixed_qty = ?, risk_per_trade = ?,
+                max_trades = ?, max_daily_loss = ?, daily_target = ?, kill_switch = ?, allowed_roots = ?
+            WHERE id = 1
+            """,
+            (
+                confirmed,
+                sizing_mode,
+                fixed_qty,
+                risk,
+                max_trades,
+                max_daily_loss,
+                daily_target,
+                int(kill),
+                json.dumps(allowed),
+            ),
+        )
+        self.db.commit()
+
+    def import_legacy_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        """Keep credentials and unprocessed inbox events. Do not activate legacy limits or rebook a position."""
+        url = str(snapshot.get("forwardUrl") or "").strip()
+        token = str(snapshot.get("forwardToken") or "").strip()
+        if url:
+            self._credential("forward_url", url)
+        if token:
+            self._credential("forward_token", token)
+        redacted = dict(snapshot)
+        if redacted.get("forwardToken"):
+            redacted["forwardToken"] = "[redacted]"
+        if redacted.get("forwardUrl"):
+            redacted["forwardUrl"] = "[redacted]"
+        self._audit("legacy-import", "Memory snapshot stored. Sizing was not confirmed.", json.dumps(redacted)[:4000])
+        self.db.commit()
+        ingested = 0
+        for item in snapshot.get("inbox") or []:
+            payload = item.get("payload") if isinstance(item, dict) else None
+            if isinstance(payload, dict):
+                self.ingest(json.dumps(payload))
+                ingested += 1
+        noted = 0
+        if snapshot.get("position"):
+            self._audit("reconciliation", "Legacy open position was not rebooked", json.dumps({"hasPosition": True}))
+            self.db.commit()
+            noted = 1
+        return {
+            "ingested": ingested,
+            "openPositionsNoted": noted,
+            "sizingConfirmed": self.settings()["confirmed"],
+            "startingBalance": self.settings()["starting_balance"],
+        }
+
+    def dashboard(self, now: datetime | None = None) -> dict[str, Any]:
+        """The page and the five-minute check read this. It comes from SQLite only."""
+        current = self.settings()
+        when = now or datetime.now(CHICAGO)
+        day = session_date(when).isoformat()
+        session = self.db.execute("SELECT trades, pnl FROM sessions WHERE day = ?", (day,)).fetchone()
+        trades_today = int(session["trades"]) if session else 0
+        daily_pnl = float(session["pnl"]) if session else 0.0
+        total_pnl = float(self.db.execute("SELECT COALESCE(SUM(pnl), 0) AS n FROM ledger").fetchone()["n"])
+        balance = current["starting_balance"]
+        equity = (float(balance) + total_pnl) if balance is not None else total_pnl
+        days = self.db.execute("SELECT COUNT(*) AS n FROM sessions WHERE trades > 0").fetchone()["n"]
+        opens = [row for row in self.positions() if row["state"] == "OPEN"]
+        position = self._position_view(opens[0]) if opens else None
+        plan = self._armed_plan()
+        watch_note = "Waiting for a TradingView plan."
+        if plan:
+            watch_note = (
+                f"TradingView {str(plan.get('side') or '').upper()} {plan.get('ticker') or plan.get('root') or ''} "
+                f"@ {_num(plan.get('entry'))} stop {_num(plan.get('stop'))}"
+            ).strip()
+        override = self.db.execute("SELECT value FROM meta WHERE key = 'point_override'").fetchone()
+        pending = []
+        for row in self.db.execute(
+            "SELECT identity, body, status FROM outbox WHERE status != 'delivered' ORDER BY id"
+        ):
+            body = json.loads(row["body"])
+            pending.append({"identity": row["identity"], "text": body.get("text", ""), "status": row["status"]})
+        return {
+            "mode": "paper",
+            "account": "Paper",
+            "listening": True,
+            "delivery": "outbox",
+            "equity": round(equity, 2),
+            "dailyPnl": round(daily_pnl, 2),
+            "profit": round(total_pnl, 2),
+            "passTarget": None,
+            "floor": None,
+            "floorLocked": False,
+            "failed": False,
+            "passed": False,
+            "bestDay": 0.0,
+            "consistency": None,
+            "daysTraded": int(days),
+            "tradesToday": trades_today,
+            "maxTrades": current["max_trades"],
+            "maxDailyLoss": current["max_daily_loss"],
+            "dailyTarget": current["daily_target"],
+            "pointOverride": 0.0 if override is None else float(override["value"]),
+            "riskPerTrade": current["risk_per_trade"],
+            "sizingMode": current["sizing_mode"],
+            "paperReady": bool(current["confirmed"] and current["sizing_mode"] in {"fixed", "risk"}),
+            "forwardUrlSet": self._credential_set("forward_url"),
+            "samKeySet": self._credential_set("forward_token"),
+            "inbox": pending,
+            "planSettingsSource": "TradingView prices and R levels; paper desk sizing settings",
+            "contractMonth": "Z2026",
+            "contracts": [f"{root}Z2026" for root in current["allowed_roots"]],
+            "watchMarkets": list(current["allowed_roots"]),
+            "killed": current["kill_switch"],
+            "watch": {
+                "symbol": plan.get("ticker") if plan else " ".join(f"{root}Z2026" for root in current["allowed_roots"]),
+                "price": None if plan is None else plan.get("entry"),
+                "grade": None if plan is None else plan.get("grade"),
+                "note": watch_note,
+            },
+            "position": position,
+            "positions": [self._position_view(row) for row in opens],
+            "plan": plan,
+            "fills": self._fills(),
+            "activity": self._activity(),
+            "contract": CONTRACT_STATUS,
+            "pineFileRequired": False,
+            "reconciliation": self.health()["reconciliation"],
+        }
+
+    def _credential(self, key: str, value: str) -> None:
+        self.db.execute(
+            "INSERT INTO credentials (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+
+    def _credential_set(self, key: str) -> bool:
+        row = self.db.execute("SELECT value FROM credentials WHERE key = ?", (key,)).fetchone()
+        return bool(row and str(row["value"]).strip())
+
+    def _position_view(self, row: dict[str, Any]) -> dict[str, Any]:
+        payload = row["payload"]
+        remaining = int(payload.get("remaining") or 0)
+        distance = abs(float(payload.get("fill") or 0) - float(payload.get("stop") or 0))
+        open_risk = distance * remaining * float(payload.get("point_value") or 0)
+        targets = payload.get("allocations") or []
+        return {
+            "setupId": row["setup_id"],
+            "side": payload.get("side"),
+            "qty": payload.get("qty"),
+            "remaining": remaining,
+            "ticker": payload.get("ticker"),
+            "root": payload.get("root"),
+            "entry": payload.get("fill"),
+            "stop": payload.get("stop"),
+            "target": targets[0]["price"] if targets else None,
+            "targets": [{"id": item["id"], "price": item["price"], "qty": item.get("qty", 0)} for item in targets],
+            "grade": None,
+            "openRisk": round(open_risk, 2),
+            "state": row["state"],
+        }
+
+    def _armed_plan(self) -> dict[str, Any] | None:
+        row = self.db.execute(
+            """
+            SELECT * FROM setups
+            WHERE chart_terminal = 0 AND paper_state = 'NONE'
+            ORDER BY rowid DESC LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        payload = json.loads(row["payload"])
+        return {
+            "status": row["chart_state"] or "ARMED",
+            "setupId": row["setup_id"],
+            "side": row["side"],
+            "root": payload.get("root"),
+            "ticker": row["market"],
+            "entry": row["entry"],
+            "stop": row["stop"],
+            "grade": row["grade"],
+            "targets": payload.get("targets") or [],
+        }
+
+    def _fills(self) -> list[dict[str, Any]]:
+        rows = []
+        query = """
+            SELECT l.qty, l.price, l.pnl, l.detail, s.market, s.side, s.entry
+            FROM ledger l
+            LEFT JOIN setups s ON s.id = l.setup_id
+            WHERE l.kind IN ('exit', 'partial')
+            ORDER BY l.id DESC LIMIT 30
+        """
+        for row in self.db.execute(query):
+            rows.append({
+                "ticker": row["market"],
+                "side": row["side"],
+                "qty": row["qty"],
+                "entry": row["entry"],
+                "exit": row["price"],
+                "pnl": row["pnl"],
+                "reason": row["detail"],
+            })
+        return rows
+
+    def _activity(self) -> list[dict[str, Any]]:
+        rows = []
+        for row in self.db.execute(
+            "SELECT received_at, status, detail FROM audits ORDER BY id DESC LIMIT 40"
+        ):
+            stamp = str(row["received_at"])
+            clock = stamp[11:19] if len(stamp) >= 19 else stamp
+            rows.append({"at": clock, "kind": str(row["status"]).upper(), "text": row["detail"]})
+        return rows
 
     def ingest(self, raw: str | bytes, now: datetime | None = None) -> dict[str, Any]:
         """Adapt and apply one webhook body. Bookkeeping happens here, not on the chat poll."""

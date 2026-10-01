@@ -72,7 +72,11 @@ Chart setup state and the paper position are stored separately.
 | `plan` | Track the setup and notify. Do not book. |
 | `entry` | Run entry guards once. Book at the received price, or record the rejection. |
 | `exit` `TP` | Close that target's frozen quantity. Zero quantity is a chart milestone. |
-| `exit` `SL`, `BE`, `TRAILED`, `RECLAIM`, `FLAT` | Close the paper remainder at the received price. |
+| `exit` `SL`, `BE`, `TRAILED` | `targetId` is `STOP`. Close the paper remainder at the received price. |
+| `exit` `RECLAIM` | `targetId` is `RECLAIM`. Close the paper remainder. |
+| `exit` `FLAT` | `targetId` is `FLAT`. Close the paper remainder. |
+
+A final exit whose `targetId` does not match that reason is audited and does not close. The inspected script sends `STOP` for stop, breakeven, and trail, and the reason name itself for reclaim and flatten.
 | `plan_cancel` | Update that setup only. |
 | `stop_update` | Move the matching stop. `realizedR` is a stop offset, not P&L. |
 

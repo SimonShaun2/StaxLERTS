@@ -784,24 +784,69 @@ def get_paper_desk():
     return _PAPER
 
 
+def _paper(desk: Any = None):
+    return desk if desk is not None else get_paper_desk()
+
+
+def _json_body(raw: bytes) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    try:
+        payload = json.loads(raw.decode() or "{}")
+    except json.JSONDecodeError:
+        return None, {"success": False, "message": "Body is not valid JSON"}
+    if not isinstance(payload, dict):
+        return None, {"success": False, "message": "Body must be a JSON object"}
+    return payload, None
+
+
+def route_get(path: str, desk: Any = None) -> tuple[int, dict[str, Any]]:
+    """Dashboard state from SQLite. This does not bind port 8791 or read the in-memory desk."""
+    if path == "/api/state":
+        return 200, _paper(desk).dashboard()
+    return 404, {"success": False, "message": "Not found"}
+
+
 def route_post(path: str, raw: bytes, desk: Any = None) -> tuple[int, dict[str, Any]]:
     """HTTP entry used by the server and by offline tests. This does not bind port 8791.
 
-    Sam forwarding is not called. Sample sessions cannot change the paper book.
+    Webhooks, settings, positions, and chat delivery use the SQLite desk.
+    Sam forwarding is not called. Sample sessions and book resets cannot change it.
     """
+    target = _paper(desk)
     if path in ("/webhook/trade-signal", "/api/alert"):
-        target = desk if desk is not None else get_paper_desk()
         result = target.ingest(raw)
         status = 200 if result.get("ok") else 400
         return status, result
     if path == "/api/demo":
         return 410, {"success": False, "message": "Sample sessions are disabled"}
+    if path == "/api/reset":
+        return 410, {"success": False, "message": "Book reset is disabled"}
+    if path == "/api/flatten":
+        return 200, {"success": False, "message": "A chart FLAT event closes the paper position."}
+    if path == "/api/settings":
+        payload, error = _json_body(raw)
+        if error:
+            return 400, error
+        try:
+            target.apply_dashboard_settings(payload or {})
+        except (TypeError, ValueError) as exc:
+            return 400, {"success": False, "message": str(exc)}
+        return 200, target.dashboard()
     if path == "/api/release":
-        return 200, {
-            "success": False,
-            "message": "Sam forwarding is not an execution path. Setup notices stay in the durable outbox.",
-            "data": {"released": 0},
-        }
+        payload, error = _json_body(raw)
+        if error:
+            return 400, error
+        identity = str((payload or {}).get("identity") or "").strip()
+        if not identity:
+            return 200, {
+                "success": False,
+                "message": "Pass the notice identity. Sam is not called.",
+                "data": {"released": 0},
+            }
+        try:
+            target.confirm_delivery(identity)
+        except KeyError:
+            return 200, {"success": False, "message": "Notice was not pending.", "data": {"released": 0}}
+        return 200, {"success": True, "message": "Notice accepted.", "data": {"released": 1}}
     return 404, {"success": False, "message": "Not found"}
 
 
@@ -966,12 +1011,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, raw=STATIC.read_bytes(), content_type="text/html; charset=utf-8")
             return
         if path == "/api/state":
-            snap = DESK.snapshot()
-            try:
-                snap["durable"] = get_paper_desk().health()
-            except Exception:
-                snap["durable"] = {"paperReady": False, "pineFileRequired": False}
-            self._send(200, snap)
+            status, body = route_get(path)
+            self._send(status, body)
             return
         self._send(404, {"success": False, "message": "Not found"})
 
@@ -979,25 +1020,9 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b"{}"
-        if path in ("/webhook/trade-signal", "/api/alert", "/api/demo", "/api/release"):
+        if path in ("/webhook/trade-signal", "/api/alert", "/api/demo", "/api/release", "/api/settings", "/api/flatten", "/api/reset"):
             status, body = route_post(path, raw)
             self._send(status, body)
-            return
-        try:
-            payload = json.loads(raw.decode() or "{}")
-        except json.JSONDecodeError:
-            self._send(400, {"success": False, "message": "Body is not valid JSON"})
-            return
-        if path == "/api/settings":
-            DESK.update_settings(payload)
-            self._send(200, DESK.snapshot())
-            return
-        if path == "/api/flatten":
-            self._send(200, DESK.flatten())
-            return
-        if path == "/api/reset":
-            DESK.reset_book()
-            self._send(200, DESK.snapshot())
             return
         self._send(404, {"success": False, "message": "Not found"})
 
@@ -1015,8 +1040,6 @@ def main() -> int:
         return selftest()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.demo_running = False
-    from watch import start_watcher
-    start_watcher(DESK)
     print(f"StaxBot paper desk listening on http://127.0.0.1:{args.port}")
     try:
         server.serve_forever()

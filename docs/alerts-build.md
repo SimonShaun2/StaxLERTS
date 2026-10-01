@@ -13,7 +13,9 @@ That file is the initial `legacy_stax` baseline. The running desk does not read 
 
 ## What this build does
 
-- Both `POST /webhook/trade-signal` and `POST /api/alert` use one adapter, one book, and one outbox.
+- SQLite is the store for webhooks, settings, positions, dashboard state, and chat delivery. `GET /api/state` reads that book. `delivery` is `outbox`.
+- A final exit must use the inspected target id: `STOP` for SL, BE, and TRAILED, `RECLAIM` for reclaim, and `FLAT` for flatten.
+- A legacy memory snapshot can be imported without confirming its limits or rebooking an open position. The process on port 8791 is not restarted for that import.
 - Plans notify and do not book. Entries book at the received price or record the exact rejection. Exits close frozen target quantity or the remainder.
 - Fixed quantity and dollar risk are separate modes. Setup alerts still fire when sizing is not configured.
 - Leftover contracts all go to the earliest enabled target. Allocation is frozen at entry.
