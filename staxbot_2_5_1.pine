@@ -258,15 +258,15 @@ h4  = request.security(syminfo.tickerid, "240", f_htf(), barmerge.gaps_off, barm
 h1  = request.security(syminfo.tickerid, "60", f_htf(), barmerge.gaps_off, barmerge.lookahead_off)
 h15 = request.security(syminfo.tickerid, "15", f_htf(), barmerge.gaps_off, barmerge.lookahead_off)
 h5  = request.security(syminfo.tickerid, "5", f_htf(), barmerge.gaps_off, barmerge.lookahead_off)
-pdh = request.security(syminfo.tickerid, "D", high[1], barmerge.gaps_off, barmerge.lookahead_off)
-pdl = request.security(syminfo.tickerid, "D", low[1], barmerge.gaps_off, barmerge.lookahead_off)
-pwh = request.security(syminfo.tickerid, "W", high[1], barmerge.gaps_off, barmerge.lookahead_off)
-pwl = request.security(syminfo.tickerid, "W", low[1], barmerge.gaps_off, barmerge.lookahead_off)
+pdh = request.security(syminfo.tickerid, "D", high[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+pdl = request.security(syminfo.tickerid, "D", low[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+pwh = request.security(syminfo.tickerid, "W", high[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+pwl = request.security(syminfo.tickerid, "W", low[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
 f_htf_piv() =>
     [ta.pivothigh(high, swingLenIn, swingLenIn), ta.pivotlow(low, swingLenIn, swingLenIn)]
-[dPh, dPl] = request.security(syminfo.tickerid, "D", f_htf_piv(), barmerge.gaps_off, barmerge.lookahead_off)
-[h4Ph, h4Pl] = request.security(syminfo.tickerid, "240", f_htf_piv(), barmerge.gaps_off, barmerge.lookahead_off)
-[h1Ph, h1Pl] = request.security(syminfo.tickerid, "60", f_htf_piv(), barmerge.gaps_off, barmerge.lookahead_off)
+[dPh, dPl] = request.security(syminfo.tickerid, "D", f_htf_piv()[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+[h4Ph, h4Pl] = request.security(syminfo.tickerid, "240", f_htf_piv()[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+[h1Ph, h1Pl] = request.security(syminfo.tickerid, "60", f_htf_piv()[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
 
 ph = ta.pivothigh(high, swingLenIn, swingLenIn)
 pl = ta.pivotlow(low, swingLenIn, swingLenIn)
