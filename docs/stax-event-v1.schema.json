@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SimonShaun2/StaxLERTS/docs/stax-event-v1.schema.json",
+  "title": "StaxBot schemaVersion 1 event",
+  "description": "Documentation for schemaVersion 1. The desk validates with the standard library. legacy_stax is the same shape without schemaVersion, and a legacy exit may repeat price with the exit price last. This schema does not describe that legacy exception.",
+  "oneOf": [
+    { "$ref": "#/$defs/event" },
+    { "type": "array", "items": { "$ref": "#/$defs/event" } }
+  ],
+  "$defs": {
+    "event": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["schemaVersion", "source", "event", "eventId", "setupId", "side", "entry", "stop", "price", "ticker", "root", "exchange", "timeframe"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "pineVersion": { "type": "string" },
+        "source": { "const": "staxbot" },
+        "event": { "enum": ["plan", "entry", "exit", "plan_cancel", "stop_update"] },
+        "eventId": { "type": "string", "minLength": 1 },
+        "setupId": { "type": "string", "minLength": 1 },
+        "plan_id": {},
+        "move_id": {},
+        "scenario": { "type": "string" },
+        "state": { "type": "string" },
+        "origin": { "type": "string" },
+        "side": { "enum": ["long", "short"] },
+        "entry": { "type": "number" },
+        "stop": { "type": "number" },
+        "stop_preset": { "type": "string" },
+        "price": { "type": "number" },
+        "target": { "type": "number" },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "price", "allocation"],
+            "properties": {
+              "id": { "enum": ["TP1", "TP2", "TP3"] },
+              "price": { "type": "number" },
+              "allocation": { "type": "number", "exclusiveMinimum": 0 },
+              "r": { "type": "number", "description": "Chart reference R, not paper R." },
+              "enabled": { "type": "boolean" }
+            }
+          }
+        },
+        "grade": { "type": "string" },
+        "timeframe": { "type": "string" },
+        "ticker": { "type": "string" },
+        "root": { "type": "string" },
+        "exchange": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "reason": { "type": "string" },
+        "targetId": { "type": "string" },
+        "realizedR": { "type": "number", "description": "Chart reference offset. Not booked P&L." }
+      }
+    }
+  }
+}

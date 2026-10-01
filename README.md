@@ -32,8 +32,10 @@ original's exact rules are not public, this README says what this version does i
 | `archive/staxbot_2_0.pine` | Archived. Gap detection and the alert-only HUD. The bar-1001 history lookup is why it left the active path. |
 | `archive/staxbot_2_2.pine` | Archived. Same-bar fill-and-exit counting. Its Medium stop is the displacement candle, and that is the script that filled the day at 5/5. |
 | `archive/staxbot_2_3.pine` | Archived. Plan/fill split, Take Profit (R) input, and RANGE drawing stay available to port. Oldest-extreme range memory is why it is not the base. |
-| `bot/execution_bot.py` | The paper desk at `http://127.0.0.1:8791`. It sizes contracts from its own risk setting and uses the prices in the alert. |
+| `bot/execution_bot.py` | HTTP receiver. Both webhook routes call the durable paper desk. The process already on port 8791 keeps the code it loaded at startup. |
+| `bot/paper_desk.py` | Setup and paper book. Accepts the legacy StaxBot payload and `schemaVersion` 1. It does not read a Pine file. |
 | `bot/watch.py` | Offline diagnostic helpers. They are not the live plan source and do not run in the alerts check. |
+| `docs/event-contract.md` | Wire contract and compatibility policy. |
 | `docs/strategy-logic.md` | Bar-by-bar description of every rule and setting. |
 | `docs/alerts-thread.md` | Standing split: this repo's chart is accepted, and the alerts chat does not edit Pine. |
 | `tools/mock_stax_webhook.py` | Payload checker for the Stax options webhook format. |

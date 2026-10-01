@@ -12,8 +12,9 @@ refuse a signal after it leaves the chart.
     python3 bot/execution_bot.py                 # http://127.0.0.1:8791
     python3 bot/execution_bot.py --selftest
 
-Paper fills only. Nothing is sent to a broker unless you set a forward URL
-in the desk. Stax's documented webhook accepts an options ticker, not a futures root.
+Paper fills only. Nothing is sent to a broker. A saved Sam URL is an
+automation webhook for the previous in-memory desk, not an order route.
+Both webhook paths now use the durable paper desk.
 """
 from __future__ import annotations
 
@@ -770,6 +771,38 @@ class Desk:
 
 
 DESK = Desk()
+_PAPER: Any = None
+
+
+def get_paper_desk():
+    """Open the durable book on first use. Import does not create it or bind a port."""
+    global _PAPER
+    if _PAPER is None:
+        from paper_desk import PaperDesk
+
+        _PAPER = PaperDesk(Path(__file__).resolve().parent / "data" / "paper.sqlite")
+    return _PAPER
+
+
+def route_post(path: str, raw: bytes, desk: Any = None) -> tuple[int, dict[str, Any]]:
+    """HTTP entry used by the server and by offline tests. This does not bind port 8791.
+
+    Sam forwarding is not called. Sample sessions cannot change the paper book.
+    """
+    if path in ("/webhook/trade-signal", "/api/alert"):
+        target = desk if desk is not None else get_paper_desk()
+        result = target.ingest(raw)
+        status = 200 if result.get("ok") else 400
+        return status, result
+    if path == "/api/demo":
+        return 410, {"success": False, "message": "Sample sessions are disabled"}
+    if path == "/api/release":
+        return 200, {
+            "success": False,
+            "message": "Sam forwarding is not an execution path. Setup notices stay in the durable outbox.",
+            "data": {"released": 0},
+        }
+    return 404, {"success": False, "message": "Not found"}
 
 
 def demo_script() -> list[dict[str, Any]]:
@@ -933,7 +966,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, raw=STATIC.read_bytes(), content_type="text/html; charset=utf-8")
             return
         if path == "/api/state":
-            self._send(200, DESK.snapshot())
+            snap = DESK.snapshot()
+            try:
+                snap["durable"] = get_paper_desk().health()
+            except Exception:
+                snap["durable"] = {"paperReady": False, "pineFileRequired": False}
+            self._send(200, snap)
             return
         self._send(404, {"success": False, "message": "Not found"})
 
@@ -941,20 +979,14 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b"{}"
+        if path in ("/webhook/trade-signal", "/api/alert", "/api/demo", "/api/release"):
+            status, body = route_post(path, raw)
+            self._send(status, body)
+            return
         try:
             payload = json.loads(raw.decode() or "{}")
         except json.JSONDecodeError:
             self._send(400, {"success": False, "message": "Body is not valid JSON"})
-            return
-        if path in ("/webhook/trade-signal", "/api/alert"):
-            result = DESK.handle(payload)
-            if result.get("success"):
-                DESK.hold_for_chat(payload)
-            self._send(200 if result["success"] else 400, result)
-            return
-        if path == "/api/release":
-            event_id = str(payload.get("eventId") or "").strip() or None
-            self._send(200, DESK.release_to_sam(event_id))
             return
         if path == "/api/settings":
             DESK.update_settings(payload)
@@ -962,21 +994,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/flatten":
             self._send(200, DESK.flatten())
-            return
-        if path == "/api/demo":
-            if getattr(self.server, "demo_running", False):
-                self._send(409, {"success": False, "message": "Sample session already running"})
-                return
-            self.server.demo_running = True
-
-            def job() -> None:
-                try:
-                    run_demo(delay=1.1)
-                finally:
-                    self.server.demo_running = False
-
-            threading.Thread(target=job, daemon=True).start()
-            self._send(200, {"success": True, "message": "Sample session started"})
             return
         if path == "/api/reset":
             DESK.reset_book()

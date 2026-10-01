@@ -140,7 +140,6 @@
       <input id="forwardToken" type="password" autocomplete="off" placeholder="Paste the key here, not into chat" />
       <div class="actions">
         <button id="save" type="button">Save limits</button>
-        <button id="demo" class="ghost" type="button">Take sample trades</button>
         <button id="flat" class="danger" type="button">Flatten</button>
       </div>
     </section>
@@ -225,9 +224,6 @@ document.getElementById("save").onclick = async () => {
     field("forwardToken").value = "";
   }
   refresh();
-};
-document.getElementById("demo").onclick = async () => {
-  await fetch("/api/demo", { method: "POST" });
 };
 document.getElementById("flat").onclick = async () => {
   await fetch("/api/flatten", { method: "POST" });
