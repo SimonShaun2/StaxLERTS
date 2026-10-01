@@ -519,7 +519,7 @@ def _target_text(items: list[dict[str, Any]]) -> str:
 
 
 # A plan is new only when it was armed on the latest closed bar.
-# Older replay state, including a replayed fill, is not an alert.
+# Older bar history, including a filled setup from that pass, is not an alert.
 FRESH_PLAN_BARS = 0
 
 
@@ -542,7 +542,7 @@ def describe(market: Market, bars: list[dict[str, Any]]) -> str:
             f"{root} fresh {pending['grade']} {pending['side']} {pending['qty']} "
             f"@ {pending['entry']:.2f} stop {pending['stop']:.2f} targets " + _target_text(pending.get("targets") or [])
         )
-    return f"{root} {last:.1f} replay"
+    return f"{root} {last:.1f}"
 
 
 def rules_from(desk) -> dict[str, Any]:
@@ -697,7 +697,10 @@ def watch_once(desk=None) -> tuple[str, list[dict[str, Any]]]:
         lines, shown, plans = scan(desk, rules, None, interval)
         if shown:
             grade = shown
-        parts.append(interval + " " + " · ".join(lines))
+        body = " · ".join(lines)
+        if not plans:
+            body = f"{body} · scanning · no fresh plan" if body else "scanning · no fresh plan"
+        parts.append(interval + " " + body)
         for plan in plans:
             payload = scan_plan_payload(plan)
             event_id = str(payload["eventId"])

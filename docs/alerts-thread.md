@@ -51,8 +51,8 @@ The desk is http://127.0.0.1:8791. Do not restart it. A restart clears Sam's URL
 
 Each check, from the repo root, run python3 bot/watch.py again and print its status line in this chat.
 The line has a 1m part and a 5m part for MNQ, MGC, MES, M2K, and MYM.
-A replay line is the 5-day Yahoo pass. It is not a live position and not an alert.
-Do not present prices from a replay line.
+A part marked scanning and no fresh plan has no new resting plan. Prices on that line are status only.
+They are not a live position and not an alert. Do not present those prices as a Python scan alert.
 
 Only a line that starts with SCAN_NEW is a Python scan alert. It is a resting plan armed on the latest closed bar.
 Present that plan once: market, side, grade, entry, stop, each target with its R, and the contract count.
@@ -81,7 +81,7 @@ The desk is already running with Sam’s URL and sender key in memory. Do not pu
 ```
 Pull the latest main. Do not change Pine. Do not send a webhook and do not release anything to Sam.
 
-Each check, from the repo root, run python3 bot/watch.py again. Print the status line. A replay line is not an alert and not a live position. Present a plan only when the output has a new SCAN_NEW line. If it does not, say there is no new Python scan plan. Do not paper-fill, do not POST the scan to the desk, and do not call /api/release. Then read the inbox. Present a TradingView webhook as TradingView-confirmed and leave it there. Do not restart the desk.
+Each check, from the repo root, run python3 bot/watch.py again. Print the status line. A part marked scanning and no fresh plan is not an alert and not a live position. Present a plan only when the output has a new SCAN_NEW line. If it does not, say there is no new Python scan plan. Do not paper-fill, do not POST the scan to the desk, and do not call /api/release. Then read the inbox. Present a TradingView webhook as TradingView-confirmed and leave it there. Do not restart the desk.
 
 The halt is 3:00 PM to 5:00 PM Central. During the halt, keep the check. Then Globex, Asia, London, and NY. Arm the next check either way.
 ```
