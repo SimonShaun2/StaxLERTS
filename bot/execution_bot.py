@@ -142,7 +142,7 @@ def session_date(when: datetime) -> datetime.date:
 
 class Desk:
     def __init__(self) -> None:
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.starting_equity = SELECT_START
         self.equity = SELECT_START
         self.max_trades = 5
@@ -311,11 +311,52 @@ class Desk:
                     result = self._on_plan(payload, when)
                 elif event == "plan_cancel":
                     result = self._on_plan_cancel(payload)
+                elif event in ("watch", "break_forming", "break_cancelled"):
+                    result = self._result(True, "Head-up only. Not a trade.")
                 else:
                     result = self._result(False, f"Unknown event {event!r}")
             if event_id and result.get("success"):
                 self.processed_event_ids.add(event_id)
             return result
+
+    def ingest(self, payload: Any) -> dict[str, Any]:
+        """Apply one alert object, or a same-bar array, in order.
+
+        A multi-event bar is one webhook body. Later events in that body still
+        run when an earlier one is a duplicate or a cancel for a plan this desk
+        no longer has. Head-up events do not book a trade and are not held.
+        """
+        if isinstance(payload, dict):
+            with self.lock:
+                result = self.handle(payload)
+                if result.get("success") and str(payload.get("event") or "") not in ("watch", "break_forming", "break_cancelled"):
+                    self.hold_for_chat(payload)
+                return result
+        if not isinstance(payload, list):
+            return self.handle(payload)
+        if not payload:
+            return self._result(False, "Empty event array")
+        with self.lock:
+            failure = None
+            last_success = None
+            for event in payload:
+                if not isinstance(event, dict):
+                    failure = failure or self._result(False, "Event array must contain JSON objects")
+                    continue
+                result = self.handle(event)
+                if result.get("success"):
+                    if str(event.get("event") or "") not in ("watch", "break_forming", "break_cancelled"):
+                        self.hold_for_chat(event)
+                    last_success = result
+                elif result.get("message") in ("Duplicate event ignored", "No matching active plan"):
+                    continue
+                else:
+                    failure = failure or result
+            if failure is not None:
+                return failure
+            if last_success is not None:
+                return last_success
+            return self._result(True, "Duplicate event ignored")
 
     def _on_plan(self, payload: dict[str, Any], when: datetime) -> dict[str, Any]:
         setup_id = str(payload.get("setupId") or "")
@@ -613,8 +654,11 @@ class Desk:
         if exit_setup_id and open_setup_id and exit_setup_id != open_setup_id:
             self._note("IGNORED", "Exit setup ID does not match the open trade")
             return self._result(False, "Exit setup ID does not match the open trade")
+        raw_price = payload.get("exit_price")
+        if raw_price is None:
+            raw_price = payload.get("price")
         try:
-            price = float(payload["price"])
+            price = float(raw_price)
         except (KeyError, TypeError, ValueError):
             self._note("IGNORED", "Exit is missing a price")
             return self._result(False, "Exit is missing a price")
@@ -930,6 +974,78 @@ def selftest() -> int:
         assert ping["success"] is True, ping
         assert desk.plan is plan_before
         assert desk.position is position_before
+        # 2.5 puts the fill in exit_price and leaves price at the plan entry.
+        # Booking price would record a zero-PnL exit and skip the loss limits.
+        closed = desk.handle({
+            "event": "exit", "eventId": "exit-at-target", "setupId": "mes-plan",
+            "price": 5800.0, "exit_price": 5814.4, "reason": "TP", "targetId": "TP1", "timestamp": stamp,
+        })
+        assert closed["success"] is True, closed
+        assert abs(closed["data"]["pnl"] - 72.0) < 0.01, closed
+        assert desk.position is None
+        # One confirmed bar can carry a cancel plus the new plan. Both have to apply.
+        replaced = desk.ingest([
+            {"event": "plan_cancel", "eventId": "cancel-old", "setupId": "mes-plan", "timestamp": stamp},
+            {
+                "event": "plan", "eventId": "plan-new", "setupId": "mes-new", "side": "short",
+                "root": "MES", "ticker": "MESZ2026", "entry": 5800.0, "stop": 5801.0, "timestamp": stamp,
+                "targets": [
+                    {"id": "TP1", "price": 5799.0, "allocation": 2, "r": 1},
+                    {"id": "TP2", "price": 5798.0, "allocation": 1, "r": 2},
+                    {"id": "TP3", "price": 5797.0, "allocation": 1, "r": 3},
+                ],
+            },
+        ])
+        assert replaced["success"] is True, replaced
+        assert desk.plan is not None and desk.plan["setupId"] == "mes-new", desk.plan
+        opened = desk.ingest([
+            {
+                "event": "entry", "eventId": "entry-new", "setupId": "mes-new", "side": "long",
+                "root": "MES", "ticker": "MESZ2026", "price": 1.0, "stop": 2.0, "target": 9.0, "timestamp": stamp,
+            },
+            {"event": "plan_cancel", "eventId": "cancel-sibling", "setupId": "mes-other", "timestamp": stamp},
+            {"event": "break_cancelled", "eventId": "break-cancelled:1", "side": "long", "entry": 5800.0, "timestamp": stamp},
+        ])
+        assert opened["success"] is True, opened
+        assert desk.position is not None and desk.position["side"] == "short", desk.position
+        assert desk.position["entry"] == 5800.0 and desk.position["qty"] == 10, desk.position
+        assert [item["eventId"] for item in desk.inbox].count("break-cancelled:1") == 0
+        partials = desk.ingest([
+            {
+                "event": "exit", "eventId": "exit-tp1", "setupId": "mes-new", "price": 5800.0,
+                "exit_price": 5799.0, "reason": "TP", "targetId": "TP1", "timestamp": stamp,
+            },
+            {
+                "event": "exit", "eventId": "exit-tp2", "setupId": "mes-new", "price": 5800.0,
+                "exit_price": 5798.0, "reason": "TP", "targetId": "TP2", "timestamp": stamp,
+            },
+        ])
+        assert partials["success"] is True, partials
+        assert desk.position is not None and desk.position["qty"] == 2, desk.position
+        assert abs(desk.equity - (25012.0 + 72.0 + 25.0 + 30.0)) < 0.01, desk.equity
+        replay = desk.ingest([
+            {
+                "event": "entry", "eventId": "entry-new", "setupId": "mes-new", "side": "long",
+                "root": "MES", "ticker": "MESZ2026", "price": 1.0, "stop": 2.0, "target": 9.0, "timestamp": stamp,
+            },
+            {"event": "plan_cancel", "eventId": "cancel-sibling", "setupId": "mes-other", "timestamp": stamp},
+        ])
+        assert replay["success"] is True, replay
+        assert desk.position["qty"] == 2
+        legacy = json.loads(
+            '{"event":"exit","eventId":"legacy-stop","setupId":"mes-new","price":5800.0,"price":5801.0,'
+            '"reason":"SL","targetId":"STOP","timestamp":"' + stamp + '"}'
+        )
+        stopped = desk.handle(legacy)
+        assert stopped["success"] is True, stopped
+        assert abs(stopped["data"]["pnl"] - (-10.0)) < 0.01, stopped
+        assert desk.position is None
+        missed = desk.ingest({"event": "plan_cancel", "eventId": "missing-cancel", "setupId": "no-such-plan", "timestamp": stamp})
+        assert missed["success"] is False, missed
+        watch = desk.ingest({"event": "watch", "eventId": "watch-1", "timestamp": stamp})
+        assert watch["success"] is True, watch
+        assert desk.position is None and desk.plan is not None and desk.plan["setupId"] == "mes-new"
+        assert all(item["eventId"] != "watch-1" for item in desk.inbox)
         print("selftest: PASS", snap["equity"], snap["dailyPnl"])
         return 0
     except AssertionError as exc:
@@ -971,9 +1087,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"success": False, "message": "Body is not valid JSON"})
             return
         if path in ("/webhook/trade-signal", "/api/alert"):
-            result = DESK.handle(payload)
-            if result.get("success"):
-                DESK.hold_for_chat(payload)
+            result = DESK.ingest(payload)
             self._send(200 if result["success"] else 400, result)
             return
         if path == "/api/release":
