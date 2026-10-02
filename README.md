@@ -1,8 +1,8 @@
 # Breakaway Bot — Stax Edition
 
-An open Pine Script v6 re-implementation of the Breakaway model. The chart
-script is `staxbot_2_5_2.pine`. The legend reads **StaxBot**. The HUD reads
-**STAXBOT 2.5.2**. A shelf break arms without a gap. A gap inside the window is
+An open Pine Script v6 re-implementation of the Breakaway model. The live chart
+script is `production/staxbot.pine` (StaxBot 2.5.2). The legend reads **StaxBot**. The HUD reads
+**STAXBOT 2.5.2**. The test twin is `development/staxbot_dev.pine`. Its legend reads **StaxBot DEV** and its HUD reads **STAXBOT DEV**. A shelf break arms without a gap. A gap inside the window is
 a second plan. Scenario C arms the reversal after a failed break. Tight, Medium,
 and Large choose the stop distance. Targets and the arm decision stay on the
 Medium stop. Alerts are formatted for the
@@ -22,18 +22,12 @@ original's exact rules are not public, this README says what this version does i
 
 | Path | Purpose |
 | --- | --- |
-| `staxbot_2_5_2.pine` | The chart. The legend reads **StaxBot**. The HUD reads **STAXBOT 2.5.2**. Paste this file into a new Pine tab. |
-| `staxbot_2_5_1.pine` | Does not compile. `[]` cannot follow the pivot tuple. Do not load it over 2.5.2. |
-| `staxbot_2_5_0.pine` | Previous file. Do not load it over 2.5.2. |
-| `staxbot_2_4_7.pine` | Previous file. Do not load it over 2.5.2. |
-| `staxbot_2_4_5.pine` | Previous file. Do not load it over 2.5.2. |
-| `staxbot_2_4_4.pine` | Previous file. Do not load it over 2.5.2. |
-| `staxbot_2_4_3.pine` | Previous file. It stops on bar 141. Do not load it over 2.5.2. |
-| `staxbot_2_4_2.pine` | Previous file. Do not load it over 2.5.2. |
-| `staxbot_2_4_1.pine` | Previous file. Do not load it over 2.5.2. |
-| `staxbot_2_4_0.pine` | Previous file. It does not compile. Do not load it over 2.5.2. |
-| `staxbot_2_1.pine` | Untouched rebuild base. Do not load it over 2.5.2. |
+| `production/staxbot.pine` | Live chart. StaxBot 2.5.2. The legend reads **StaxBot**. The HUD reads **STAXBOT 2.5.2**. This is the only file to paste into the live TradingView strategy. |
+| `development/staxbot_dev.pine` | Test twin of the live chart. The legend reads **StaxBot DEV**. The HUD reads **STAXBOT DEV**. **Send DEV Alerts** is off, and every payload is tagged `staxbot-dev`. |
+| `docs/dev-prod-workflow.md` | How a change moves from the test twin to the live file, and the exact TradingView paste steps. |
+| `tools/promote.py` | Copies the test twin onto `production/staxbot.pine` and swaps the DEV title and alert tags back. |
 | `tools/engine_rules.py` | The fill, stop, grade, room, and watch checks that match the 2.5.2 rules. |
+| `archive/` | Older versioned scripts. `archive/staxbot_2_5_2.pine` is the snapshot copied into `production/staxbot.pine`. `archive/staxbot_2_1.pine` is the untouched rebuild base. Do not load any of these over the live chart. |
 | `archive/staxbot_2_0.pine` | Archived. Gap detection and the alert-only HUD. The bar-1001 history lookup is why it left the active path. |
 | `archive/staxbot_2_2.pine` | Archived. Same-bar fill-and-exit counting. Its Medium stop is the displacement candle, and that is the script that filled the day at 5/5. |
 | `archive/staxbot_2_3.pine` | Archived. Plan/fill split, Take Profit (R) input, and RANGE drawing stay available to port. Oldest-extreme range memory is why it is not the base. |
@@ -59,6 +53,8 @@ Open the desk, then in TradingView set **Alert Payload** to **Generic JSON** and
 - Webhook URL: `http://127.0.0.1:8791/webhook/trade-signal` while you are on this machine. TradingView's servers cannot see localhost, so a public HTTPS tunnel is required before a real alert will arrive.
 
 A `plan` alert stores the chart's entry, stop, and targets. An `entry` alert opens the paper position at those prices. The desk chooses the contract count from **Risk per trade**. It does not recompute the target from its own R. An `exit` alert closes the contracts it allocated.
+
+A payload with `"source":"staxbot-dev"`, `"env":"dev"`, or a `version` ending in `-dev` is a test alert. `/webhook/trade-signal` ignores it: no position, no inbox item, no release. Point the **StaxBot DEV** alert at `http://127.0.0.1:8791/webhook/dev` when you want the desk to record it. Leave **Send DEV Alerts** off until that alert exists.
 
 **Take sample trades** on the desk runs two MES round-trips so you can see a fill without waiting for the chart. Leave the forward URL blank for futures. Stax's webhook expects an options ticker (`SPY260930C660.0`), not a futures root. Paste that URL only when the chart is the underlying and the payload is **Stax Options Webhook**.
 
@@ -144,7 +140,7 @@ fields the script includes (`source`, `side`, `underlyingEntry`, `underlyingStop
    and copy your personal webhook URL. Leave the strategy **disabled** until you have seen test
    alerts arrive.
 2. In TradingView, open the chart you want Stax to trade from (for options that is the
-   underlying — SPY, QQQ, SPX…), add `staxbot_2_4_7.pine` from the Pine Editor, and set
+   underlying — SPY, QQQ, SPX…), add `production/staxbot.pine` from the Pine Editor, and set
    your inputs. In the **Stax Alerts** group:
    * `Alert Payload = Stax Options Webhook`
    * `Days To Expiration`, `Strikes OTM`, `Strike Step` to taste (0DTE, ATM, step 1 by default)
@@ -178,8 +174,8 @@ exits, and (optionally) stop updates are then sent as:
 
 The payload has no contract quantity and no dollar risk. `allocation` is the weight from
 the chart. The desk turns weights into whole contracts. There is no Pine compiler in this
-repo, so paste `staxbot_2_4_7.pine` into TradingView and confirm the HUD reads **STAXBOT 2.4.7**
-before treating the script as compiled.
+repo, so paste `production/staxbot.pine` into TradingView and confirm the HUD reads **STAXBOT 2.5.2**
+before treating the script as compiled. The test chart is `development/staxbot_dev.pine`. Confirm that HUD reads **STAXBOT DEV**.
 
 ## Testing alerts locally
 
@@ -207,8 +203,9 @@ printed with the decoded contract, and the response mirrors Stax's success / err
 
 ## Running it
 
-Paste `staxbot_2_4_7.pine` into a new Pine Editor tab and save it. The script name is
+Paste `production/staxbot.pine` into a new Pine Editor tab and save it. The script name is
 **StaxBot**. Pasting into an older tab keeps the old saved name, so TradingView
 will not store this update. The legend reads **StaxBot** and the HUD reads
-**STAXBOT 2.4.7**. The strategy tester will not show order arrows: the plan is the
-drawing, not a broker fill. `staxbot_2_1.pine` and `archive/staxbot_2_3.pine` are not the chart to load.
+**STAXBOT 2.5.2**. Paste `development/staxbot_dev.pine` into a different new tab. That name is
+**StaxBot DEV** and the HUD reads **STAXBOT DEV**. The strategy tester will not show order arrows: the plan is the
+drawing, not a broker fill. Files in `archive/` are not the chart to load. The steps are in `docs/dev-prod-workflow.md`.
