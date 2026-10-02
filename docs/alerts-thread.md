@@ -1,6 +1,8 @@
 # Alerts thread
 
-StaxBot 2.3 is the chart. A short enters the broken shelf. The stop is the far side of that range. The user adds it in TradingView as a new saved script and recreates each alert.
+The live TradingView script is `production/staxbot.pine` (legend **StaxBot**, HUD **STAXBOT 2.5.2**). The test script is `development/staxbot_dev.pine` (legend **StaxBot DEV**, HUD **STAXBOT DEV**). Paste steps are in `docs/dev-prod-workflow.md`. The desk books alerts on `/webhook/trade-signal` and ignores a payload whose `source` is `staxbot-dev`, whose `env` is `dev`, or whose `version` ends in `-dev`. Those test payloads go to `/webhook/dev` and are not released.
+
+The fenced prompts below are the earlier 2.3 desk routine. They are not the script to load. A short enters the broken shelf. The stop is the far side of that range. The user adds the live script in TradingView as a new saved script and recreates each alert.
 
 - The development chat owns Pine. A new chart build is a new saved script: 2.1, then 2.2, then 2.3.
 - The alerts chat runs the paper desk and presents entry alerts. It does not edit Pine.

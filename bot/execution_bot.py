@@ -14,6 +14,10 @@ refuse a signal after it leaves the chart.
 
 Paper fills only. Nothing is sent to a broker unless you set a forward URL
 in the desk. Stax's documented webhook accepts an options ticker, not a futures root.
+
+A DEV alert (source staxbot-dev, env dev, or a version ending in -dev) is not a
+live trade. /webhook/trade-signal ignores it. POST it to /webhook/dev to record
+it without booking a position or releasing it.
 """
 from __future__ import annotations
 
@@ -129,6 +133,24 @@ def allocate_target_contracts(total_qty: int, targets: list[dict[str, Any]]) -> 
     ]
 
 
+DEV_SOURCES = {"staxbot-dev", "staxbot_dev"}
+
+
+def is_dev_alert(payload: Any) -> bool:
+    """True when the body is a StaxBot DEV test alert and must not be booked."""
+    if isinstance(payload, list):
+        return bool(payload) and all(is_dev_alert(item) for item in payload)
+    if not isinstance(payload, dict):
+        return False
+    source = str(payload.get("source") or "").strip().lower()
+    if source in DEV_SOURCES:
+        return True
+    if str(payload.get("env") or "").strip().lower() == "dev":
+        return True
+    version = str(payload.get("version") or "").strip().lower()
+    return version.endswith("-dev")
+
+
 def session_date(when: datetime) -> datetime.date:
     """The session ends at 5:00 PM New York. After that, it is the next day."""
     if when.tzinfo is None:
@@ -153,6 +175,7 @@ class Desk:
         self.forward_url = ""
         self.forward_token = ""
         self.inbox: list[dict[str, Any]] = []
+        self.dev_log: list[dict[str, Any]] = []
         self.watch_markets = list(WATCH_ROOTS)
         self.contract_month = CONTRACT_MONTH
         self.watch = {
@@ -212,6 +235,7 @@ class Desk:
                 "forwardUrl": self.forward_url,
                 "samKeySet": bool(self.forward_token),
                 "inbox": [dict(item) for item in self.inbox],
+                "devLog": [dict(item) for item in reversed(self.dev_log[-20:])],
                 "planSettingsSource": "TradingView prices and R levels; paper desk sizing settings",
                 "contractMonth": self.contract_month,
                 "contracts": [current_contract(name) for name in self.watch_markets],
@@ -273,6 +297,7 @@ class Desk:
             self.activity.clear()
             self.processed_event_ids.clear()
             self.inbox.clear()
+            self.dev_log.clear()
             self.killed = False
             self.days_traded = 0
             self.day_pnls = {}
@@ -286,8 +311,34 @@ class Desk:
         with self.lock:
             self.watch.update(info)
 
-    def handle(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _remember_dev(self, payload: Any, note: str) -> None:
+        self.dev_log.append({"receivedAt": now_ny().isoformat(), "note": note, "payload": payload})
+        if len(self.dev_log) > 50:
+            self.dev_log = self.dev_log[-50:]
+        self._note("DEV", note)
+
+    def _ignore_dev_locked(self, payload: Any) -> dict[str, Any]:
+        self._remember_dev(payload, "DEV alert ignored on the live webhook. Not booked and not released.")
+        return self._result(
+            False,
+            "DEV alert ignored. It cannot open, change, or close a paper trade.",
+            {"dev": True, "booked": False},
+        )
+
+    def ignore_dev(self, payload: Any) -> dict[str, Any]:
         with self.lock:
+            return self._ignore_dev_locked(payload)
+
+    def acknowledge_dev(self, payload: Any) -> dict[str, Any]:
+        """Record a DEV alert from /webhook/dev. The paper book and Sam inbox stay put."""
+        with self.lock:
+            self._remember_dev(payload, "DEV alert recorded on /webhook/dev. Not booked and not released.")
+            return self._result(True, "DEV alert recorded. Not a live trade.", {"dev": True, "booked": False})
+
+    def handle(self, payload: Any) -> dict[str, Any]:
+        with self.lock:
+            if is_dev_alert(payload):
+                return self._ignore_dev_locked(payload)
             if not isinstance(payload, dict):
                 return self._result(False, "Body must be a JSON object")
             event_id = str(payload.get("eventId") or "")
@@ -926,9 +977,40 @@ def selftest() -> int:
         assert missing["data"]["released"] == 0, missing
         plan_before = desk.plan
         position_before = desk.position
+        inbox_before = list(desk.inbox)
+        equity_before = desk.equity
         ping = desk.handle({"source": "staxbot", "event": "ping", "eventId": "ping-1", "note": "Connection test. Not a trade."})
         assert ping["success"] is True, ping
         assert desk.plan is plan_before
+        assert desk.position is position_before
+        dev_entry = {
+            "source": "staxbot-dev", "env": "dev", "event": "entry", "eventId": "dev-1",
+            "version": "2.5.2-dev", "setupId": "dev-plan", "side": "long", "root": "MES",
+            "ticker": "MESZ2026", "entry": 1.0, "stop": 0.5, "target": 2.0,
+        }
+        ignored = desk.handle(dev_entry)
+        assert ignored["success"] is False, ignored
+        assert ignored["data"]["booked"] is False, ignored
+        assert desk.plan is plan_before
+        assert desk.position is position_before
+        assert desk.inbox == inbox_before
+        assert desk.equity == equity_before
+        version_only = desk.handle({"event": "plan", "version": "2.5.2-dev", "setupId": "dev-ver", "side": "long", "entry": 10, "stop": 9})
+        assert version_only["success"] is False, version_only
+        env_only = desk.handle({"source": "staxbot", "env": "dev", "event": "entry", "side": "short", "entry": 10, "stop": 11})
+        assert env_only["success"] is False, env_only
+        listed = desk.handle([{"source": "staxbot", "event": "ping"}])
+        assert listed["success"] is False and "JSON object" in listed["message"], listed
+        listed_dev = desk.handle([{"source": "staxbot-dev", "event": "entry", "version": "2.5.2-dev"}])
+        assert listed_dev["success"] is False and listed_dev["data"]["dev"] is True, listed_dev
+        assert desk.position is position_before and desk.plan is plan_before and desk.equity == equity_before
+        recorded = desk.acknowledge_dev(dev_entry)
+        assert recorded["success"] is True and recorded["data"]["booked"] is False, recorded
+        assert desk.position is position_before and desk.plan is plan_before and desk.inbox == inbox_before
+        assert desk.snapshot()["devLog"], desk.snapshot()["devLog"]
+        assert any(item["kind"] == "DEV" for item in desk.activity), desk.activity
+        prod_ping = desk.handle({"source": "staxbot", "event": "ping", "eventId": "ping-prod", "version": "2.5.2"})
+        assert prod_ping["success"] is True, prod_ping
         assert desk.position is position_before
         print("selftest: PASS", snap["equity"], snap["dailyPnl"])
         return 0
@@ -970,7 +1052,16 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._send(400, {"success": False, "message": "Body is not valid JSON"})
             return
+        if path == "/webhook/dev":
+            if not is_dev_alert(payload):
+                self._send(400, {"success": False, "message": "This endpoint accepts DEV alerts only. Live alerts stay on /webhook/trade-signal."})
+                return
+            self._send(200, DESK.acknowledge_dev(payload))
+            return
         if path in ("/webhook/trade-signal", "/api/alert"):
+            if is_dev_alert(payload):
+                self._send(200, DESK.ignore_dev(payload))
+                return
             result = DESK.handle(payload)
             if result.get("success"):
                 DESK.hold_for_chat(payload)

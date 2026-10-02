@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Production and development split. `production/staxbot.pine` is the live StaxBot 2.5.2 chart and matches `archive/staxbot_2_5_2.pine`. `development/staxbot_dev.pine` is the test twin: title StaxBot DEV, HUD STAXBOT DEV, Send DEV Alerts off, payloads tagged `staxbot-dev`. The paper desk ignores those payloads on `/webhook/trade-signal` and records them on `/webhook/dev`. Trading rules are unchanged. Root copies of 2.1, 2.4.0–2.4.7, 2.5.0, 2.5.1, and 2.5.2 moved to `archive/`.
 - Phase 1 removals. Discarded the untracked `staxbot_2_4.pine` draft; it was never committed. Moved `staxbot_2_0.pine`, `staxbot_2_2.pine`, and `staxbot_2_3.pine` to `archive/`. `staxbot_2_1.pine` is unchanged and remains the rebuild base. `bot/execution_bot.py`, `bot/watch.py`, and `docs/alerts-thread.md` were not edited.
 - Phase 1 condition. `docs/alerts-thread.md` now names `archive/staxbot_2_3.pine`. No other line in that file changed. A read of every input, function, and statement binding in `staxbot_2_1.pine` found nothing unused and no unreachable branch, so that script was not edited.
 

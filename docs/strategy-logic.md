@@ -1,8 +1,8 @@
 # Strategy logic, StaxBot 2.5.2
 
-`staxbot_2_5_2.pine` runs the state machine once on the confirmed bar. Realtime ticks can send one provisional `break_forming` alert. They do not arm, fill, or count a trade. The script does not call `strategy.entry` or `strategy.exit`. The drawing is the plan. Confirmed alerts are `alert()` calls, one per bar.
+`production/staxbot.pine` (StaxBot 2.5.2) runs the state machine once on the confirmed bar. Realtime ticks can send one provisional `break_forming` alert. They do not arm, fill, or count a trade. The script does not call `strategy.entry` or `strategy.exit`. The drawing is the plan. Confirmed alerts are `alert()` calls, one per bar.
 
-Load the file as a new script. The legend reads **StaxBot**. The HUD reads **STAXBOT 2.5.2**. The version is in the file name, this header, and that HUD header.
+Load `production/staxbot.pine` as a new script. The legend reads **StaxBot**. The HUD reads **STAXBOT 2.5.2**. The development twin is `development/staxbot_dev.pine`. Its legend reads **StaxBot DEV** and its HUD reads **STAXBOT DEV**. The version is in the production file header and that HUD header. `archive/staxbot_2_5_2.pine` is the versioned snapshot of this same script.
 
 ## 1. Settings
 
