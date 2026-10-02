@@ -140,4 +140,4 @@ Every alert JSON object includes `plan_id`, `move_id`, `scenario`, `state`, `ent
 | `exit` | Stop, target, reclaim, or session flatten, when exit alerts are on |
 | `stop_update` | The live stop moves, when that alert is on. `locked_r` is the R locked by the new stop |
 
-The paper desk is a separate project and is not changed by this script. Attach 2.5.2 alerts only after that desk accepts these fields. `watch` and `break_forming` book nothing.
+The paper desk applies one alert object, or the JSON array from a bar with more than one event, in order. An exit fills at `exit_price`. `watch` and `break_forming` book nothing.
