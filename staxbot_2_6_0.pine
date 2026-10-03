@@ -869,9 +869,9 @@ f_legSplit(int qty, bool on1, bool on2, bool on3, int w1, int w2, int w3) =>
             q3 += 1
     [q1, q2, q3]
 f_strategyEntry(staxPlan p) =>
-    if p.qty > 0 and (not confirmBeforeFillIn or p.scenario == "M")
+    if p.qty > 0 and p.origin != "momentum" and not confirmBeforeFillIn
         strategy.entry(p.setupId, p.dir == 1 ? strategy.long : strategy.short, qty = p.qty,
-             limit = p.origin == "momentum" ? na : p.entry, disable_alert = true)
+             limit = p.entry, disable_alert = true)
     true
 f_strategyExitLeg(staxPlan p, string legId, float target, bool enabled, bool hit, int legQty, int legWeight) =>
     int totalW = f_totalWeight(p)
@@ -882,20 +882,34 @@ f_strategyExitLeg(staxPlan p, string legId, float target, bool enabled, bool hit
         else
             strategy.exit(p.setupId + ":" + legId, from_entry = p.setupId, stop = p.liveStop, limit = target, qty_percent = 100.0 * legWeight / totalW, disable_alert = true)
     true
+f_strategyCleanup(staxPlan p) =>
+    strategy.cancel(p.setupId)
+    strategy.cancel(p.setupId + ":TP1")
+    strategy.cancel(p.setupId + ":TP2")
+    strategy.cancel(p.setupId + ":TP3")
+    strategy.close(p.setupId, comment = "plan_resolved", immediately = true, disable_alert = true)
+    true
 f_strategySync(staxPlan p) =>
-    if p.state == "ARMED" and confirmBeforeFillIn and p.scenario != "M" and p.structureConfirmed and bar_index > p.confirmBar and p.qty > 0
-        strategy.entry(p.setupId, p.dir == 1 ? strategy.long : strategy.short, qty = p.qty, limit = p.entry, disable_alert = true)
+    if p.state == "ARMED"
+        if confirmBeforeFillIn and p.scenario != "M" and p.structureConfirmed and bar_index > p.confirmBar and p.ready and p.qty > 0
+            strategy.entry(p.setupId, p.dir == 1 ? strategy.long : strategy.short, qty = p.qty, limit = p.entry, disable_alert = true)
+        bool entryStaged = p.origin != "momentum" and (not confirmBeforeFillIn or p.ready)
+        if entryStaged
+            f_strategyExitLeg(p, "TP1", p.tp1, p.on1, p.hit1, p.leg1, p.w1)
+            f_strategyExitLeg(p, "TP2", p.tp2, p.on2, p.leg2, p.w2)
+            f_strategyExitLeg(p, "TP3", p.tp3, p.on3, p.hit3, p.leg3, p.w3)
+    else if p.state == "TRIGGERED"
+        if p.origin == "momentum" and p.qty > 0
+            strategy.entry(p.setupId, p.dir == 1 ? strategy.long : strategy.short, qty = p.qty, disable_alert = true)
+        f_strategyExitLeg(p, "TP1", p.tp1, p.on1, p.hit1, p.leg1, p.w1)
+        f_strategyExitLeg(p, "TP2", p.tp2, p.on2, p.hit2, p.leg2, p.w2)
+        f_strategyExitLeg(p, "TP3", p.tp3, p.on3, p.hit3, p.leg3, p.w3)
     else if p.state == "LIVE"
         f_strategyExitLeg(p, "TP1", p.tp1, p.on1, p.hit1, p.leg1, p.w1)
         f_strategyExitLeg(p, "TP2", p.tp2, p.on2, p.hit2, p.leg2, p.w2)
         f_strategyExitLeg(p, "TP3", p.tp3, p.on3, p.hit3, p.leg3, p.w3)
-    else if p.state == "TRIGGERED"
-        true
-    else if p.state != "ARMED"
-        strategy.cancel(p.setupId)
-        strategy.cancel(p.setupId + ":TP1")
-        strategy.cancel(p.setupId + ":TP2")
-        strategy.cancel(p.setupId + ":TP3")
+    else
+        f_strategyCleanup(p)
     true
 f_active(string state) =>
     state == "ARMED" or state == "TRIGGERED" or state == "LIVE"
@@ -1299,6 +1313,7 @@ f_drop_box(box b) =>
         box.delete(b)
     true
 f_erase(staxPlan p) =>
+    f_strategyCleanup(p)
     f_drop_line(p.lnEn)
     f_drop_line(p.lnSl)
     f_drop_line(p.ln1)

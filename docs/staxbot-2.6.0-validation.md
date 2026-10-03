@@ -84,6 +84,7 @@ Static fixes in response to the source review:
 - B6c records the deepest retest touch for the position check and compares each newly confirmed pullback pivot with the preceding confirmed pivot.
 - The A5 outer-close flag now also requires a candle in the trade direction.
 - The compact HUD preserves the old gross-R value for armed plans and shows gross and net R for live plans. The full HUD retains its grade text while adding net-R and displacement details.
+- A1 now submits brackets while a retest entry is pending, posts Momentum orders only after the FSM enters TRIGGERED, and cancels/closes Tester orders when plans resolve or are pruned. This does not remove the broker-emulator timing gap between an armed limit fill and the close-based FSM checks; A1 still needs replay validation.
 
 These edits are source-only. No Pine compiler, TradingView chart, Strategy Tester, or replay was available; none of these changes is claimed to compile or pass runtime acceptance. A1 order mirroring and the declaration/HUD owner decisions remain unresolved pending the owner's answer. The PR stays draft until those decisions and a TradingView compile are complete.
 
