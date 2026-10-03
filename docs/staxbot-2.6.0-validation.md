@@ -52,10 +52,11 @@ The requested per-toggle plans/grades/win-rate/net-R deltas and first 10 changed
 4. For B1, should equal-high/low pairing use chart bars on every timeframe? Should NY range and the 15-minute Opening Range aggregate correctly on 1m, 15m, and higher charts, or should these levels always be built from 5m data?
 5. For B2, should enabled session windows be evaluated against each chart bar on all timeframes, including bars that straddle a window boundary?
 6. For B3, should news overlap use chart-bar open/close on every timeframe, including sub-minute and multi-hour bars?
-7. For B5, are the setup/position/runner/slow multipliers and the `>= 15m` gate correct when the resulting contexts are nonstandard durations (for example, 45m, 3h, or 12h)?
-8. For B6a, should its 100/200 EMA fallback, pullback position check, and chart-level confirmation use the current chart timeframe, while structure direction stays on D/4H and position context stays on 1H?
-9. For B6b, when B5 is on, should the scaled setup/position/runner swings replace the fixed 15m/1h/4h swing ladder as implemented?
-10. For B6c, should the pivot length of 2 be measured in current chart bars on all timeframes, or should confirmation pivots always use 5m bars?
+7. For B4, should tick floors compose with StaxBot's existing chart-bar ATR, or should the imported buffer use a fixed 5m ATR on other charts?
+8. For B5, are the setup/position/runner/slow multipliers and the `>= 15m` gate correct when the resulting contexts are nonstandard durations (for example, 45m, 3h, or 12h)?
+9. For B6a, should its 100/200 EMA fallback, pullback position check, and chart-level confirmation use the current chart timeframe, while structure direction stays on D/4H and position context stays on 1H?
+10. For B6b, when B5 is on, should the scaled setup/position/runner swings replace the fixed 15m/1h/4h swing ladder as implemented?
+11. For B6c, should the pivot length of 2 be measured in current chart bars on all timeframes, or should confirmation pivots always use 5m bars?
 
 ## A1/A3 owner questions
 
