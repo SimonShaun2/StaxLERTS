@@ -4,19 +4,19 @@
 
 - StaxBot 2.6.0 is added as `staxbot_2_6_0.pine`, based on the live 2.5.2 script. C1–C6 source findings are in `docs/staxbot-2.6.0-source-resolutions.md`; webhook additions are in `docs/staxbot-2.6.0-webhook-schema.md`; validation limits and outstanding owner questions are in `docs/staxbot-2.6.0-validation.md`.
 - A1 adds Strategy Tester entry and exit orders. No new input. Strategy defaults are quantity 1, pyramiding 5, and process orders on close; orders are muted from TradingView alerts. Pending retest limits are staged while a plan is armed so the tester can observe the retest.
-- A2 adds lower-timeframe order-certainty annotation. `Intrabar order certainty` defaults on; unavailable lower-timeframe data is `unproven`. Adds `order_certainty` to entry and exit events and a HUD marker.
+- A2 adds lower-timeframe order-certainty annotation. `Intrabar order certainty` defaults on; unavailable lower-timeframe data is `unproven` when a same-bar ordering conflict needs it, and target-before-stop conflicts are marked `unproven`. Adds `order_certainty` to entry and exit events and a HUD marker.
 - A3 adds `Slippage ticks` (default 0) and `Commission round trip ($ / contract)` (default $0). Gross R stays unchanged; exit events add `r_net`, and the HUD shows net R. Runtime costs are reflected in the script's calculations, while the Strategy Tester commission and slippage properties remain zero.
 - A4 adds `Risk dollars` (default 0, sizing off) and `Maximum contracts` (default 30). Futures sizing and weighted target-leg splits add `qty` and `legs` to plan, entry, exit, and stop-update events. With sizing off, the leg array is `[1,0,0]`; options quantity remains 1. A zero-size plan remains in the state machine and is marked in the HUD.
 - A5 adds `outer_close` and `run_bars` displacement annotations to the plan card and `disp_quality` to plan events. No new input; arming and grade rules stay unchanged.
-- A6 flattens at the previous close with reason `session_end_missing_bar` when a session-end bar is absent. It uses the existing `Flatten Open Trade At Session End` input (default off).
-- B1 adds the level catalog, default off: `Use level catalog` = false; `Catalog feeds room and grade` = false; equal-level ATR tolerance = 0.25; pivot length = 2; lookback = 150 bars; retained levels = 8. Catalog display is separate from feeding plan room/grade.
+- A6 flattens at the previous close with reason `session_end_missing_bar` when a configured session's end bar is absent. It uses the existing `Flatten Open Trade At Session End` input (default off) and leaves 24/5 no-filter behavior unchanged.
+- B1 adds the level catalog, default off: `Use level catalog` = false; `Catalog feeds room and grade` = false; equal-level ATR tolerance = 0.25; pivot length = 2; lookback = 150 bars; retained levels = 8; Opening Range duration = 15 minutes. Catalog display is separate from feeding plan room/grade.
 - B2 adds Asia, London, and New York publishing toggles, all default off. Windows default to 19:00–02:00 ET, 03:00–07:00 ET, MNQ/MES 09:30–15:45 ET, and MGC 08:20–13:30 ET.
 - B3 adds news blocking, default off: times `0830,1000,1400` ET and block length 0 minutes.
 - B4 adds tick floors, default off: MNQ 8, MES 4, MGC 10, generic 8 ticks.
 - B5 adds chart-scaled higher-timeframe swings, default off; it activates only at 15m or higher.
-- B6a adds the top-down structure filter, default off, with fallback EMA lengths 100/200.
-- B6b adds structural targets 2, default off, with TP2 minimum 1.0R (0 disables the minimum).
-- B6c adds confirmation before fill, default off, with pullback pivot length 2.
+- B6a adds the top-down structure filter, default off, with fallback EMA lengths 100/200, neutral-direction allowance, and a reachable counter-bias exception.
+- B6b adds structural targets 2, default off, with TP2 minimum 1.0R (0 disables the minimum), tick-rounded targets, and unswept pivot lists.
+- B6c adds confirmation before fill, default off, with pullback pivot length 2 and the retest extreme as the position-check input.
 - Webhook changes are additive at defaults except for `version = "2.6.0"` and the new fingerprint suffix only when an added input is changed. Confirmed-bar alert timing and existing event names remain unchanged.
 
 - Phase 1 removals. Discarded the untracked `staxbot_2_4.pine` draft; it was never committed. Moved `staxbot_2_0.pine`, `staxbot_2_2.pine`, and `staxbot_2_3.pine` to `archive/`. `staxbot_2_1.pine` is unchanged and remains the rebuild base. `bot/execution_bot.py`, `bot/watch.py`, and `docs/alerts-thread.md` were not edited.

@@ -14,6 +14,9 @@ strategy("StaxBot", shorttitle = "StaxBot", overlay = true,
      commission_type = strategy.commission.cash_per_contract, commission_value = 0.0, slippage = 0,
      max_boxes_count = 300, max_lines_count = 500, max_labels_count = 500)
 
+max_bars_back(high, 501)
+max_bars_back(low, 501)
+
 G_PRESET  = "Preset"
 G_COACH   = "Coach & Execution Filters"
 G_STRUCT  = "Structure"
@@ -164,6 +167,8 @@ equalLookbackIn = input.int(150, "B1 - Equal pivot lookback bars", minval = 5, m
      tooltip = "Changes which plans arm/fill/grade. Default OFF. Used by the level catalog.")
 equalCapIn = input.int(8, "B1 - Equal levels retained", minval = 2, maxval = 12, group = G_ENGINE,
      tooltip = "Changes which plans arm/fill/grade. Default OFF. Used by the level catalog.")
+catalogORMinutesIn = input.int(15, "B1 - Opening Range minutes", minval = 1, maxval = 60, group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Used by the level catalog.")
 pubAsiaIn = input.bool(false, "B2 - Publish Asia", group = G_ENGINE,
      tooltip = "Changes which plans arm/fill/grade. Default OFF.")
 pubLondonIn = input.bool(false, "B2 - Publish London", group = G_ENGINE,
@@ -252,7 +257,8 @@ pubAsiaNow = pubAsiaIn and not na(time(timeframe.period, pubAsiaWindowIn + ":123
 pubLondonNow = pubLondonIn and not na(time(timeframe.period, pubLondonWindowIn + ":1234567", "America/New_York"))
 pubNYWindow = syminfo.root == "MGC" ? pubNYGoldWindowIn : pubNYIndexWindowIn
 pubNYNow = pubNYIn and not na(time(timeframe.period, pubNYWindow + ":1234567", "America/New_York"))
-inSession = pubWindowMode ? (pubAsiaNow or pubLondonNow or pubNYNow) : legacyInSession
+publishWindowNow = pubAsiaNow or pubLondonNow or pubNYNow
+inSession = legacyInSession
 sessionEnded = inSession[1] and not inSession
 pauseHit = time(timeframe.period, pauseSessIn, pauseTzIn)
 inPause = pauseOnIn and not na(pauseHit)
@@ -335,10 +341,14 @@ pdl = request.security(syminfo.tickerid, "D", low[1], gaps = barmerge.gaps_off, 
 pwh = request.security(syminfo.tickerid, "W", high[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
 pwl = request.security(syminfo.tickerid, "W", low[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
 f_htf_piv() =>
-    [ta.pivothigh(high, swingLenIn, swingLenIn)[1], ta.pivotlow(low, swingLenIn, swingLenIn)[1]]
-[dPh, dPl] = request.security(syminfo.tickerid, "D", f_htf_piv(), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
-[h4Ph, h4Pl] = request.security(syminfo.tickerid, "240", f_htf_piv(), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
-[h1Ph, h1Pl] = request.security(syminfo.tickerid, "60", f_htf_piv(), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+    float pivotHigh = ta.pivothigh(high, 2, 2)[1]
+    float pivotLow = ta.pivotlow(low, 2, 2)[1]
+    int pivotHighTime = not na(pivotHigh) ? time[3] : na
+    int pivotLowTime = not na(pivotLow) ? time[3] : na
+    [pivotHigh, pivotLow, pivotHighTime, pivotLowTime]
+[dPh, dPl, dPhTime, dPlTime] = request.security(syminfo.tickerid, "D", f_htf_piv(), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+[h4Ph, h4Pl, h4PhTime, h4PlTime] = request.security(syminfo.tickerid, "240", f_htf_piv(), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+[h1Ph, h1Pl, h1PhTime, h1PlTime] = request.security(syminfo.tickerid, "60", f_htf_piv(), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
 
 // Batch A intrabar certainty uses the smallest available interval no greater than one minute.
 string intrabarTf = timeframe.in_seconds() > 60 ? "1" : timeframe.period
@@ -351,7 +361,11 @@ if intrabarCheckIn
 
 // Batch B5 contexts are separate from the fixed D / 4H / 1H / 15m / 5m requests above.
 f_scaledPiv(int pivotLength) =>
-    [ta.pivothigh(high, pivotLength, pivotLength)[1], ta.pivotlow(low, pivotLength, pivotLength)[1]]
+    float pivotHigh = ta.pivothigh(high, pivotLength, pivotLength)[1]
+    float pivotLow = ta.pivotlow(low, pivotLength, pivotLength)[1]
+    int pivotHighTime = not na(pivotHigh) ? time[pivotLength + 1] : na
+    int pivotLowTime = not na(pivotLow) ? time[pivotLength + 1] : na
+    [pivotHigh, pivotLow, pivotHighTime, pivotLowTime]
 chartSeconds = timeframe.in_seconds()
 scaledSetupSeconds = math.max(900, chartSeconds * 3)
 scaledPositionSeconds = math.max(3600, chartSeconds * 12)
@@ -363,26 +377,42 @@ scaledRunnerTf = timeframe.from_seconds(int(scaledRunnerSeconds))
 scaledSlowTf = timeframe.from_seconds(int(scaledSlowSeconds))
 float scaledSetupPh = na
 float scaledSetupPl = na
+int scaledSetupPhTime = na
+int scaledSetupPlTime = na
 float scaledPositionPh = na
 float scaledPositionPl = na
+int scaledPositionPhTime = na
+int scaledPositionPlTime = na
 float scaledRunnerPh = na
 float scaledRunnerPl = na
+int scaledRunnerPhTime = na
+int scaledRunnerPlTime = na
 float scaledSlowPh = na
 float scaledSlowPl = na
+int scaledSlowPhTime = na
+int scaledSlowPlTime = na
 if useScaledHTFIn and chartSeconds >= 900
-    [scaledSetupPhResult, scaledSetupPlResult] = request.security(syminfo.tickerid, scaledSetupTf, f_scaledPiv(swingLenIn), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
-    [scaledPositionPhResult, scaledPositionPlResult] = request.security(syminfo.tickerid, scaledPositionTf, f_scaledPiv(swingLenIn), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
-    [scaledRunnerPhResult, scaledRunnerPlResult] = request.security(syminfo.tickerid, scaledRunnerTf, f_scaledPiv(swingLenIn), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
-    [scaledSlowPhResult, scaledSlowPlResult] = request.security(syminfo.tickerid, scaledSlowTf, f_scaledPiv(swingLenIn), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+    [scaledSetupPhResult, scaledSetupPlResult, scaledSetupPhTimeResult, scaledSetupPlTimeResult] = request.security(syminfo.tickerid, scaledSetupTf, f_scaledPiv(2), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+    [scaledPositionPhResult, scaledPositionPlResult, scaledPositionPhTimeResult, scaledPositionPlTimeResult] = request.security(syminfo.tickerid, scaledPositionTf, f_scaledPiv(2), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+    [scaledRunnerPhResult, scaledRunnerPlResult, scaledRunnerPhTimeResult, scaledRunnerPlTimeResult] = request.security(syminfo.tickerid, scaledRunnerTf, f_scaledPiv(2), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+    [scaledSlowPhResult, scaledSlowPlResult, scaledSlowPhTimeResult, scaledSlowPlTimeResult] = request.security(syminfo.tickerid, scaledSlowTf, f_scaledPiv(2), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
     scaledSetupPh := scaledSetupPhResult
     scaledSetupPl := scaledSetupPlResult
+    scaledSetupPhTime := scaledSetupPhTimeResult
+    scaledSetupPlTime := scaledSetupPlTimeResult
     scaledPositionPh := scaledPositionPhResult
     scaledPositionPl := scaledPositionPlResult
+    scaledPositionPhTime := scaledPositionPhTimeResult
+    scaledPositionPlTime := scaledPositionPlTimeResult
     scaledRunnerPh := scaledRunnerPhResult
     scaledRunnerPl := scaledRunnerPlResult
+    scaledRunnerPhTime := scaledRunnerPhTimeResult
+    scaledRunnerPlTime := scaledRunnerPlTimeResult
     scaledSlowPh := scaledSlowPhResult
     scaledSlowPl := scaledSlowPlResult
-[setup15Ph, setup15Pl] = request.security(syminfo.tickerid, "15", f_scaledPiv(swingLenIn), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+    scaledSlowPhTime := scaledSlowPhTimeResult
+    scaledSlowPlTime := scaledSlowPlTimeResult
+[setup15Ph, setup15Pl, setup15PhTime, setup15PlTime] = request.security(syminfo.tickerid, "15", f_scaledPiv(2), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
 
 // B6a: confirmed slow / runner context directions from the Engine's structure rule.
 f_structDir(int pivotLength) =>
@@ -406,7 +436,7 @@ htfStructSlow = request.security(syminfo.tickerid, "D", f_structDir(2)[1], gaps 
 htfStructRunner = request.security(syminfo.tickerid, "240", f_structDir(2)[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
 fallbackFast = ta.ema(close, topDownFastEmaIn)
 fallbackSlow = ta.ema(close, topDownSlowEmaIn)
-fallbackDirection = close > fallbackFast and fallbackFast > fallbackSlow ? 1 : close < fallbackFast and fallbackFast < fallbackSlow ? -1 : 0
+fallbackDirection = close > fallbackFast and close > fallbackSlow ? 1 : close < fallbackFast and close < fallbackSlow ? -1 : 0
 topDownDirection = htfStructSlow != 0 and htfStructSlow == htfStructRunner ? htfStructSlow : fallbackDirection
 [positionOpen, positionHigh, positionLow, positionClose] = request.security(syminfo.tickerid, "60", [open[1], high[1], low[1], close[1]], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
 
@@ -414,6 +444,8 @@ ph = ta.pivothigh(high, swingLenIn, swingLenIn)
 pl = ta.pivotlow(low, swingLenIn, swingLenIn)
 confirmPullbackPh = ta.pivothigh(high, confirmPivotLenIn, confirmPivotLenIn)
 confirmPullbackPl = ta.pivotlow(low, confirmPivotLenIn, confirmPivotLenIn)
+lastConfirmedPullbackPh = ta.valuewhen(not na(confirmPullbackPh), confirmPullbackPh, 0)
+lastConfirmedPullbackPl = ta.valuewhen(not na(confirmPullbackPl), confirmPullbackPl, 0)
 var float rangeHigh = na
 var float rangeLow = na
 var int rangeHighBar = na
@@ -531,6 +563,7 @@ type staxPlan
     int confirmBar = -1
     bool structureConfirmed = false
     float pullbackBase = na
+    float retestBest = na
     float pullbackSwing = na
     int pullbackBar = -1
     float confirmExtreme = na
@@ -585,14 +618,14 @@ var array<float> scaledRunnerHighs = array.new_float()
 var array<float> scaledRunnerLows = array.new_float()
 var array<float> scaledSlowHighs = array.new_float()
 var array<float> scaledSlowLows = array.new_float()
-var float seenSetup15High = na
-var float seenSetup15Low = na
-var float seenScaledSetupHigh = na
-var float seenScaledSetupLow = na
-var float seenScaledPositionHigh = na
-var float seenScaledPositionLow = na
-var float seenScaledRunnerHigh = na
-var float seenScaledRunnerLow = na
+var int seenSetup15HighTime = na
+var int seenSetup15LowTime = na
+var int seenScaledSetupHighTime = na
+var int seenScaledSetupLowTime = na
+var int seenScaledPositionHighTime = na
+var int seenScaledPositionLowTime = na
+var int seenScaledRunnerHighTime = na
+var int seenScaledRunnerLowTime = na
 var float seenScaledSlowHigh = na
 var float seenScaledSlowLow = na
 var array<importedLevel> engineCatalog = array.new<importedLevel>()
@@ -606,12 +639,16 @@ var float lastEqualHigh = na
 var float lastEqualLow = na
 var int lastEqualHighBar = na
 var int lastEqualLowBar = na
-float catalogPdc = request.security(syminfo.tickerid, "D", close[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+var float catalogPdc = na
+var float catalogGlobexLast = na
+bool catalogGlobexNow = not na(time(timeframe.period, "1800-1700:1234567", "America/New_York"))
+bool catalogGlobexStart = catalogGlobexNow and not na(time_tradingday[1]) and time_tradingday != time_tradingday[1]
 string catalogNySession = syminfo.root == "MGC" ? "0820-1130" : "0930-1600"
 bool catalogNyNow = not na(time(timeframe.period, catalogNySession + ":1234567", "America/New_York"))
 int catalogNyStartMinute = syminfo.root == "MGC" ? 500 : 570
 int catalogNyMinute = hour(time, "America/New_York") * 60 + minute(time, "America/New_York")
-bool catalogOrNow = catalogNyNow and catalogNyMinute >= catalogNyStartMinute and catalogNyMinute < catalogNyStartMinute + 15
+bool catalogOrEnabled = syminfo.root == "MNQ" or syminfo.root == "MES"
+bool catalogOrNow = catalogOrEnabled and catalogNyNow and catalogNyMinute >= catalogNyStartMinute and catalogNyMinute < catalogNyStartMinute + catalogORMinutesIn
 float catalogPivotHigh = ta.pivothigh(high, catalogPivotLenIn, catalogPivotLenIn)
 float catalogPivotLow = ta.pivotlow(low, catalogPivotLenIn, catalogPivotLenIn)
 var array<string> importedNames = array.new_string()
@@ -630,10 +667,10 @@ var float onRunHi = na
 var float onRunLo = na
 var float seenDph = na
 var float seenDpl = na
-var float seen4h = na
-var float seen4l = na
-var float seen1h = na
-var float seen1l = na
+var int seen4hPivotTime = na
+var int seen4lPivotTime = na
+var int seen1hPivotTime = na
+var int seen1lPivotTime = na
 var int sweepSide = 0
 var int sweepFrom = -1
 var float sweepLvl = na
@@ -689,6 +726,7 @@ f_fp() =>
     extra += catalogPivotLenIn != 2 ? "|B1.pivot=" + str.tostring(catalogPivotLenIn) : ""
     extra += equalLookbackIn != 150 ? "|B1.lookback=" + str.tostring(equalLookbackIn) : ""
     extra += equalCapIn != 8 ? "|B1.cap=" + str.tostring(equalCapIn) : ""
+    extra += catalogORMinutesIn != 15 ? "|B1.orMinutes=" + str.tostring(catalogORMinutesIn) : ""
     extra += pubAsiaIn ? "|B2.asia=1" : ""
     extra += pubLondonIn ? "|B2.london=1" : ""
     extra += pubNYIn ? "|B2.ny=1" : ""
@@ -726,8 +764,6 @@ f_stop_hit(int side, float px) =>
     side == 1 ? low <= px : high >= px
 f_tp_hit(int side, float px) =>
     side == 1 ? high >= px : low <= px
-f_ltfAvailable() =>
-    not na(ltfHighs) and not na(ltfLows) and array.size(ltfHighs) > 0 and array.size(ltfHighs) == array.size(ltfLows)
 f_wrong(int side, float shelf) =>
     float tol = reclaimAtrIn * armAtr
     side == 1 ? shelf - close >= tol : close - shelf >= tol
@@ -781,8 +817,11 @@ f_ltfWalk(int side, bool needEntry, float entry, float stop, float t1, float t2,
                 else if adverse and favorable
                     certainty := "unproven"
                     resolved := true
-                else if adverse or favorable
+                else if adverse
                     certainty := "proven"
+                    resolved := true
+                else if favorable
+                    certainty := needEntry ? "proven" : "unproven"
                     resolved := true
     certainty
 f_totalWeight(staxPlan p) =>
@@ -978,8 +1017,8 @@ f_structuralTargets2(float entry, float stop, int side) =>
     float t2 = not na(setupLevel) ? setupLevel - side * lead : na
     float runnerLevel = na
     if not na(setupLevel)
-        float positionTarget = f_nearestSwing(positionHighs, positionLows, side, t2, na)
-        float runnerTarget = f_nearestSwing(runnerHighs, runnerLows, side, t2, na)
+        float positionTarget = f_nearestSwing(positionHighs, positionLows, side, entry, setupLevel)
+        float runnerTarget = f_nearestSwing(runnerHighs, runnerLows, side, entry, setupLevel)
         runnerLevel := na(positionTarget) ? runnerTarget : na(runnerTarget) ? positionTarget : side == 1 ? math.min(positionTarget, runnerTarget) : math.max(positionTarget, runnerTarget)
     float t3 = na
     if not na(t2) and risk > 0
@@ -996,9 +1035,13 @@ f_structuralTargets2(float entry, float stop, int side) =>
                 t1 := price
     if na(t1) and not na(t2)
         t1 := entry + side * (side * (t2 - entry)) * 0.5
+    t1 := na(t1) ? na : math.round_to_mintick(t1)
+    t2 := na(t2) ? na : math.round_to_mintick(t2)
+    t3 := na(t3) ? na : math.round_to_mintick(t3)
     bool minRok = tp2MinRIn == 0 or (risk > 0 and not na(t2) and side * (t2 - entry) >= tp2MinRIn * risk)
     bool ordered = not na(t1) and not na(t2) and not na(t3) and side * (t1 - entry) > 0 and side * (t2 - t1) > 0 and side * (t3 - t2) > 0
-    [t1, t2, t3, ordered and minRok]
+    bool runnerRok = risk > 0 and not na(t3) and side * (t3 - entry) >= 1.5 * risk
+    [t1, t2, t3, ordered and minRok and runnerRok]
 f_catalogSet(int slot, float price, string kind, int side, bool major, bool live, bool covered) =>
     if array.size(engineCatalog) > slot
         importedLevel level = array.get(engineCatalog, slot)
@@ -1028,6 +1071,28 @@ f_catalogPrice(string kind) =>
             if level.kind == kind and not na(level.price)
                 price := level.price
     price
+f_trimEqualLevels(int maxCount) =>
+    int count = 0
+    if array.size(engineCatalog) > 5
+        for i = 5 to array.size(engineCatalog) - 1
+            importedLevel level = array.get(engineCatalog, i)
+            if level.kind == "EQH" or level.kind == "EQL"
+                count += 1
+    while count > maxCount
+        int oldestIndex = -1
+        int oldestBorn = na
+        if array.size(engineCatalog) > 5
+            for i = 5 to array.size(engineCatalog) - 1
+                importedLevel level = array.get(engineCatalog, i)
+                if (level.kind == "EQH" or level.kind == "EQL") and (na(oldestBorn) or level.born < oldestBorn)
+                    oldestIndex := i
+                    oldestBorn := level.born
+        if oldestIndex >= 0
+            array.remove(engineCatalog, oldestIndex)
+            count -= 1
+        else
+            count := 0
+    true
 f_runBars(int side) =>
     bool twoAligned = bar_index >= 1 and (side == 1 ? close > open and close[1] > open[1] : close < open and close[1] < open[1]) and math.abs(close - open[1]) >= 1.5 * atr
     bool threeAligned = bar_index >= 2 and (side == 1 ? close > open and close[1] > open[1] and close[2] > open[2] : close < open and close[1] < open[1] and close[2] < open[2]) and math.abs(close - open[2]) >= 1.5 * atr
@@ -1042,6 +1107,15 @@ f_keep3(array<float> src, float v) =>
         if array.size(src) > 3
             array.shift(src)
     true
+f_keepAll(array<float> src, float v) =>
+    if not na(v)
+        array.push(src, v)
+    true
+f_keepTargetSwing(array<float> src, float v) =>
+    if structuralTargets2In
+        f_keepAll(src, v)
+    else
+        f_keep3(src, v)
 f_pruneSwings(array<float> src, int side) =>
     if array.size(src) > 0
         for i = array.size(src) - 1 to 0
@@ -1088,7 +1162,7 @@ f_try_arm(string origin, int side, float entry, float tightPx, float medPx, floa
         t3 := structT3
         ladder2 := false
         ladder3 := false
-    if structOnIn and not na(t1) and array.size(zonePx) > 0
+    if structOnIn and not structuralTargets2In and not na(t1) and array.size(zonePx) > 0
         float nxt1 = na
         float nxt2 = na
         for i = 0 to array.size(zonePx) - 1
@@ -1114,14 +1188,14 @@ f_try_arm(string origin, int side, float entry, float tightPx, float medPx, floa
     float r1 = ref > 0 ? math.abs(t1 - entry) / ref : na
     float r2 = ref > 0 ? math.abs(t2 - entry) / ref : na
     float r3 = ref > 0 ? math.abs(t3 - entry) / ref : na
-    bool labelsOk = not na(r1) and math.abs(r1 - pTp) < 0.0001 and (not ladder2 or math.abs(r2 - pTp * 2.0) < 0.0001) and (not ladder3 or math.abs(r3 - pTp * 3.0) < 0.0001)
+    bool labelsOk = structuralTargets2In ? not na(r1) and not na(r2) and not na(r3) : not na(r1) and math.abs(r1 - pTp) < 0.0001 and (not ladder2 or math.abs(r2 - pTp * 2.0) < 0.0001) and (not ladder3 or math.abs(r3 - pTp * 3.0) < 0.0001)
     bool geometryOk = ordered and labelsOk and (not structuralTargets2In or structTargetsOk)
     int clock = hour(time, tzIn) * 60 + minute(time, tzIn)
     bool gradeSess = (clock >= 180 and clock < 360) or (clock >= 500 and clock < 690)
     string atLevel = f_at_level(entry)
     string g = f_grade(flag1, side == 1 ? bias == 1 : bias == -1, volume > volSma, gradeSess, atLevel != "")
     bool topDownException = flag1 and (htfSweep or atLevel != "")
-    bool topDownOk = not topDownFilterIn or side == topDownDirection or origin == "sweep" or topDownException
+    bool topDownOk = not topDownFilterIn or topDownDirection == 0 or side == topDownDirection or origin == "sweep" or topDownException
     if origin == "sweep"
         g := htfSweep ? "A+" : "B"
     string roomName = geometryOk and distanceOk ? f_room_name(side, entry, t1) : ""
@@ -1187,7 +1261,7 @@ f_try_arm(string origin, int side, float entry, float tightPx, float medPx, floa
         p.leg2 := split2
         p.leg3 := split3
         float signalRange = high - low
-        p.outerClose := signalRange > 0 and (side == 1 ? close >= high - signalRange * 0.25 : close <= low + signalRange * 0.25)
+        p.outerClose := signalRange > 0 and (side == 1 ? close > open and close >= high - signalRange * 0.25 : close < open and close <= low + signalRange * 0.25)
         p.runBars := f_runBars(side)
         p.fp := f_fp()
         p.reason := ""
@@ -1526,6 +1600,17 @@ if barstate.isconfirmed
     formingNow := false
 
     if barstate.isconfirmed
+        if useCatalogIn
+            if catalogGlobexStart
+                catalogPdc := catalogGlobexLast
+                catalogNyHigh := na
+                catalogNyLow := na
+                catalogOrHigh := na
+                catalogOrLow := na
+                catalogNyCovered := false
+                catalogOrCovered := false
+            if catalogGlobexNow
+                catalogGlobexLast := close
         if bar_index > 0 and inAsiaSess[1] and not inAsiaSess
             asiaHi := asiaRunHi
             asiaLo := asiaRunLo
@@ -1556,44 +1641,44 @@ if barstate.isconfirmed
         if not na(dPl) and (na(seenDpl) or dPl != seenDpl)
             f_keep3(dLows, dPl)
             seenDpl := dPl
-        if not na(h4Ph) and (na(seen4h) or h4Ph != seen4h)
-            f_keep3(h4Highs, h4Ph)
-            seen4h := h4Ph
-        if not na(h4Pl) and (na(seen4l) or h4Pl != seen4l)
-            f_keep3(h4Lows, h4Pl)
-            seen4l := h4Pl
-        if not na(h1Ph) and (na(seen1h) or h1Ph != seen1h)
-            f_keep3(h1Highs, h1Ph)
-            seen1h := h1Ph
-        if not na(h1Pl) and (na(seen1l) or h1Pl != seen1l)
-            f_keep3(h1Lows, h1Pl)
-            seen1l := h1Pl
+        if not na(h4Ph) and not na(h4PhTime) and (na(seen4hPivotTime) or h4PhTime != seen4hPivotTime)
+            f_keepTargetSwing(h4Highs, h4Ph)
+            seen4hPivotTime := h4PhTime
+        if not na(h4Pl) and not na(h4PlTime) and (na(seen4lPivotTime) or h4PlTime != seen4lPivotTime)
+            f_keepTargetSwing(h4Lows, h4Pl)
+            seen4lPivotTime := h4PlTime
+        if not na(h1Ph) and not na(h1PhTime) and (na(seen1hPivotTime) or h1PhTime != seen1hPivotTime)
+            f_keepTargetSwing(h1Highs, h1Ph)
+            seen1hPivotTime := h1PhTime
+        if not na(h1Pl) and not na(h1PlTime) and (na(seen1lPivotTime) or h1PlTime != seen1lPivotTime)
+            f_keepTargetSwing(h1Lows, h1Pl)
+            seen1lPivotTime := h1PlTime
 
-        if not na(setup15Ph) and (na(seenSetup15High) or setup15Ph != seenSetup15High)
-            f_keep3(setup15Highs, setup15Ph)
-            seenSetup15High := setup15Ph
-        if not na(setup15Pl) and (na(seenSetup15Low) or setup15Pl != seenSetup15Low)
-            f_keep3(setup15Lows, setup15Pl)
-            seenSetup15Low := setup15Pl
+        if not na(setup15Ph) and not na(setup15PhTime) and (na(seenSetup15HighTime) or setup15PhTime != seenSetup15HighTime)
+            f_keepTargetSwing(setup15Highs, setup15Ph)
+            seenSetup15HighTime := setup15PhTime
+        if not na(setup15Pl) and not na(setup15PlTime) and (na(seenSetup15LowTime) or setup15PlTime != seenSetup15LowTime)
+            f_keepTargetSwing(setup15Lows, setup15Pl)
+            seenSetup15LowTime := setup15PlTime
         if useScaledHTFIn and chartSeconds >= 900
-            if not na(scaledSetupPh) and (na(seenScaledSetupHigh) or scaledSetupPh != seenScaledSetupHigh)
-                f_keep3(scaledSetupHighs, scaledSetupPh)
-                seenScaledSetupHigh := scaledSetupPh
-            if not na(scaledSetupPl) and (na(seenScaledSetupLow) or scaledSetupPl != seenScaledSetupLow)
-                f_keep3(scaledSetupLows, scaledSetupPl)
-                seenScaledSetupLow := scaledSetupPl
-            if not na(scaledPositionPh) and (na(seenScaledPositionHigh) or scaledPositionPh != seenScaledPositionHigh)
-                f_keep3(scaledPositionHighs, scaledPositionPh)
-                seenScaledPositionHigh := scaledPositionPh
-            if not na(scaledPositionPl) and (na(seenScaledPositionLow) or scaledPositionPl != seenScaledPositionLow)
-                f_keep3(scaledPositionLows, scaledPositionPl)
-                seenScaledPositionLow := scaledPositionPl
-            if not na(scaledRunnerPh) and (na(seenScaledRunnerHigh) or scaledRunnerPh != seenScaledRunnerHigh)
-                f_keep3(scaledRunnerHighs, scaledRunnerPh)
-                seenScaledRunnerHigh := scaledRunnerPh
-            if not na(scaledRunnerPl) and (na(seenScaledRunnerLow) or scaledRunnerPl != seenScaledRunnerLow)
-                f_keep3(scaledRunnerLows, scaledRunnerPl)
-                seenScaledRunnerLow := scaledRunnerPl
+            if not na(scaledSetupPh) and not na(scaledSetupPhTime) and (na(seenScaledSetupHighTime) or scaledSetupPhTime != seenScaledSetupHighTime)
+                f_keepTargetSwing(scaledSetupHighs, scaledSetupPh)
+                seenScaledSetupHighTime := scaledSetupPhTime
+            if not na(scaledSetupPl) and not na(scaledSetupPlTime) and (na(seenScaledSetupLowTime) or scaledSetupPlTime != seenScaledSetupLowTime)
+                f_keepTargetSwing(scaledSetupLows, scaledSetupPl)
+                seenScaledSetupLowTime := scaledSetupPlTime
+            if not na(scaledPositionPh) and not na(scaledPositionPhTime) and (na(seenScaledPositionHighTime) or scaledPositionPhTime != seenScaledPositionHighTime)
+                f_keepTargetSwing(scaledPositionHighs, scaledPositionPh)
+                seenScaledPositionHighTime := scaledPositionPhTime
+            if not na(scaledPositionPl) and not na(scaledPositionPlTime) and (na(seenScaledPositionLowTime) or scaledPositionPlTime != seenScaledPositionLowTime)
+                f_keepTargetSwing(scaledPositionLows, scaledPositionPl)
+                seenScaledPositionLowTime := scaledPositionPlTime
+            if not na(scaledRunnerPh) and not na(scaledRunnerPhTime) and (na(seenScaledRunnerHighTime) or scaledRunnerPhTime != seenScaledRunnerHighTime)
+                f_keepTargetSwing(scaledRunnerHighs, scaledRunnerPh)
+                seenScaledRunnerHighTime := scaledRunnerPhTime
+            if not na(scaledRunnerPl) and not na(scaledRunnerPlTime) and (na(seenScaledRunnerLowTime) or scaledRunnerPlTime != seenScaledRunnerLowTime)
+                f_keepTargetSwing(scaledRunnerLows, scaledRunnerPl)
+                seenScaledRunnerLowTime := scaledRunnerPlTime
             if not na(scaledSlowPh) and (na(seenScaledSlowHigh) or scaledSlowPh != seenScaledSlowHigh)
                 f_keep3(scaledSlowHighs, scaledSlowPh)
                 seenScaledSlowHigh := scaledSlowPh
@@ -1601,14 +1686,19 @@ if barstate.isconfirmed
                 f_keep3(scaledSlowLows, scaledSlowPl)
                 seenScaledSlowLow := scaledSlowPl
 
-        f_pruneSwings(setup15Highs, 1)
-        f_pruneSwings(setup15Lows, -1)
-        f_pruneSwings(scaledSetupHighs, 1)
-        f_pruneSwings(scaledSetupLows, -1)
-        f_pruneSwings(scaledPositionHighs, 1)
-        f_pruneSwings(scaledPositionLows, -1)
-        f_pruneSwings(scaledRunnerHighs, 1)
-        f_pruneSwings(scaledRunnerLows, -1)
+        if structuralTargets2In
+            f_pruneSwings(h4Highs, 1)
+            f_pruneSwings(h4Lows, -1)
+            f_pruneSwings(h1Highs, 1)
+            f_pruneSwings(h1Lows, -1)
+            f_pruneSwings(setup15Highs, 1)
+            f_pruneSwings(setup15Lows, -1)
+            f_pruneSwings(scaledSetupHighs, 1)
+            f_pruneSwings(scaledSetupLows, -1)
+            f_pruneSwings(scaledPositionHighs, 1)
+            f_pruneSwings(scaledPositionLows, -1)
+            f_pruneSwings(scaledRunnerHighs, 1)
+            f_pruneSwings(scaledRunnerLows, -1)
         f_pruneSwings(scaledSlowHighs, 1)
         f_pruneSwings(scaledSlowLows, -1)
 
@@ -1626,7 +1716,7 @@ if barstate.isconfirmed
                 if catalogOrNow
                     catalogOrHigh := na(catalogOrHigh) ? high : math.max(catalogOrHigh, high)
                     catalogOrLow := na(catalogOrLow) ? low : math.min(catalogOrLow, low)
-                else if catalogNyMinute >= catalogNyStartMinute + 15
+                else if catalogNyMinute >= catalogNyStartMinute + catalogORMinutesIn
                     catalogOrCovered := true
             if bar_index > 0 and not catalogNyNow and catalogNyNow[1]
                 catalogNyCovered := true
@@ -1656,17 +1746,7 @@ if barstate.isconfirmed
                                     validHigh := false
                     if validHigh
                         array.push(engineCatalog, importedLevel.new(equalLevelHigh, "EQH", 1, true, true, false, true, false, false, false, bar_index))
-                        int eqHighCount = 0
-                        for j = 5 to array.size(engineCatalog) - 1
-                            importedLevel countedHigh = array.get(engineCatalog, j)
-                            if countedHigh.kind == "EQH"
-                                eqHighCount += 1
-                        if eqHighCount > equalCapIn
-                            for j = 5 to array.size(engineCatalog) - 1
-                                importedLevel oldestHigh = array.get(engineCatalog, j)
-                                if oldestHigh.kind == "EQH"
-                                    array.remove(engineCatalog, j)
-                                    break
+                        f_trimEqualLevels(equalCapIn)
                 lastEqualHigh := catalogPivotHigh
                 lastEqualHighBar := pivotBarHigh
 
@@ -1688,17 +1768,7 @@ if barstate.isconfirmed
                                     validLow := false
                     if validLow
                         array.push(engineCatalog, importedLevel.new(equalLevelLow, "EQL", -1, true, true, false, true, false, false, false, bar_index))
-                        int eqLowCount = 0
-                        for j = 5 to array.size(engineCatalog) - 1
-                            importedLevel countedLow = array.get(engineCatalog, j)
-                            if countedLow.kind == "EQL"
-                                eqLowCount += 1
-                        if eqLowCount > equalCapIn
-                            for j = 5 to array.size(engineCatalog) - 1
-                                importedLevel oldestLow = array.get(engineCatalog, j)
-                                if oldestLow.kind == "EQL"
-                                    array.remove(engineCatalog, j)
-                                    break
+                        f_trimEqualLevels(equalCapIn)
                 lastEqualLow := catalogPivotLow
                 lastEqualLowBar := pivotBarLow
 
@@ -1882,9 +1952,10 @@ if barstate.isconfirmed
             string watchMsg = '{"source":"staxbot","event":"watch","eventId":"watch:' + str.tostring(bar_index) + '","version":"2.6.0","fp":"' + f_fp() + '","provisional":false,"level":' + lvl + ',"range_high":' + f_num(compHi) + ',"range_low":' + f_num(compLo) + ',"break_high":' + f_num(rangeHigh) + ',"break_low":' + f_num(rangeLow) + ',"long_stop":' + f_num(longStop) + ',"short_stop":' + f_num(shortStop) + ',"timestamp":"' + f_ts() + '"}'
             f_send(watchMsg)
 
-    bool sideOkBull = longsOk and (topDownFilterIn ? topDownDirection == 1 : not biasFilterIn or bias == 1)
-    bool sideOkBear = shortsOk and (topDownFilterIn ? topDownDirection == -1 : not biasFilterIn or bias == -1)
-    bool canArm = inSession and not inPause and not newsBlocked and targetsOk and volOk
+    bool sideOkBull = longsOk and (topDownFilterIn ? true : not biasFilterIn or bias == 1)
+    bool sideOkBear = shortsOk and (topDownFilterIn ? true : not biasFilterIn or bias == -1)
+    bool armWindowOk = not pubWindowMode or publishWindowNow
+    bool canArm = inSession and armWindowOk and not inPause and not newsBlocked and targetsOk and volOk
 
     if bullThrough or bearThrough
         winSide := bullThrough ? 1 : -1
@@ -1926,7 +1997,7 @@ if barstate.isconfirmed
                         mom.fillBar := bar_index
                         mom.ready := false
                         bool momentumConflict = f_stop_hit(mom.dir, mom.liveStop) or (mom.on1 and f_tp_hit(mom.dir, mom.tp1)) or (mom.on2 and f_tp_hit(mom.dir, mom.tp2)) or (mom.on3 and f_tp_hit(mom.dir, mom.tp3))
-                        mom.entryCertainty := not intrabarCheckIn ? "proven" : not f_ltfAvailable() ? "unproven" : momentumConflict ? f_ltfWalk(mom.dir, true, mom.entry, mom.liveStop, mom.tp1, mom.tp2, mom.tp3, false, false, false) : "proven"
+                        mom.entryCertainty := not intrabarCheckIn ? "proven" : momentumConflict ? f_ltfWalk(mom.dir, true, mom.entry, mom.liveStop, mom.tp1, mom.tp2, mom.tp3, false, false, false) : "proven"
                         tradesToday += 1
                         f_send(f_payload(mom, "entry", "", ""))
                         array.set(plans, i, mom)
@@ -2037,10 +2108,14 @@ if barstate.isconfirmed
             p.ready := false
             if p.state == "TRIGGERED" and bar_index > p.fillBar
                 p.state := "LIVE"
+            bool missingSessionEnd = p.state == "LIVE" and bar_index > p.fillBar and flatAtSessEndIn and sessionFilterOn and not na(time_tradingday[1]) and time_tradingday != time_tradingday[1] and not sessionEnded[1] and not na(close[1])
+            if missingSessionEnd
+                p.exitCertainty := "proven"
+                p := f_close_trade(p, close[1], "session_end_missing_bar", "FLAT_MISSING")
             if p.state == "LIVE" and bar_index > p.fillBar
                 bool stopped = f_stop_hit(p.dir, p.liveStop)
                 bool targetTouched = (p.on1 and not p.hit1 and f_tp_hit(p.dir, p.tp1)) or (p.on2 and not p.hit2 and f_tp_hit(p.dir, p.tp2)) or (p.on3 and not p.hit3 and f_tp_hit(p.dir, p.tp3))
-                p.exitCertainty := not intrabarCheckIn ? "proven" : not f_ltfAvailable() ? "unproven" : stopped and targetTouched ? f_ltfWalk(p.dir, false, p.entry, p.liveStop, p.tp1, p.tp2, p.tp3, p.hit1, p.hit2, p.hit3) : "proven"
+                p.exitCertainty := not intrabarCheckIn ? "proven" : stopped and targetTouched ? f_ltfWalk(p.dir, false, p.entry, p.liveStop, p.tp1, p.tp2, p.tp3, p.hit1, p.hit2, p.hit3) : "proven"
                 if stopped
                     bool moved = p.liveStop != p.stop
                     float rr = p.refRisk > 0 ? p.dir * (p.liveStop - p.entry) / p.refRisk : 0.0
@@ -2073,9 +2148,6 @@ if barstate.isconfirmed
                         p := f_close_trade(p, close, "RECLAIM", "RECLAIM")
                     else if p.state == "LIVE" and sessionEnded and flatAtSessEndIn
                         p := f_close_trade(p, close, "FLAT", "FLAT")
-                    else if p.state == "LIVE" and flatAtSessEndIn and not na(time_tradingday[1]) and time_tradingday != time_tradingday[1] and not sessionEnded[1] and not na(close[1])
-                        p.exitCertainty := "proven"
-                        p := f_close_trade(p, close[1], "session_end_missing_bar", "FLAT_MISSING")
                     else if p.state == "LIVE"
                         float favR = p.dir == 1 ? (high - p.entry) / p.refRisk : (p.entry - low) / p.refRisk
                         float offR = na
@@ -2100,7 +2172,9 @@ if barstate.isconfirmed
                         p.zoneTouches += 1
                         if p.firstTouchBar < 0
                             p.firstTouchBar := bar_index
-                            p.pullbackBase := p.dir == 1 ? rangeHigh : rangeLow
+                            p.pullbackBase := p.dir == 1 ? lastConfirmedPullbackPh : lastConfirmedPullbackPl
+                    if entryTouch
+                        p.retestBest := na(p.retestBest) ? (p.dir == 1 ? low : high) : p.dir == 1 ? math.min(p.retestBest, low) : math.max(p.retestBest, high)
                     p.inEntryZone := entryTouch
                     int pullbackBarNow = bar_index - confirmPivotLenIn
                     if p.firstTouchBar >= 0 and not p.structureConfirmed and pullbackBarNow >= p.firstTouchBar
@@ -2109,11 +2183,15 @@ if barstate.isconfirmed
                         if lowerHigh or higherLow
                             p.pullbackSwing := p.dir == 1 ? confirmPullbackPh : confirmPullbackPl
                             p.pullbackBar := pullbackBarNow
+                        if p.dir == 1 and not na(confirmPullbackPh)
+                            p.pullbackBase := confirmPullbackPh
+                        if p.dir == -1 and not na(confirmPullbackPl)
+                            p.pullbackBase := confirmPullbackPl
                     bool confirmedShift = p.pullbackBar >= 0 and bar_index > p.pullbackBar and (p.dir == 1 ? close > p.pullbackSwing and close > p.entry : close < p.pullbackSwing and close < p.entry)
                     if confirmedShift and not p.structureConfirmed
                         p.structureConfirmed := true
                         p.confirmBar := bar_index
-                        p.confirmExtreme := p.dir == 1 ? low : high
+                        p.confirmExtreme := p.retestBest
                         p.confirmClose := close
                         p.confirmPositionOk := f_positionOk(p.dir, p.confirmExtreme, p.confirmClose)
                 bool churned = confirmBeforeFillIn and p.scenario != "M" and p.zoneTouches > 2
@@ -2173,7 +2251,7 @@ if barstate.isconfirmed
             chosen.fillBar := bar_index
             chosen.liveStop := chosen.stop
             bool entryConflict = f_entry_hit(chosen) and (f_stop_hit(chosen.dir, chosen.liveStop) or (chosen.on1 and f_tp_hit(chosen.dir, chosen.tp1)) or (chosen.on2 and f_tp_hit(chosen.dir, chosen.tp2)) or (chosen.on3 and f_tp_hit(chosen.dir, chosen.tp3)))
-            chosen.entryCertainty := not intrabarCheckIn ? "proven" : not f_ltfAvailable() ? "unproven" : entryConflict ? f_ltfWalk(chosen.dir, true, chosen.entry, chosen.liveStop, chosen.tp1, chosen.tp2, chosen.tp3, false, false, false) : "proven"
+            chosen.entryCertainty := not intrabarCheckIn ? "proven" : entryConflict ? f_ltfWalk(chosen.dir, true, chosen.entry, chosen.liveStop, chosen.tp1, chosen.tp2, chosen.tp3, false, false, false) : "proven"
             tradesToday += 1
             if showDrawingsIn
                 if not na(chosen.lbFill)
@@ -2400,7 +2478,7 @@ if showTableIn and not na(infoTbl)
         f_cell(infoTbl, 2, p, stateWord, stateInk, headBg, "r")
         f_cell(infoTbl, 0, p + 1, stateTxt, sideInk, keyBg, "l")
         f_cell(infoTbl, 1, p + 1, have ? f_num(view.entry) : sessShort, ink, rowBg, "r")
-        f_cell(infoTbl, 2, p + 1, liveOwn ? (noSize ? "NO SIZE" : "N " + f_signed(netOpenR)) + certaintyTag : gradeTxt, liveOwn ? liveGreen : muted, rowBg, "r")
+        f_cell(infoTbl, 2, p + 1, liveOwn ? (noSize ? "NO SIZE" : "G " + f_signed(openR) + " N " + f_signed(netOpenR)) + certaintyTag : have ? f_signed(openR) : gradeTxt, liveOwn ? liveGreen : muted, rowBg, "r")
         f_cell(infoTbl, 0, p + 2, tpName, have ? liveGreen : muted, keyBg, "l")
         f_cell(infoTbl, 1, p + 2, have ? f_num(tpShow) : str.tostring(tradesToday) + " / " + str.tostring(pMaxTrades), ink, rowBg, "r")
         f_cell(infoTbl, 2, p + 2, have ? str.tostring(view.rUnit, "0.#") + "R" : "", muted, rowBg, "r")

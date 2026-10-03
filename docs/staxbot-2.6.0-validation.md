@@ -5,7 +5,7 @@
 - The C1–C6 answers were resolved against the unchanged `staxbot_2_5_2.pine` before implementation and recorded in [staxbot-2.6.0-source-resolutions.md](staxbot-2.6.0-source-resolutions.md).
 - The original input declarations remain unchanged. New inputs are appended in the `Engine imports` group.
 - The original fingerprint expression remains the base expression. The new suffix is empty when all new inputs have their defaults, so its default value is byte-for-byte the 2.5.2 fingerprint.
-- Batch B behavior is guarded by default-off toggles. A2 only annotates certainty, A3 costs default to zero, A4 sizing defaults to off, and A5 adds plan annotations. A6 only runs when the existing session-flatten input is enabled.
+- Batch B behavior is guarded by default-off toggles. A2 only annotates certainty, A3 costs default to zero, A4 sizing defaults to off, and A5 adds plan annotations. A6 only runs when the existing session-flatten input is enabled and a session filter is configured.
 - The original plan state machine remains the source for arming, fills, exits, and alerts. Strategy orders have alerts disabled and are not read back into the state machine.
 
 ## Not run
@@ -70,3 +70,33 @@ The requested per-toggle plans/grades/win-rate/net-R deltas and first 10 changed
 ## Relay-owner release question
 
 Can the GrokBot / Discord relay owner confirm that additive fields, `qty: 0`, the `session_end_missing_bar` reason, and the `2.6.0` version value are accepted before release?
+
+## Review follow-up
+
+Static fixes in response to the source review:
+
+- B2 publish windows now gate new plan arming only. The original session filter remains responsible for existing plan expiry and session flattening.
+- A2 only asks lower-timeframe data on bars where entry/stop/target ordering conflicts. Missing data in that case stays `unproven`; target-before-stop on a conflicting exit is also `unproven` because it contradicts StaxBot's stop-first decision.
+- A6's missing-session-bar fallback now requires a configured session filter and runs before that bar's stop/target checks. It does not flatten the 24/5 no-filter setup at each daily rollover.
+- B1 now sizes the `high` and `low` history buffers for its 500-bar scan, retains one combined equal-level cap, clears New York range levels at the Globex rollover, builds the Opening Range only for MNQ/MES, allows its duration to be configured, and uses the preceding Globex last print for PDC.
+- B6a allows both directions to reach the filter decision, treats neutral direction as no block, and uses the Engine's close-versus-both-EMAs fallback. Its counter-bias exception remains based on the current strong-drive/HTF-sweep or StaxBot level proxy pending the owner's definition of a major sweep.
+- B6b no longer requires structural TP1 to equal the fixed ladder R, does not let the older structural mode overwrite B6b, searches and prunes the retained unswept swing lists, uses pivot length 2, measures the runner beyond the raw setup swing, rounds targets to tick, and checks that the final target is at least 1.5R.
+- B6c records the deepest retest touch for the position check and compares each newly confirmed pullback pivot with the preceding confirmed pivot.
+- The A5 outer-close flag now also requires a candle in the trade direction.
+- The compact HUD preserves the old gross-R value for armed plans and shows gross and net R for live plans. The full HUD retains its grade text while adding net-R and displacement details.
+
+These edits are source-only. No Pine compiler, TradingView chart, Strategy Tester, or replay was available; none of these changes is claimed to compile or pass runtime acceptance. A1 order mirroring and the declaration/HUD owner decisions remain unresolved pending the owner's answer. The PR stays draft until those decisions and a TradingView compile are complete.
+
+Additional timeframe questions identified by review:
+
+12. For B1, are the equal-pivot length and lookback measured in chart bars on each timeframe, or should they be measured in 5m bars?
+13. For B6b, should the fixed 15m setup-swing context remain fixed on charts below 5m when B5 is off?
+14. B6b now uses Engine pivot length 2 for its ladder. Is that the intended choice over StaxBot's existing swing length of 3?
+
+Additional owner choices:
+
+- If the declaration must remain at the 2.5.2 values, may A1's tester-order mirror be gated behind a new default-OFF input while it is replay-validated?
+- Should the compact HUD display gross and net R together, preserving the original armed-plan gross-R cell?
+- Does production enable `Flatten Open Trade At Session End` with no session filter? The revised guard leaves the 24/5 no-filter setup unchanged.
+- Should `r_net` remain the weighted share of position costs used by the current implementation, or should each leg absorb the full per-contract cost?
+- Where should the strategy file land when the proposed `production/` and `development/` folders are introduced?
