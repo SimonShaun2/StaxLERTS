@@ -1,0 +1,2497 @@
+//@version=6
+// StaxBot 2.6.0
+// New saved script. The legend reads StaxBot. The HUD reads STAXBOT 2.6.0.
+// Upgraded from StaxBot 2.5.2; stored break price, latest swing, and gap detection remain in place.
+// A shelf plan arms without a gap. A gap inside the window is a second plan.
+// Tight stops past the gap far edge or the break candle. Medium stops past the displacement candle. Large stops past the leg extreme.
+// Buffers, reclaim, and stop limits use the previous bar's ATR. Tight stays at or inside Medium, and Large stays at or beyond it.
+// The arm decision uses the Medium stop. A selected stop inside the minimum is widened to it. Targets use the Medium distance. The daily count moves only when a plan fills.
+// Higher-timeframe zones are prior day, prior week, completed sessions, and the last three swings on the daily, 4H, and 1H. A zone in front of TP1 rejects the plan. Flag 5 is that location.
+strategy("StaxBot", shorttitle = "StaxBot", overlay = true,
+     initial_capital = 50000, default_qty_type = strategy.fixed, default_qty_value = 1, pyramiding = 5,
+     margin_long = 1, margin_short = 1,
+     calc_on_every_tick = true, calc_on_order_fills = false, process_orders_on_close = true,
+     commission_type = strategy.commission.cash_per_contract, commission_value = 0.0, slippage = 0,
+     max_boxes_count = 300, max_lines_count = 500, max_labels_count = 500)
+
+G_PRESET  = "Preset"
+G_COACH   = "Coach & Execution Filters"
+G_STRUCT  = "Structure"
+G_TP      = "Take Profit"
+G_SL      = "Stop Loss"
+G_BE      = "Breakeven"
+G_TRAIL   = "Trailing Stop"
+G_VOL     = "Volume Filter"
+G_BIAS    = "EMA Bias"
+G_STAX    = "Stax Alerts"
+G_DISPLAY = "Display"
+G_SESSION = "Session Pause"
+G_ENGINE = "Engine imports"
+
+presetIn = input.string("Manual", "Strategy Preset", group = G_PRESET,
+     options = ["Manual", "NY AM Scalper", "NY AM Standard", "London Breakout", "Overnight Conservative"],
+     tooltip = "A preset can change direction, session, which stop is selected, breakeven, trail, and the daily cap. It cannot change Take Profit (R), the entry, the scenario, or whether the plan arms.")
+dirIn            = input.string("Both", "Allowed Direction", options = ["Both", "Longs Only", "Shorts Only"], group = G_COACH)
+sessIn           = input.string("24/5 (No Filter)", "Session Preset", group = G_COACH,
+     options = ["24/5 (No Filter)", "NY AM (09:30-12:00)", "NY PM (13:00-16:00)", "London (03:00-06:00)", "Asia (20:00-00:00)", "Overnight (18:00-03:00)", "Custom"])
+customSessIn     = input.session("2000-2130", "Custom Session (If Custom Selected)", group = G_COACH)
+tzIn             = input.string("America/New_York", "Timezone", group = G_COACH)
+maxTradesIn      = input.int(20, "Max Trades Per Day", minval = 1, group = G_COACH)
+maxLiveIn        = input.int(1, "Live Positions At Once", minval = 1, maxval = 5, group = G_COACH)
+flatAtSessEndIn  = input.bool(false, "Flatten Open Trade At Session End", group = G_COACH)
+minGradeIn       = input.string("Off", "Minimum Grade", options = ["Off", "A", "A+"], group = G_COACH,
+     tooltip = "A+ needs all five flags. A is four, and one of those four must be strong displacement or the London/New York window. Flag 1 is strong displacement. Flag 2 is EMA bias. Flag 3 is volume. Flag 4 is London 03:00–06:00 or New York 08:20–11:30. Flag 5 is an entry within 0.5 ATR of a higher-timeframe zone.")
+roomModeIn       = input.string("Reject", "Room Check", options = ["Reject", "Downgrade"], group = G_COACH,
+     tooltip = "Reject skips a plan whose path from entry to TP1 crosses an opposing higher-timeframe zone. Downgrade drops that plan one grade.")
+extOnIn          = input.bool(true, "Extension Filter", group = G_COACH,
+     tooltip = "A shelf, gap, or momentum plan whose entry is farther than the extension distance from the slow EMA drops one grade and is tagged extended. Scenario C is not extended.")
+extAtrIn         = input.float(3.0, "Extension Distance (ATR x)", minval = 0, step = 0.1, group = G_COACH)
+reclaimExitIn    = input.bool(true, "Reclaim Exit On Live Trades", group = G_COACH,
+     tooltip = "On: a live trade that closes back through the shelf exits at that close. Off: the shelf reclaim only blocks a fill.")
+reclaimAtrIn   = input.float(0.25, "Reclaim Tolerance (ATR x)", minval = 0, step = 0.05, group = G_COACH,
+     tooltip = "Invalidation and the live reclaim exit need the close at least this many ATR past the shelf. A shelf fill can trade anywhere from the shelf to this distance. A gap plan uses the gap far edge instead of the shelf. The multiple is the previous bar's ATR.")
+
+swingLenIn       = input.int(3, "Swing Length", minval = 2, group = G_STRUCT)
+minRangeAtrIn    = input.float(0.0, "Min Shelf Height (ATR x, 0 = off)", minval = 0, step = 0.1, group = G_STRUCT)
+minGapAtrIn      = input.float(0.2, "Min Gap Height (ATR x, 0 = off)", minval = 0, step = 0.1, group = G_STRUCT,
+     tooltip = "A gap shorter than this multiple of ATR does not arm.")
+dispModeIn       = input.string("Body >= ATR x", "Displaced Close", group = G_STRUCT,
+     options = ["Body >= ATR x", "Close beyond zone by zone width"],
+     tooltip = "The only definition of a displaced close. Inside the break window, a bar that passes this test and is still beyond the shelf arms the plan.")
+dispBodyAtrIn    = input.float(1.0, "Displacement Body (ATR x)", minval = 0, step = 0.1, group = G_STRUCT)
+breakWinIn       = input.int(3, "Break Window (bars)", minval = 1, group = G_STRUCT,
+     tooltip = "A close through the shelf opens this many bars. A displaced close still beyond that shelf inside the window arms the plan, including when the crossing bar itself was not displaced.")
+strongAtrIn      = input.float(1.5, "Strong Displacement (ATR x)", minval = 0, step = 0.1, group = G_STRUCT,
+     tooltip = "Grade flag 1. The arming bar's body must be at least this multiple of ATR. A smaller displaced close can still arm.")
+fvgWindowIn      = input.int(1, "Gap Window After The Break (bars)", minval = 1, group = G_STRUCT)
+setupExpiryIn    = input.int(12, "Plan Expires After N Bars", minval = 1, group = G_STRUCT)
+entryLevelIn     = input.string("FVG Near Edge (Aggressive)", "Gap Entry", group = G_STRUCT,
+     options = ["FVG Near Edge (Aggressive)", "FVG Midpoint (CE)", "FVG Far Edge (Deep)"])
+enableCIn        = input.bool(true, "Scenario C: Sweep & Reclaim", group = G_STRUCT,
+     tooltip = "A close beyond a range, a higher-timeframe zone, or an armed shelf, then a later close back inside within the sweep window, arms the reversal at the reclaimed level.")
+sweepWinIn       = input.int(3, "Sweep Window (bars)", minval = 1, group = G_STRUCT,
+     tooltip = "The reclaim close must land inside this many bars of the sweep, including the sweep bar, and it must be a later bar.")
+momentumOnIn     = input.bool(false, "Momentum Entry", group = G_STRUCT,
+     tooltip = "Off. On enters at the break close, with the stop beyond the opposite range edge. The plan is scenario M and it counts on the break bar.")
+shelfOnIn        = input.bool(true, "Scenario B: Shelf", group = G_STRUCT,
+     tooltip = "Arms the break. Off skips the shelf plan. The break still opens the gap window.")
+gapOnIn          = input.bool(true, "Scenario A: Gap", group = G_STRUCT,
+     tooltip = "Arms the fair-value-gap plan. Gap alone is the 2.0 behavior. Off skips the gap plan. The break still records the move.")
+
+tpRIn = input.float(1.0, "Take Profit (R)", minval = 0.1, maxval = 5, step = 0.1, group = G_TP,
+     tooltip = "TP1 is this many reference R from entry. TP2 is twice that. TP3 is three times that. Reference R is the entry-to-Medium-stop distance. Presets cannot change this input.")
+tp1OnIn = input.bool(true, "TP1", group = G_TP)
+tp2OnIn = input.bool(true, "TP2", group = G_TP)
+tp3OnIn = input.bool(true, "TP3", group = G_TP)
+tp1WIn  = input.int(2, "TP1 weight", minval = 1, maxval = 100, group = G_TP)
+tp2WIn  = input.int(1, "TP2 weight", minval = 1, maxval = 100, group = G_TP)
+tp3WIn  = input.int(1, "TP3 weight", minval = 1, maxval = 100, group = G_TP)
+structOnIn = input.bool(false, "Structural Targets", group = G_TP,
+     tooltip = "Off keeps TP2 and TP3 on the R ladder. On sets TP2 to the nearest higher-timeframe zone beyond TP1 and TP3 to the next one. A missing zone stays on the ladder. TP1 stays the R multiple.")
+
+slTypeIn     = input.string("Medium", "SL Type", options = ["Tight", "Medium", "Large"], group = G_SL,
+     tooltip = "Tight stops beyond the gap far edge, or the break candle on a shelf plan. Medium stops beyond the displacement candle. Large stops beyond the leg extreme. Distances stay Tight at or inside Medium, and Large at or beyond Medium. A selected stop inside the minimum is widened to the minimum. Entry, targets, and the arm decision stay on the Medium stop. Buffers use the previous bar's ATR.")
+tightAtrIn = input.float(0.05, "Tight Buffer (ATR x)", minval = 0, step = 0.01, group = G_SL)
+medAtrIn   = input.float(0.10, "Medium Buffer (ATR x)", minval = 0, step = 0.01, group = G_SL)
+largeAtrIn = input.float(0.25, "Large Buffer (ATR x)", minval = 0, step = 0.05, group = G_SL)
+legLookbackIn   = input.int(30, "Leg Lookback (bars)", minval = 3, group = G_SL)
+minStopAtrIn  = input.float(0.5, "Min Stop Distance (ATR x)", minval = 0, step = 0.1, group = G_SL,
+     tooltip = "Checked on the Medium stop. The preset does not change it. A selected stop closer than this is widened to it. The multiple is the previous bar's ATR.")
+maxStopAtrIn  = input.float(3.0, "Max Stop Distance (ATR x, 0 = off)", minval = 0, step = 0.1, group = G_SL,
+     tooltip = "Checked on the Medium stop. The preset does not change it. The multiple is the previous bar's ATR.")
+
+beIn    = input.string("Off", "Breakeven", options = ["Off", "At 0.5R", "At 0.75R", "At 1R", "At 1.5R"], group = G_BE,
+     tooltip = "Steps use reference R. Ignored while a trailing preset is on.")
+beTickIn = input.bool(false, "BE +1 Tick Buffer", group = G_BE)
+trailIn = input.string("Standard (BE 1R)", "Trailing Stop", group = G_TRAIL,
+     options = ["Off", "Aggressive (BE 0.75R)", "Standard (BE 1R)", "Wide (BE 1.5R)"])
+
+volIn    = input.string("Off", "Volume Filter", options = ["Off", "Above Average (1.0x)", "Strong (1.5x)"], group = G_VOL)
+volLenIn = input.int(20, "Volume Average Length", minval = 2, group = G_VOL)
+emaFastIn = input.int(9, "EMA Cloud Fast", minval = 1, group = G_BIAS)
+emaSlowIn = input.int(21, "EMA Cloud Slow", minval = 1, group = G_BIAS)
+biasFilterIn = input.bool(false, "Only Trade With EMA Bias", group = G_BIAS)
+
+payloadModeIn = input.string("Generic JSON (Futures / Any Webhook)", "Alert Payload", group = G_STAX,
+     options = ["Stax Options Webhook", "Generic JSON (Futures / Any Webhook)"])
+tickerOverrideIn = input.string("", "Underlying Symbol Override (blank = chart root)", group = G_STAX)
+dteIn            = input.int(0, "Days To Expiration (0 = 0DTE)", minval = 0, maxval = 60, group = G_STAX)
+strikesOtmIn     = input.int(0, "Strikes OTM", minval = 0, group = G_STAX)
+strikeStepIn     = input.float(1.0, "Strike Step", minval = 0.5, step = 0.5, group = G_STAX)
+sendExitAlertsIn = input.bool(true, "Send Exit Alerts", group = G_STAX)
+sendStopUpdIn    = input.bool(false, "Send Stop-Update Alerts", group = G_STAX)
+rangeOnIn        = input.bool(true, "Range Watch", group = G_STAX,
+     tooltip = "One watch when the last bars compress and a shelf is waiting. It is not a trade.")
+rangeBarsIn      = input.int(6, "Range Watch Bars", minval = 2, group = G_STAX)
+rangeAtrIn       = input.float(1.5, "Range Watch Height (ATR x)", minval = 0.1, step = 0.1, group = G_STAX)
+intrabarOnIn     = input.bool(true, "Intrabar Break", group = G_STAX,
+     tooltip = "On a realtime bar, price through a shelf by the reclaim tolerance with a displacement body sends one provisional break_forming alert. The close arms the plan or sends break_cancelled.")
+
+showTableIn    = input.bool(true, "Show HUD", group = G_DISPLAY)
+hudSizeIn      = input.string("Full", "HUD size", options = ["Full", "Compact"], group = G_DISPLAY)
+hudPosIn       = input.string("Top right", "HUD position", options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = G_DISPLAY)
+showDrawingsIn = input.bool(true, "Show Chart Drawings", group = G_DISPLAY)
+resolvedIn     = input.string("Remove", "Resolved Plans", options = ["Grey", "Remove", "Review"], group = G_DISPLAY,
+     tooltip = "Remove deletes the drawing. Grey keeps a faint entry line and a state tag for the last three. Review keeps the last five with entry, stop, and target lines in grey, plus the state tag and the reason.")
+showSessBgIn   = input.bool(true, "Shade Active Session", group = G_DISPLAY)
+showHtfIn      = input.bool(true, "Show HTF Zones", group = G_DISPLAY,
+     tooltip = "Draws each higher-timeframe zone faintly. A zone is the level plus or minus 0.1 ATR. Overlapping zones merge.")
+cloudColorIn   = input.color(#00c8ff, "EMA Cloud Color", group = G_DISPLAY)
+
+pauseOnIn   = input.bool(true, "Session Pause", group = G_SESSION)
+pauseSessIn = input.session("1500-1700", "Pause Window", group = G_SESSION,
+     tooltip = "Default 3:00–5:00 PM on the pause timezone. No new plan arms and no fill triggers in the window.")
+pauseTzIn   = input.string("America/Chicago", "Pause Timezone", group = G_SESSION)
+
+// A - additive annotations, sizing, and tester orders.
+intrabarCheckIn = input.bool(true, "A2 - Intrabar order certainty", group = G_ENGINE,
+     tooltip = "Annotates ambiguous same-bar touches without changing the plan state machine.")
+slippageTicksIn = input.int(0, "A3 - Slippage ticks", minval = 0, maxval = 100, group = G_ENGINE)
+commissionRTIn = input.float(0.0, "A3 - Commission round trip ($ / contract)", minval = 0, step = 0.05, group = G_ENGINE)
+riskDollarsIn = input.float(0.0, "A4 - Risk dollars (0 = off)", minval = 0, step = 25, group = G_ENGINE)
+maxContractsIn = input.int(30, "A4 - Maximum contracts", minval = 1, maxval = 300, group = G_ENGINE)
+
+// B - every behavior-changing mode is disabled at the default settings.
+useCatalogIn = input.bool(false, "B1 - Use level catalog", group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF.")
+catalogFeedsGradeIn = input.bool(false, "B1 - Catalog feeds room and grade", group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Requires Use level catalog.")
+equalAtrTolIn = input.float(0.25, "B1 - Equal level ATR tolerance", minval = 0, step = 0.01, group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Used by the level catalog.")
+catalogPivotLenIn = input.int(2, "B1 - Equal pivot length", minval = 1, maxval = 10, group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Used by the level catalog.")
+equalLookbackIn = input.int(150, "B1 - Equal pivot lookback bars", minval = 5, maxval = 500, group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Used by the level catalog.")
+equalCapIn = input.int(8, "B1 - Equal levels retained", minval = 2, maxval = 12, group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Used by the level catalog.")
+pubAsiaIn = input.bool(false, "B2 - Publish Asia", group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF.")
+pubLondonIn = input.bool(false, "B2 - Publish London", group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF.")
+pubNYIn = input.bool(false, "B2 - Publish New York", group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF.")
+pubAsiaWindowIn = input.session("1900-0200", "B2 - Asia window (New York)", group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Used when Publish Asia is enabled.")
+pubLondonWindowIn = input.session("0300-0700", "B2 - London window (New York)", group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Used when Publish London is enabled.")
+pubNYIndexWindowIn = input.session("0930-1545", "B2 - MNQ/MES New York window", group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Used when Publish New York is enabled.")
+pubNYGoldWindowIn = input.session("0820-1330", "B2 - MGC New York window", group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Used when Publish New York is enabled.")
+newsTimesIn = input.string("0830,1000,1400", "B3 - News times (HHMM, New York)", group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Used when the news block length is nonzero.")
+newsBlockMinutesIn = input.int(0, "B3 - News block +/- minutes (0 = off)", minval = 0, maxval = 60, group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Zero disables the block.")
+useTickFloorIn = input.bool(false, "B4 - Use tick floors", group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF.")
+mnqFloorTicksIn = input.int(8, "B4 - MNQ floor ticks", minval = 1, maxval = 100, group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Used when tick floors are enabled.")
+mesFloorTicksIn = input.int(4, "B4 - MES floor ticks", minval = 1, maxval = 100, group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Used when tick floors are enabled.")
+mgcFloorTicksIn = input.int(10, "B4 - MGC floor ticks", minval = 1, maxval = 100, group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Used when tick floors are enabled.")
+genericFloorTicksIn = input.int(8, "B4 - Generic floor ticks", minval = 1, maxval = 100, group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Used when tick floors are enabled.")
+useScaledHTFIn = input.bool(false, "B5 - Use scaled higher-timeframe swings", group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF.")
+topDownFilterIn = input.bool(false, "B6a - Top-down structure filter", group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF.")
+topDownFastEmaIn = input.int(100, "B6a - Fallback EMA fast", minval = 1, group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Used when top-down structure is enabled.")
+topDownSlowEmaIn = input.int(200, "B6a - Fallback EMA slow", minval = 1, group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Used when top-down structure is enabled.")
+structuralTargets2In = input.bool(false, "B6b - Structural targets 2", group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF.")
+tp2MinRIn = input.float(1.0, "B6b - Minimum TP2 R (0 = off)", minval = 0, step = 0.1, group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Used by structural targets 2.")
+confirmBeforeFillIn = input.bool(false, "B6c - Confirm before fill", group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF.")
+confirmPivotLenIn = input.int(2, "B6c - Pullback pivot length", minval = 1, maxval = 10, group = G_ENGINE,
+     tooltip = "Changes which plans arm/fill/grade. Default OFF. Used when confirm-before-fill is enabled.")
+
+pDir = switch presetIn
+    "NY AM Scalper"          => "Both"
+    "NY AM Standard"         => "Both"
+    "London Breakout"        => "Both"
+    "Overnight Conservative" => "Both"
+    => dirIn
+pSess = presetIn == "NY AM Scalper" or presetIn == "NY AM Standard" ? "NY AM (09:30-12:00)" : presetIn == "London Breakout" ? "London (03:00-06:00)" : presetIn == "Overnight Conservative" ? "Overnight (18:00-03:00)" : sessIn
+pTp = tpRIn
+pSl = switch presetIn
+    "NY AM Scalper"          => "Medium"
+    "NY AM Standard"         => "Large"
+    "London Breakout"        => "Medium"
+    "Overnight Conservative" => "Large"
+    => slTypeIn
+pBe = switch presetIn
+    "NY AM Scalper"          => "Off"
+    "NY AM Standard"         => "Off"
+    "London Breakout"        => "Off"
+    "Overnight Conservative" => "At 1R"
+    => beIn
+pTrail = switch presetIn
+    "NY AM Scalper"          => "Aggressive (BE 0.75R)"
+    "NY AM Standard"         => "Standard (BE 1R)"
+    "London Breakout"        => "Standard (BE 1R)"
+    "Overnight Conservative" => "Off"
+    => trailIn
+pMaxTrades = switch presetIn
+    "NY AM Scalper"          => 3
+    "NY AM Standard"         => 3
+    "London Breakout"        => 2
+    "Overnight Conservative" => 2
+    => maxTradesIn
+
+sessStr = pSess == "NY AM (09:30-12:00)" ? "0930-1200" : pSess == "NY PM (13:00-16:00)" ? "1300-1600" : pSess == "London (03:00-06:00)" ? "0300-0600" : pSess == "Asia (20:00-00:00)" ? "2000-0000" : pSess == "Overnight (18:00-03:00)" ? "1800-0300" : pSess == "Custom" ? customSessIn : ""
+sessShort = pSess == "NY AM (09:30-12:00)" ? "NY AM" : pSess == "NY PM (13:00-16:00)" ? "NY PM" : pSess == "London (03:00-06:00)" ? "London" : pSess == "Asia (20:00-00:00)" ? "Asia" : pSess == "Overnight (18:00-03:00)" ? "Overnight" : pSess == "Custom" ? customSessIn : "24/5"
+sessionFilterOn = sessStr != ""
+sessForTime = sessionFilterOn ? sessStr : "0000-2359:1234567"
+legacyInSession = not sessionFilterOn or not na(time(timeframe.period, sessForTime, tzIn))
+pubWindowMode = pubAsiaIn or pubLondonIn or pubNYIn
+pubAsiaNow = pubAsiaIn and not na(time(timeframe.period, pubAsiaWindowIn + ":1234567", "America/New_York"))
+pubLondonNow = pubLondonIn and not na(time(timeframe.period, pubLondonWindowIn + ":1234567", "America/New_York"))
+pubNYWindow = syminfo.root == "MGC" ? pubNYGoldWindowIn : pubNYIndexWindowIn
+pubNYNow = pubNYIn and not na(time(timeframe.period, pubNYWindow + ":1234567", "America/New_York"))
+inSession = pubWindowMode ? (pubAsiaNow or pubLondonNow or pubNYNow) : legacyInSession
+sessionEnded = inSession[1] and not inSession
+pauseHit = time(timeframe.period, pauseSessIn, pauseTzIn)
+inPause = pauseOnIn and not na(pauseHit)
+inAsiaSess = not na(time(timeframe.period, "2000-0000", "America/Chicago"))
+inLonSess = not na(time(timeframe.period, "0300-0600", "America/Chicago"))
+inOnSess = not na(time(timeframe.period, "1800-0300", "America/Chicago"))
+tick = syminfo.mintick
+longsOk = pDir != "Shorts Only"
+shortsOk = pDir != "Longs Only"
+trailOn = pTrail != "Off"
+beOn = not trailOn and pBe != "Off"
+beR = switch pBe
+    "At 0.5R"  => 0.5
+    "At 0.75R" => 0.75
+    "At 1R"    => 1.0
+    "At 1.5R"  => 1.5
+    => 0.0
+trailBe = switch pTrail
+    "Aggressive (BE 0.75R)" => 0.75
+    "Standard (BE 1R)"      => 1.0
+    "Wide (BE 1.5R)"        => 1.5
+    => 0.0
+trailT1 = switch pTrail
+    "Aggressive (BE 0.75R)" => 1.0
+    "Standard (BE 1R)"      => 1.5
+    "Wide (BE 1.5R)"        => 2.0
+    => 0.0
+trailO1 = switch pTrail
+    "Aggressive (BE 0.75R)" => 0.25
+    "Standard (BE 1R)"      => 0.5
+    "Wide (BE 1.5R)"        => 0.5
+    => 0.0
+trailT2 = switch pTrail
+    "Aggressive (BE 0.75R)" => 1.25
+    "Standard (BE 1R)"      => 2.0
+    "Wide (BE 1.5R)"        => 2.5
+    => 0.0
+trailO2 = switch pTrail
+    "Aggressive (BE 0.75R)" => 0.5
+    "Standard (BE 1R)"      => 1.0
+    "Wide (BE 1.5R)"        => 1.0
+    => 0.0
+trailT3 = switch pTrail
+    "Aggressive (BE 0.75R)" => 1.5
+    "Standard (BE 1R)"      => 2.5
+    "Wide (BE 1.5R)"        => 3.0
+    => 0.0
+trailO3 = switch pTrail
+    "Aggressive (BE 0.75R)" => 0.75
+    "Standard (BE 1R)"      => 1.5
+    "Wide (BE 1.5R)"        => 1.5
+    => 0.0
+volMult = switch volIn
+    "Above Average (1.0x)" => 1.0
+    "Strong (1.5x)"        => 1.5
+    => 0.0
+staxMode = payloadModeIn == "Stax Options Webhook"
+targetsOk = tp1OnIn or tp2OnIn or tp3OnIn
+
+emaFast = ta.ema(close, emaFastIn)
+emaSlow = ta.ema(close, emaSlowIn)
+bias = close > emaFast and emaFast > emaSlow ? 1 : close < emaFast and emaFast < emaSlow ? -1 : 0
+atr = ta.atr(14)
+armAtr = atr[1]
+compHi = ta.highest(high, rangeBarsIn)
+compLo = ta.lowest(low, rangeBarsIn)
+volSma = ta.sma(volume, volLenIn)
+
+f_htf() =>
+    float fast = ta.ema(close, emaFastIn)
+    float slow = ta.ema(close, emaSlowIn)
+    close > fast and fast > slow ? 1 : close < fast and fast < slow ? -1 : 0
+hD  = request.security(syminfo.tickerid, "D", f_htf(), barmerge.gaps_off, barmerge.lookahead_off)
+h4  = request.security(syminfo.tickerid, "240", f_htf(), barmerge.gaps_off, barmerge.lookahead_off)
+h1  = request.security(syminfo.tickerid, "60", f_htf(), barmerge.gaps_off, barmerge.lookahead_off)
+h15 = request.security(syminfo.tickerid, "15", f_htf(), barmerge.gaps_off, barmerge.lookahead_off)
+h5  = request.security(syminfo.tickerid, "5", f_htf(), barmerge.gaps_off, barmerge.lookahead_off)
+pdh = request.security(syminfo.tickerid, "D", high[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+pdl = request.security(syminfo.tickerid, "D", low[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+pwh = request.security(syminfo.tickerid, "W", high[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+pwl = request.security(syminfo.tickerid, "W", low[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+f_htf_piv() =>
+    [ta.pivothigh(high, swingLenIn, swingLenIn)[1], ta.pivotlow(low, swingLenIn, swingLenIn)[1]]
+[dPh, dPl] = request.security(syminfo.tickerid, "D", f_htf_piv(), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+[h4Ph, h4Pl] = request.security(syminfo.tickerid, "240", f_htf_piv(), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+[h1Ph, h1Pl] = request.security(syminfo.tickerid, "60", f_htf_piv(), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+
+// Batch A intrabar certainty uses the smallest available interval no greater than one minute.
+string intrabarTf = timeframe.in_seconds() > 60 ? "1" : timeframe.period
+array<float> ltfHighs = na
+array<float> ltfLows = na
+if intrabarCheckIn
+    [ltfHighResult, ltfLowResult] = request.security_lower_tf(syminfo.tickerid, intrabarTf, [high, low])
+    ltfHighs := ltfHighResult
+    ltfLows := ltfLowResult
+
+// Batch B5 contexts are separate from the fixed D / 4H / 1H / 15m / 5m requests above.
+f_scaledPiv(int pivotLength) =>
+    [ta.pivothigh(high, pivotLength, pivotLength)[1], ta.pivotlow(low, pivotLength, pivotLength)[1]]
+chartSeconds = timeframe.in_seconds()
+scaledSetupSeconds = math.max(900, chartSeconds * 3)
+scaledPositionSeconds = math.max(3600, chartSeconds * 12)
+scaledRunnerSeconds = math.max(14400, chartSeconds * 48)
+scaledSlowSeconds = math.max(86400, chartSeconds * 288)
+scaledSetupTf = timeframe.from_seconds(int(scaledSetupSeconds))
+scaledPositionTf = timeframe.from_seconds(int(scaledPositionSeconds))
+scaledRunnerTf = timeframe.from_seconds(int(scaledRunnerSeconds))
+scaledSlowTf = timeframe.from_seconds(int(scaledSlowSeconds))
+float scaledSetupPh = na
+float scaledSetupPl = na
+float scaledPositionPh = na
+float scaledPositionPl = na
+float scaledRunnerPh = na
+float scaledRunnerPl = na
+float scaledSlowPh = na
+float scaledSlowPl = na
+if useScaledHTFIn and chartSeconds >= 900
+    [scaledSetupPhResult, scaledSetupPlResult] = request.security(syminfo.tickerid, scaledSetupTf, f_scaledPiv(swingLenIn), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+    [scaledPositionPhResult, scaledPositionPlResult] = request.security(syminfo.tickerid, scaledPositionTf, f_scaledPiv(swingLenIn), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+    [scaledRunnerPhResult, scaledRunnerPlResult] = request.security(syminfo.tickerid, scaledRunnerTf, f_scaledPiv(swingLenIn), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+    [scaledSlowPhResult, scaledSlowPlResult] = request.security(syminfo.tickerid, scaledSlowTf, f_scaledPiv(swingLenIn), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+    scaledSetupPh := scaledSetupPhResult
+    scaledSetupPl := scaledSetupPlResult
+    scaledPositionPh := scaledPositionPhResult
+    scaledPositionPl := scaledPositionPlResult
+    scaledRunnerPh := scaledRunnerPhResult
+    scaledRunnerPl := scaledRunnerPlResult
+    scaledSlowPh := scaledSlowPhResult
+    scaledSlowPl := scaledSlowPlResult
+[setup15Ph, setup15Pl] = request.security(syminfo.tickerid, "15", f_scaledPiv(swingLenIn), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+
+// B6a: confirmed slow / runner context directions from the Engine's structure rule.
+f_structDir(int pivotLength) =>
+    var int dirS = 0
+    var float lastHiS = na
+    var float lastLoS = na
+    float phS = ta.pivothigh(high, pivotLength, pivotLength)
+    float plS = ta.pivotlow(low, pivotLength, pivotLength)
+    if not na(phS)
+        lastHiS := phS
+    if not na(plS)
+        lastLoS := plS
+    if not na(lastHiS) and close > lastHiS
+        dirS := 1
+        lastHiS := na
+    if not na(lastLoS) and close < lastLoS
+        dirS := -1
+        lastLoS := na
+    dirS
+htfStructSlow = request.security(syminfo.tickerid, "D", f_structDir(2)[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+htfStructRunner = request.security(syminfo.tickerid, "240", f_structDir(2)[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+fallbackFast = ta.ema(close, topDownFastEmaIn)
+fallbackSlow = ta.ema(close, topDownSlowEmaIn)
+fallbackDirection = close > fallbackFast and fallbackFast > fallbackSlow ? 1 : close < fallbackFast and fallbackFast < fallbackSlow ? -1 : 0
+topDownDirection = htfStructSlow != 0 and htfStructSlow == htfStructRunner ? htfStructSlow : fallbackDirection
+[positionOpen, positionHigh, positionLow, positionClose] = request.security(syminfo.tickerid, "60", [open[1], high[1], low[1], close[1]], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+
+ph = ta.pivothigh(high, swingLenIn, swingLenIn)
+pl = ta.pivotlow(low, swingLenIn, swingLenIn)
+confirmPullbackPh = ta.pivothigh(high, confirmPivotLenIn, confirmPivotLenIn)
+confirmPullbackPl = ta.pivotlow(low, confirmPivotLenIn, confirmPivotLenIn)
+var float rangeHigh = na
+var float rangeLow = na
+var int rangeHighBar = na
+var int rangeLowBar = na
+if not na(ph)
+    rangeHigh := ph
+    rangeHighBar := bar_index - swingLenIn
+if not na(pl)
+    rangeLow := pl
+    rangeLowBar := bar_index - swingLenIn
+lowLegLen = na(rangeLowBar) ? legLookbackIn : math.max(1, math.min(legLookbackIn, bar_index - rangeLowBar + 1))
+highLegLen = na(rangeHighBar) ? legLookbackIn : math.max(1, math.min(legLookbackIn, bar_index - rangeHighBar + 1))
+legLowNow = ta.lowest(low, lowLegLen)
+legHighNow = ta.highest(high, highLegLen)
+zoneWidth = not na(rangeHigh) and not na(rangeLow) ? rangeHigh - rangeLow : 0.0
+bodyDisp = math.abs(close - open) >= dispBodyAtrIn * atr
+bullBeyond = not na(rangeHigh) and zoneWidth > 0 and close - rangeHigh >= zoneWidth
+bearBeyond = not na(rangeLow) and zoneWidth > 0 and rangeLow - close >= zoneWidth
+bullDisp = dispModeIn == "Close beyond zone by zone width" ? bullBeyond : bodyDisp
+bearDisp = dispModeIn == "Close beyond zone by zone width" ? bearBeyond : bodyDisp
+bullThrough = not na(rangeHigh) and close > rangeHigh and (na(close[1]) or close[1] <= rangeHigh)
+bearThrough = not na(rangeLow) and close < rangeLow and (na(close[1]) or close[1] >= rangeLow)
+strongDisp = math.abs(close - open) >= strongAtrIn * atr
+shelfOk = zoneWidth > 0 and (minRangeAtrIn <= 0 or zoneWidth >= minRangeAtrIn * atr)
+bullFvg = low > high[2] and close[1] > open[1]
+bearFvg = high < low[2] and close[1] < open[1]
+volOk = volMult <= 0 or volume > volSma * volMult
+
+type importedLevel
+    float price = na
+    string kind = ""
+    int side = 0
+    bool major = false
+    bool originMajor = false
+    bool live = false
+    bool covered = false
+    bool swept = false
+    bool sweepConfirmed = false
+    bool flipped = false
+    int born = -1
+
+type staxPlan
+    int planId = 0
+    int moveId = 0
+    string scenario = ""
+    string origin = ""
+    int dir = 0
+    float entry = na
+    float anchor = na
+    string preset = ""
+    float stop = na
+    float tp1 = na
+    float tp2 = na
+    float tp3 = na
+    float refRisk = na
+    string grade = ""
+    string state = ""
+    int createdBar = 0
+    int expiryBar = 0
+    float shelf = na
+    float inv = na
+    int swingBar = 0
+    float zoneHi = na
+    float zoneLo = na
+    int zoneFrom = 0
+    bool on1 = false
+    bool on2 = false
+    bool on3 = false
+    float rUnit = na
+    int w1 = 1
+    int w2 = 1
+    int w3 = 1
+    string setupId = ""
+    string reason = ""
+    string fp = ""
+    string level = ""
+    bool extended = false
+    bool struct2 = false
+    bool struct3 = false
+    bool hit1 = false
+    bool hit2 = false
+    bool hit3 = false
+    float liveStop = na
+    int fillBar = -1
+    bool ready = false
+    bool greyed = false
+    bool erased = false
+    int resolvedBar = -1
+    line lnEn = na
+    line lnSl = na
+    line ln1 = na
+    line ln2 = na
+    line ln3 = na
+    label lbEn = na
+    label lbSl = na
+    label lb1 = na
+    label lb2 = na
+    label lb3 = na
+    label lbFill = na
+    label lbExit = na
+    box rangeBox = na
+    label lbRange = na
+    label lbBos = na
+    bool outerClose = false
+    int runBars = 0
+    int qty = 1
+    int leg1 = 1
+    int leg2 = 0
+    int leg3 = 0
+    string entryCertainty = "proven"
+    string exitCertainty = "proven"
+    int zoneTouches = 0
+    bool inEntryZone = false
+    int firstTouchBar = -1
+    int confirmBar = -1
+    bool structureConfirmed = false
+    float pullbackBase = na
+    float pullbackSwing = na
+    int pullbackBar = -1
+    float confirmExtreme = na
+    float confirmClose = na
+    bool confirmPositionOk = false
+
+type Engine
+    int planSeq = 0
+    string hudReject = ""
+
+var Engine eng = Engine.new()
+var array<staxPlan> plans = array.new<staxPlan>()
+var array<string> outbox = array.new_string()
+var int moveSeq = 0
+var int moveIdNow = 0
+var int moveDir = 0
+var int moveBar = -1
+var float moveAnchor = na
+var float moveShelf = na
+var int moveSwing = 0
+var float moveZoneHi = na
+var float moveZoneLo = na
+var int moveZoneFrom = 0
+var bool moveFlag1 = false
+var int winSide = 0
+var int winFrom = -1
+var float winLevel = na
+var int winSwing = na
+var float winZoneHi = na
+var float winZoneLo = na
+var int winZoneFrom = 0
+var int tradesToday = 0
+var array<string> zoneName = array.new_string()
+var array<float> zonePx = array.new_float()
+var array<float> zoneLo = array.new_float()
+var array<float> zoneHi = array.new_float()
+var array<string> rawName = array.new_string()
+var array<float> rawPx = array.new_float()
+var array<float> dHighs = array.new_float()
+var array<float> dLows = array.new_float()
+var array<float> h4Highs = array.new_float()
+var array<float> h4Lows = array.new_float()
+var array<float> h1Highs = array.new_float()
+var array<float> h1Lows = array.new_float()
+var array<float> setup15Highs = array.new_float()
+var array<float> setup15Lows = array.new_float()
+var array<float> scaledSetupHighs = array.new_float()
+var array<float> scaledSetupLows = array.new_float()
+var array<float> scaledPositionHighs = array.new_float()
+var array<float> scaledPositionLows = array.new_float()
+var array<float> scaledRunnerHighs = array.new_float()
+var array<float> scaledRunnerLows = array.new_float()
+var array<float> scaledSlowHighs = array.new_float()
+var array<float> scaledSlowLows = array.new_float()
+var float seenSetup15High = na
+var float seenSetup15Low = na
+var float seenScaledSetupHigh = na
+var float seenScaledSetupLow = na
+var float seenScaledPositionHigh = na
+var float seenScaledPositionLow = na
+var float seenScaledRunnerHigh = na
+var float seenScaledRunnerLow = na
+var float seenScaledSlowHigh = na
+var float seenScaledSlowLow = na
+var array<importedLevel> engineCatalog = array.new<importedLevel>()
+var float catalogNyHigh = na
+var float catalogNyLow = na
+var float catalogOrHigh = na
+var float catalogOrLow = na
+var bool catalogNyCovered = false
+var bool catalogOrCovered = false
+var float lastEqualHigh = na
+var float lastEqualLow = na
+var int lastEqualHighBar = na
+var int lastEqualLowBar = na
+float catalogPdc = request.security(syminfo.tickerid, "D", close[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+string catalogNySession = syminfo.root == "MGC" ? "0820-1130" : "0930-1600"
+bool catalogNyNow = not na(time(timeframe.period, catalogNySession + ":1234567", "America/New_York"))
+int catalogNyStartMinute = syminfo.root == "MGC" ? 500 : 570
+int catalogNyMinute = hour(time, "America/New_York") * 60 + minute(time, "America/New_York")
+bool catalogOrNow = catalogNyNow and catalogNyMinute >= catalogNyStartMinute and catalogNyMinute < catalogNyStartMinute + 15
+float catalogPivotHigh = ta.pivothigh(high, catalogPivotLenIn, catalogPivotLenIn)
+float catalogPivotLow = ta.pivotlow(low, catalogPivotLenIn, catalogPivotLenIn)
+var array<string> importedNames = array.new_string()
+var array<float> importedPrices = array.new_float()
+var float asiaHi = na
+var float asiaLo = na
+var float asiaRunHi = na
+var float asiaRunLo = na
+var float lonHi = na
+var float lonLo = na
+var float lonRunHi = na
+var float lonRunLo = na
+var float onHi = na
+var float onLo = na
+var float onRunHi = na
+var float onRunLo = na
+var float seenDph = na
+var float seenDpl = na
+var float seen4h = na
+var float seen4l = na
+var float seen1h = na
+var float seen1l = na
+var int sweepSide = 0
+var int sweepFrom = -1
+var float sweepLvl = na
+var float sweepExtreme = na
+var string sweepKind = ""
+var bool watchOn = false
+var string watchZone = ""
+var float watchHi = na
+var float watchLo = na
+var float watchShelfHi = na
+var float watchShelfLo = na
+varip bool formingNow = false
+varip int formingBar = -1
+varip int formSide = 0
+varip float formEntry = na
+varip float formStop = na
+varip float formTp = na
+var array<line> htfLn = array.new_line()
+var array<label> htfLb = array.new_label()
+var array<line> catalogLn = array.new_line()
+var array<label> catalogLb = array.new_label()
+
+f_num(float v) =>
+    na(v) ? "null" : str.tostring(v, format.mintick)
+f_ts() =>
+    str.format_time(timenow, "yyyy-MM-dd'T'HH:mm:ssZ", tzIn)
+f_pad2(int v) =>
+    (v < 10 ? "0" : "") + str.tostring(v)
+f_expiryYYMMDD() =>
+    int base = timestamp(tzIn, year(time, tzIn), month(time, tzIn), dayofmonth(time, tzIn), 12, 0, 0) + dteIn * 86400000
+    int dow = dayofweek(base, tzIn)
+    int adj = dow == dayofweek.saturday ? base + 2 * 86400000 : dow == dayofweek.sunday ? base + 86400000 : base
+    str.substring(str.tostring(year(adj, tzIn)), 2, 4) + f_pad2(month(adj, tzIn)) + f_pad2(dayofmonth(adj, tzIn))
+f_strike(int side) =>
+    float step = strikeStepIn
+    float raw = side == 1 ? math.ceil(close / step) * step + strikesOtmIn * step : math.floor(close / step) * step - strikesOtmIn * step
+    float frac = raw - math.floor(raw)
+    frac == 0 ? str.tostring(math.round(raw)) + ".0" : str.tostring(raw)
+f_grade(bool dispOk, bool biasOk, bool volFlag, bool sessOk, bool fifth) =>
+    int score = (dispOk ? 1 : 0) + (biasOk ? 1 : 0) + (volFlag ? 1 : 0) + (sessOk ? 1 : 0) + (fifth ? 1 : 0)
+    score == 5 ? "A+" : score == 4 and (dispOk or sessOk) ? "A" : "B"
+f_fp() =>
+    string base = str.tostring(pTp, "0.00") + "|" + pSl + "|" + str.tostring(tightAtrIn, "0.00") + "|" + str.tostring(medAtrIn, "0.00") + "|" + str.tostring(largeAtrIn, "0.00") + "|" + minGradeIn + "|" + entryLevelIn + "|" + pBe + "|" + pTrail + "|" + pDir + "|" + sessShort + "|" + dispModeIn + "|" + str.tostring(dispBodyAtrIn, "0.0") + "|" + str.tostring(maxLiveIn) + "|" + (reclaimExitIn ? "1" : "0") + "|" + (pauseOnIn ? "1" : "0") + "|" + (enableCIn ? "1" : "0") + "|" + str.tostring(breakWinIn) + "|" + str.tostring(strongAtrIn, "0.0") + "|" + str.tostring(reclaimAtrIn, "0.00") + "|" + str.tostring(minStopAtrIn, "0.0") + "|" + str.tostring(maxStopAtrIn, "0.0") + "|" + (shelfOnIn ? "1" : "0") + "|" + (gapOnIn ? "1" : "0") + "|" + roomModeIn + "|" + (extOnIn ? "1" : "0") + "|" + str.tostring(extAtrIn, "0.0") + "|" + (structOnIn ? "1" : "0") + "|" + (showHtfIn ? "1" : "0") + "|" + (momentumOnIn ? "1" : "0") + "|" + str.tostring(sweepWinIn) + "|" + (rangeOnIn ? "1" : "0") + "|" + str.tostring(rangeBarsIn) + "|" + str.tostring(rangeAtrIn, "0.0") + "|" + (intrabarOnIn ? "1" : "0")
+    string extra = ""
+    extra += intrabarCheckIn != true ? "|A2.intrabar=" + (intrabarCheckIn ? "1" : "0") : ""
+    extra += slippageTicksIn != 0 ? "|A3.slippage=" + str.tostring(slippageTicksIn) : ""
+    extra += commissionRTIn != 0 ? "|A3.commission=" + str.tostring(commissionRTIn, "0.00") : ""
+    extra += riskDollarsIn != 0 ? "|A4.risk=" + str.tostring(riskDollarsIn, "0.00") : ""
+    extra += maxContractsIn != 30 ? "|A4.max=" + str.tostring(maxContractsIn) : ""
+    extra += useCatalogIn ? "|B1.catalog=1" : ""
+    extra += catalogFeedsGradeIn ? "|B1.grade=1" : ""
+    extra += equalAtrTolIn != 0.25 ? "|B1.eqAtr=" + str.tostring(equalAtrTolIn, "0.00") : ""
+    extra += catalogPivotLenIn != 2 ? "|B1.pivot=" + str.tostring(catalogPivotLenIn) : ""
+    extra += equalLookbackIn != 150 ? "|B1.lookback=" + str.tostring(equalLookbackIn) : ""
+    extra += equalCapIn != 8 ? "|B1.cap=" + str.tostring(equalCapIn) : ""
+    extra += pubAsiaIn ? "|B2.asia=1" : ""
+    extra += pubLondonIn ? "|B2.london=1" : ""
+    extra += pubNYIn ? "|B2.ny=1" : ""
+    extra += pubAsiaWindowIn != "1900-0200" ? "|B2.asiaWindow=" + pubAsiaWindowIn : ""
+    extra += pubLondonWindowIn != "0300-0700" ? "|B2.londonWindow=" + pubLondonWindowIn : ""
+    extra += pubNYIndexWindowIn != "0930-1545" ? "|B2.nyIndex=" + pubNYIndexWindowIn : ""
+    extra += pubNYGoldWindowIn != "0820-1330" ? "|B2.nyGold=" + pubNYGoldWindowIn : ""
+    extra += newsTimesIn != "0830,1000,1400" ? "|B3.times=" + newsTimesIn : ""
+    extra += newsBlockMinutesIn != 0 ? "|B3.minutes=" + str.tostring(newsBlockMinutesIn) : ""
+    extra += useTickFloorIn ? "|B4.floor=1" : ""
+    extra += mnqFloorTicksIn != 8 ? "|B4.mnq=" + str.tostring(mnqFloorTicksIn) : ""
+    extra += mesFloorTicksIn != 4 ? "|B4.mes=" + str.tostring(mesFloorTicksIn) : ""
+    extra += mgcFloorTicksIn != 10 ? "|B4.mgc=" + str.tostring(mgcFloorTicksIn) : ""
+    extra += genericFloorTicksIn != 8 ? "|B4.generic=" + str.tostring(genericFloorTicksIn) : ""
+    extra += useScaledHTFIn ? "|B5.scaled=1" : ""
+    extra += topDownFilterIn ? "|B6a.filter=1" : ""
+    extra += topDownFastEmaIn != 100 ? "|B6a.fast=" + str.tostring(topDownFastEmaIn) : ""
+    extra += topDownSlowEmaIn != 200 ? "|B6a.slow=" + str.tostring(topDownSlowEmaIn) : ""
+    extra += structuralTargets2In ? "|B6b.targets=1" : ""
+    extra += tp2MinRIn != 1.0 ? "|B6b.minR=" + str.tostring(tp2MinRIn, "0.0") : ""
+    extra += confirmBeforeFillIn ? "|B6c.confirm=1" : ""
+    extra += confirmPivotLenIn != 2 ? "|B6c.pivot=" + str.tostring(confirmPivotLenIn) : ""
+    base + extra
+f_signed(float r) =>
+    (r >= 0 ? "+" : "") + str.tostring(r, "0.0") + "R"
+f_stopBuffer(string which) =>
+    float mult = which == "Tight" ? tightAtrIn : which == "Large" ? largeAtrIn : medAtrIn
+    int floorTicks = syminfo.root == "MNQ" ? mnqFloorTicksIn : syminfo.root == "MES" ? mesFloorTicksIn : syminfo.root == "MGC" ? mgcFloorTicksIn : genericFloorTicksIn
+    useTickFloorIn ? math.max(floorTicks * tick, mult * armAtr) : mult * armAtr
+f_stop(float anchor, int side, string which) =>
+    anchor - side * f_stopBuffer(which)
+f_hit(float px) =>
+    low <= px and px <= high
+f_stop_hit(int side, float px) =>
+    side == 1 ? low <= px : high >= px
+f_tp_hit(int side, float px) =>
+    side == 1 ? high >= px : low <= px
+f_ltfAvailable() =>
+    not na(ltfHighs) and not na(ltfLows) and array.size(ltfHighs) > 0 and array.size(ltfHighs) == array.size(ltfLows)
+f_wrong(int side, float shelf) =>
+    float tol = reclaimAtrIn * armAtr
+    side == 1 ? shelf - close >= tol : close - shelf >= tol
+f_entry_hit(staxPlan p) =>
+    float tol = reclaimAtrIn * armAtr
+    p.origin == "shelf" ? (p.dir == 1 ? low <= p.shelf and high >= p.shelf - tol : high >= p.shelf and low <= p.shelf + tol) : f_hit(p.entry)
+f_newsBlocked() =>
+    bool blocked = false
+    int openMin = hour(time, "America/New_York") * 60 + minute(time, "America/New_York")
+    int closeMin = hour(time_close, "America/New_York") * 60 + minute(time_close, "America/New_York")
+    if newsBlockMinutesIn > 0 and str.length(newsTimesIn) >= 4
+        array<string> parts = str.split(newsTimesIn, ",")
+        for part in parts
+            string hhmm = str.trim(part)
+            if str.length(hhmm) == 4
+                float value = str.tonumber(hhmm)
+                if not na(value)
+                    int releaseMin = int(value / 100) * 60 + int(value % 100)
+                    blocked := blocked or (openMin <= releaseMin + newsBlockMinutesIn and closeMin >= releaseMin - newsBlockMinutesIn)
+    blocked
+newsBlocked = f_newsBlocked()
+f_ltfWalk(int side, bool needEntry, float entry, float stop, float t1, float t2, float t3, bool hit1, bool hit2, bool hit3) =>
+    string certainty = "unproven"
+    int n = na(ltfHighs) or na(ltfLows) ? 0 : array.size(ltfHighs)
+    if not intrabarCheckIn
+        certainty := "proven"
+    else if n > 0 and array.size(ltfLows) == n
+        bool entered = not needEntry
+        bool resolved = false
+        for i = 0 to n - 1
+            if not resolved
+                float ih = array.get(ltfHighs, i)
+                float il = array.get(ltfLows, i)
+                bool adverse = side == 1 ? il <= stop : ih >= stop
+                bool f1 = not hit1 and (side == 1 ? ih >= t1 : il <= t1)
+                bool f2 = not hit2 and (side == 1 ? ih >= t2 : il <= t2)
+                bool f3 = not hit3 and (side == 1 ? ih >= t3 : il <= t3)
+                bool favorable = f1 or f2 or f3
+                bool entryTouch = il <= entry and ih >= entry
+                if not entered
+                    if entryTouch and (adverse or favorable)
+                        certainty := "unproven"
+                        resolved := true
+                    else if adverse or favorable
+                        certainty := "unproven"
+                        resolved := true
+                    else if entryTouch
+                        entered := true
+                        certainty := "proven"
+                        resolved := true
+                else if adverse and favorable
+                    certainty := "unproven"
+                    resolved := true
+                else if adverse or favorable
+                    certainty := "proven"
+                    resolved := true
+    certainty
+f_totalWeight(staxPlan p) =>
+    (p.on1 ? p.w1 : 0) + (p.on2 ? p.w2 : 0) + (p.on3 ? p.w3 : 0)
+f_remainingWeight(staxPlan p) =>
+    (p.on1 and not p.hit1 ? p.w1 : 0) + (p.on2 and not p.hit2 ? p.w2 : 0) + (p.on3 and not p.hit3 ? p.w3 : 0)
+f_netR(staxPlan p, float grossR, float weightShare, bool marketExit) =>
+    float selectedRisk = math.abs(p.entry - p.stop)
+    float totalWeight = f_totalWeight(p)
+    float share = totalWeight > 0 ? weightShare / totalWeight : 1.0
+    float slipPts = slippageTicksIn * tick
+    float entrySlip = p.scenario == "M" ? slipPts : 0.0
+    float exitSlip = marketExit ? slipPts : 0.0
+    float commissionPts = syminfo.pointvalue > 0 ? commissionRTIn / syminfo.pointvalue : 0.0
+    float costPts = (entrySlip + exitSlip + commissionPts) * share
+    selectedRisk > 0 ? grossR - costPts / selectedRisk : grossR
+f_planQty(float entry, float selectedStop, string scenario) =>
+    int result = 1
+    if riskDollarsIn > 0 and not staxMode
+        float marketFills = scenario == "M" ? 2.0 : 1.0
+        float riskPts = math.abs(entry - selectedStop) + slippageTicksIn * tick * marketFills
+        float perContract = riskPts * syminfo.pointvalue + commissionRTIn
+        result := perContract > 0 ? int(math.floor(riskDollarsIn / perContract)) : 0
+        result := math.min(maxContractsIn, result)
+    result
+f_legSplit(int qty, bool on1, bool on2, bool on3, int w1, int w2, int w3) =>
+    int q1 = 0
+    int q2 = 0
+    int q3 = 0
+    if riskDollarsIn <= 0 or staxMode
+        q1 := 1
+    else
+        int totalW = (on1 ? w1 : 0) + (on2 ? w2 : 0) + (on3 ? w3 : 0)
+        q1 := on1 and totalW > 0 ? int(math.floor(qty * w1 / totalW)) : 0
+        q2 := on2 and totalW > 0 ? int(math.floor(qty * w2 / totalW)) : 0
+        q3 := on3 and totalW > 0 ? int(math.floor(qty * w3 / totalW)) : 0
+        int remainder = qty - q1 - q2 - q3
+        if remainder > 0 and on1
+            q1 += 1
+            remainder -= 1
+        if remainder > 0 and on2
+            q2 += 1
+            remainder -= 1
+        if remainder > 0 and on3
+            q3 += 1
+    [q1, q2, q3]
+f_strategyEntry(staxPlan p) =>
+    if p.qty > 0 and (not confirmBeforeFillIn or p.scenario == "M")
+        strategy.entry(p.setupId, p.dir == 1 ? strategy.long : strategy.short, qty = p.qty,
+             limit = p.origin == "momentum" ? na : p.entry, disable_alert = true)
+    true
+f_strategyExitLeg(staxPlan p, string legId, float target, bool enabled, bool hit, int legQty, int legWeight) =>
+    int totalW = f_totalWeight(p)
+    if enabled and not hit and p.qty > 0 and totalW > 0
+        if riskDollarsIn > 0 and not staxMode
+            if legQty > 0
+                strategy.exit(p.setupId + ":" + legId, from_entry = p.setupId, stop = p.liveStop, limit = target, qty = legQty, disable_alert = true)
+        else
+            strategy.exit(p.setupId + ":" + legId, from_entry = p.setupId, stop = p.liveStop, limit = target, qty_percent = 100.0 * legWeight / totalW, disable_alert = true)
+    true
+f_strategySync(staxPlan p) =>
+    if p.state == "ARMED" and confirmBeforeFillIn and p.scenario != "M" and p.structureConfirmed and bar_index > p.confirmBar and p.qty > 0
+        strategy.entry(p.setupId, p.dir == 1 ? strategy.long : strategy.short, qty = p.qty, limit = p.entry, disable_alert = true)
+    else if p.state == "LIVE"
+        f_strategyExitLeg(p, "TP1", p.tp1, p.on1, p.hit1, p.leg1, p.w1)
+        f_strategyExitLeg(p, "TP2", p.tp2, p.on2, p.hit2, p.leg2, p.w2)
+        f_strategyExitLeg(p, "TP3", p.tp3, p.on3, p.hit3, p.leg3, p.w3)
+    else if p.state == "TRIGGERED"
+        true
+    else if p.state != "ARMED"
+        strategy.cancel(p.setupId)
+        strategy.cancel(p.setupId + ":TP1")
+        strategy.cancel(p.setupId + ":TP2")
+        strategy.cancel(p.setupId + ":TP3")
+    true
+f_active(string state) =>
+    state == "ARMED" or state == "TRIGGERED" or state == "LIVE"
+f_targets(staxPlan p) =>
+    string s = ""
+    if p.on1
+        s := '{"id":"TP1","price":' + f_num(p.tp1) + ',"allocation":' + str.tostring(p.w1) + ',"r":' + str.tostring(p.rUnit, "0.00") + '}'
+    if p.on2
+        float r2 = p.struct2 and p.refRisk > 0 ? math.abs(p.tp2 - p.entry) / p.refRisk : p.rUnit * 2.0
+        string bit = '{"id":"TP2","price":' + f_num(p.tp2) + ',"allocation":' + str.tostring(p.w2) + ',"r":' + str.tostring(r2, "0.00") + '}'
+        s := s == "" ? bit : s + "," + bit
+    if p.on3
+        float r3 = p.struct3 and p.refRisk > 0 ? math.abs(p.tp3 - p.entry) / p.refRisk : p.rUnit * 3.0
+        string bit3 = '{"id":"TP3","price":' + f_num(p.tp3) + ',"allocation":' + str.tostring(p.w3) + ',"r":' + str.tostring(r3, "0.00") + '}'
+        s := s == "" ? bit3 : s + "," + bit3
+    "[" + s + "]"
+f_payload(staxPlan p, string event, string extra, string idBit) =>
+    string side = p.dir == 1 ? "long" : "short"
+    string opt = staxMode and event == "entry" ? ',"unmodifiedTicker":"' + (tickerOverrideIn != "" ? tickerOverrideIn : syminfo.root) + f_expiryYYMMDD() + (p.dir == 1 ? "C" : "P") + f_strike(p.dir) + '"' : ""
+    string eid = idBit == "" ? p.setupId + ":" + event + ":" + str.tostring(bar_index) : p.setupId + ":" + event + ":" + idBit + ":" + str.tostring(bar_index)
+    string lvl = p.level == "" ? "null" : '"' + p.level + '"'
+    string additions = ""
+    if event == "plan" or event == "entry" or event == "exit" or event == "stop_update"
+        additions += ',"qty":' + str.tostring(p.qty) + ',"legs":[' + str.tostring(p.leg1) + ',' + str.tostring(p.leg2) + ',' + str.tostring(p.leg3) + ']'
+    if event == "plan"
+        additions += ',"disp_quality":{"outer_close":' + (p.outerClose ? "true" : "false") + ',"run_bars":' + str.tostring(p.runBars) + '}'
+    if event == "entry"
+        additions += ',"order_certainty":"' + p.entryCertainty + '"'
+    if event == "exit"
+        additions += ',"order_certainty":"' + p.exitCertainty + '"'
+    '{"source":"staxbot","event":"' + event + '","eventId":"' + eid + '","setupId":"' + p.setupId + '","plan_id":' + str.tostring(p.planId) + ',"move_id":' + str.tostring(p.moveId) + ',"scenario":"' + p.scenario + '","state":"' + p.state + '","origin":"' + p.origin + '","side":"' + side + '","entry":' + f_num(p.entry) + ',"stop":' + f_num(p.liveStop) + ',"stop_preset":"' + p.preset + '","price":' + f_num(p.entry) + ',"target":' + f_num(p.on1 ? p.tp1 : p.on2 ? p.tp2 : p.tp3) + ',"targets":' + f_targets(p) + ',"grade":"' + p.grade + '","level":' + lvl + ',"version":"2.6.0","fp":"' + p.fp + '","timeframe":"' + timeframe.period + '","ticker":"' + syminfo.ticker + '","root":"' + syminfo.root + '","exchange":"' + syminfo.prefix + '"' + opt + extra + additions + ',"timestamp":"' + f_ts() + '"}'
+f_send(string msg) =>
+    array.push(outbox, msg)
+    true
+f_live_n() =>
+    int n = 0
+    if array.size(plans) > 0
+        for i = 0 to array.size(plans) - 1
+            staxPlan p = array.get(plans, i)
+            if p.state == "LIVE" or p.state == "TRIGGERED"
+                n += 1
+    n
+f_has(int id, string origin) =>
+    bool found = false
+    if array.size(plans) > 0
+        for i = 0 to array.size(plans) - 1
+            staxPlan p = array.get(plans, i)
+            if p.moveId == id and p.origin == origin and f_active(p.state)
+                found := true
+    found
+f_replace_older(int side, int id) =>
+    if array.size(plans) > 0
+        for i = 0 to array.size(plans) - 1
+            staxPlan p = array.get(plans, i)
+            if p.dir == side and p.state == "ARMED" and p.moveId < id
+                p.state := "REPLACED"
+                p.reason := "newer break"
+                p.ready := false
+                p.resolvedBar := bar_index
+                f_send(f_payload(p, "plan_cancel", ',"reason":"replaced"', ""))
+                array.set(plans, i, p)
+    true
+f_down(string g) =>
+    g == "A+" ? "A" : "B"
+f_at_level(float px) =>
+    string name = ""
+    float best = na
+    float reach = 0.5 * atr
+    if array.size(zonePx) > 0
+        for i = 0 to array.size(zonePx) - 1
+            float zLo = array.get(zoneLo, i)
+            float zHi = array.get(zoneHi, i)
+            float dist = (px >= zLo and px <= zHi) ? 0.0 : (px < zLo ? zLo - px : px - zHi)
+            if dist <= reach and (na(best) or dist < best)
+                best := dist
+                name := array.get(zoneName, i)
+    name
+f_room_name(int side, float entry, float tp1) =>
+    string name = ""
+    float best = na
+    float tol = reclaimAtrIn * armAtr
+    if array.size(zonePx) > 0
+        for i = 0 to array.size(zonePx) - 1
+            float zLo = array.get(zoneLo, i)
+            float zHi = array.get(zoneHi, i)
+            float zPx = array.get(zonePx, i)
+            bool contains = entry >= zLo and entry <= zHi
+            bool clear = side == 1 ? (zLo - entry > tol and zLo < tp1) : (entry - zHi > tol and zHi > tp1)
+            float dist = math.abs(zPx - entry)
+            if not contains and clear and (na(best) or dist < best)
+                best := dist
+                name := array.get(zoneName, i)
+    name
+f_nearestSwing(array<float> highs, array<float> lows, int side, float entry, float beyond) =>
+    float result = na
+    if side == 1 and array.size(highs) > 0
+        for i = 0 to array.size(highs) - 1
+            float price = array.get(highs, i)
+            float dist = price - entry
+            if dist > syminfo.mintick * 0.5 and (na(beyond) or price > beyond + syminfo.mintick * 0.5) and (na(result) or dist < result - entry)
+                result := price
+    if side == -1 and array.size(lows) > 0
+        for i = 0 to array.size(lows) - 1
+            float price = array.get(lows, i)
+            float dist = entry - price
+            if dist > syminfo.mintick * 0.5 and (na(beyond) or price < beyond - syminfo.mintick * 0.5) and (na(result) or dist < entry - result)
+                result := price
+    result
+f_structuralTargets2(float entry, float stop, int side) =>
+    array<float> setupHighs = useScaledHTFIn and chartSeconds >= 900 ? scaledSetupHighs : setup15Highs
+    array<float> setupLows = useScaledHTFIn and chartSeconds >= 900 ? scaledSetupLows : setup15Lows
+    array<float> positionHighs = useScaledHTFIn and chartSeconds >= 900 ? scaledPositionHighs : h1Highs
+    array<float> positionLows = useScaledHTFIn and chartSeconds >= 900 ? scaledPositionLows : h1Lows
+    array<float> runnerHighs = useScaledHTFIn and chartSeconds >= 900 ? scaledRunnerHighs : h4Highs
+    array<float> runnerLows = useScaledHTFIn and chartSeconds >= 900 ? scaledRunnerLows : h4Lows
+    float risk = math.abs(entry - stop)
+    float setupLevel = f_nearestSwing(setupHighs, setupLows, side, entry, na)
+    float lead = f_stopBuffer(pSl)
+    float t2 = not na(setupLevel) ? setupLevel - side * lead : na
+    float runnerLevel = na
+    if not na(setupLevel)
+        float positionTarget = f_nearestSwing(positionHighs, positionLows, side, t2, na)
+        float runnerTarget = f_nearestSwing(runnerHighs, runnerLows, side, t2, na)
+        runnerLevel := na(positionTarget) ? runnerTarget : na(runnerTarget) ? positionTarget : side == 1 ? math.min(positionTarget, runnerTarget) : math.max(positionTarget, runnerTarget)
+    float t3 = na
+    if not na(t2) and risk > 0
+        float t2Distance = side * (t2 - entry)
+        float fallback = math.max(2.0 * risk, t2Distance + risk)
+        t3 := na(runnerLevel) ? entry + side * fallback : runnerLevel - side * lead
+    float t1 = na
+    if not na(t2) and array.size(zonePx) > 0
+        for i = 0 to array.size(zonePx) - 1
+            float price = array.get(zonePx, i)
+            float dist = side * (price - entry)
+            float t2Dist = side * (t2 - entry)
+            if dist > syminfo.mintick * 0.5 and dist < t2Dist - syminfo.mintick * 0.5 and (na(t1) or dist < side * (t1 - entry))
+                t1 := price
+    if na(t1) and not na(t2)
+        t1 := entry + side * (side * (t2 - entry)) * 0.5
+    bool minRok = tp2MinRIn == 0 or (risk > 0 and not na(t2) and side * (t2 - entry) >= tp2MinRIn * risk)
+    bool ordered = not na(t1) and not na(t2) and not na(t3) and side * (t1 - entry) > 0 and side * (t2 - t1) > 0 and side * (t3 - t2) > 0
+    [t1, t2, t3, ordered and minRok]
+f_catalogSet(int slot, float price, string kind, int side, bool major, bool live, bool covered) =>
+    if array.size(engineCatalog) > slot
+        importedLevel level = array.get(engineCatalog, slot)
+        bool fresh = na(level.price) != na(price) or (not na(price) and math.abs(level.price - price) > syminfo.mintick * 0.5)
+        level.price := price
+        level.kind := kind
+        level.side := side
+        level.originMajor := major
+        level.major := major and not level.swept
+        level.live := live
+        level.covered := covered
+        if fresh
+            level.major := major
+            level.swept := false
+            level.sweepConfirmed := false
+            level.flipped := false
+            level.born := bar_index
+        array.set(engineCatalog, slot, level)
+    true
+f_catalogFeedable(importedLevel level) =>
+    level.covered and not level.live and not na(level.price) and (not level.swept or (level.originMajor and level.flipped))
+f_catalogPrice(string kind) =>
+    float price = na
+    if array.size(engineCatalog) > 0
+        for i = 0 to array.size(engineCatalog) - 1
+            importedLevel level = array.get(engineCatalog, i)
+            if level.kind == kind and not na(level.price)
+                price := level.price
+    price
+f_runBars(int side) =>
+    bool twoAligned = bar_index >= 1 and (side == 1 ? close > open and close[1] > open[1] : close < open and close[1] < open[1]) and math.abs(close - open[1]) >= 1.5 * atr
+    bool threeAligned = bar_index >= 2 and (side == 1 ? close > open and close[1] > open[1] and close[2] > open[2] : close < open and close[1] < open[1] and close[2] < open[2]) and math.abs(close - open[2]) >= 1.5 * atr
+    threeAligned ? 3 : twoAligned ? 2 : 0
+f_positionOk(int side, float extreme, float closeP) =>
+    float bodyTop = math.max(positionOpen, positionClose)
+    float bodyBottom = math.min(positionOpen, positionClose)
+    not na(positionOpen) and not na(extreme) and (side == 1 ? extreme >= positionLow and extreme <= bodyTop and closeP >= bodyBottom : extreme <= positionHigh and extreme >= bodyBottom and closeP <= bodyTop)
+f_keep3(array<float> src, float v) =>
+    if not na(v)
+        array.push(src, v)
+        if array.size(src) > 3
+            array.shift(src)
+    true
+f_pruneSwings(array<float> src, int side) =>
+    if array.size(src) > 0
+        for i = array.size(src) - 1 to 0
+            float price = array.get(src, i)
+            if (side == 1 and high > price) or (side == -1 and low < price)
+                array.remove(src, i)
+    true
+f_cancel_failed(int side) =>
+    if array.size(plans) > 0
+        for i = 0 to array.size(plans) - 1
+            staxPlan p = array.get(plans, i)
+            if p.dir == side and p.state == "ARMED"
+                p.state := "CANCELLED"
+                p.reason := "failed breakout"
+                p.ready := false
+                p.resolvedBar := bar_index
+                f_send(f_payload(p, "plan_cancel", ',"reason":"failed breakout"', ""))
+                array.set(plans, i, p)
+    true
+f_try_arm(string origin, int side, float entry, float tightPx, float medPx, float anchor, float shelf, int swingBar, float zoneHi, float zoneLo, int zoneFrom, bool flag1, bool htfSweep) =>
+    eng.planSeq += 1
+    float med = f_stop(medPx, side, "Medium")
+    float rawTight = f_stop(tightPx, side, "Tight")
+    float rawLarge = f_stop(anchor, side, "Large")
+    float dM = (entry - med) * side
+    float dT = (entry - rawTight) * side
+    float dL = (entry - rawLarge) * side
+    float dT2 = na(dM) ? na : ((na(dT) or dT > dM or dT <= 0) ? dM : dT)
+    float dL2 = na(dM) ? na : ((na(dL) or dL < dM) ? dM : dL)
+    float tightStop = entry - side * dT2
+    float largeStop = entry - side * dL2
+    float sel = na(dM) ? na : pSl == "Tight" ? tightStop : pSl == "Large" ? largeStop : med
+    float ref = dM
+    float targetStop = not na(sel) and (entry - sel) * side < minStopAtrIn * armAtr ? entry - side * minStopAtrIn * armAtr : sel
+    float t1 = entry + side * pTp * ref
+    float t2 = entry + side * pTp * 2.0 * ref
+    float t3 = entry + side * pTp * 3.0 * ref
+    bool ladder2 = true
+    bool ladder3 = true
+    [structT1, structT2, structT3, structTargetsOk] = f_structuralTargets2(entry, targetStop, side)
+    if structuralTargets2In
+        t1 := structT1
+        t2 := structT2
+        t3 := structT3
+        ladder2 := false
+        ladder3 := false
+    if structOnIn and not na(t1) and array.size(zonePx) > 0
+        float nxt1 = na
+        float nxt2 = na
+        for i = 0 to array.size(zonePx) - 1
+            float zPx = array.get(zonePx, i)
+            bool beyond = side == 1 ? zPx > t1 : zPx < t1
+            if beyond
+                if na(nxt1) or (side == 1 ? zPx < nxt1 : zPx > nxt1)
+                    nxt2 := nxt1
+                    nxt1 := zPx
+                else if na(nxt2) or (side == 1 ? zPx < nxt2 : zPx > nxt2)
+                    nxt2 := zPx
+        if not na(nxt1)
+            t2 := nxt1
+            ladder2 := false
+        if not na(nxt2) and (side == 1 ? nxt2 > t2 : nxt2 < t2)
+            t3 := nxt2
+            ladder3 := false
+        else if not ladder2 and (side == 1 ? t3 <= t2 : t3 >= t2)
+            t3 := t2 + side * pTp * ref
+            ladder3 := false
+    bool distanceOk = dM >= minStopAtrIn * armAtr and (maxStopAtrIn <= 0 or dM <= maxStopAtrIn * armAtr)
+    bool ordered = side == 1 ? med < entry and entry < t1 and t1 < t2 and t2 < t3 : med > entry and entry > t1 and t1 > t2 and t2 > t3
+    float r1 = ref > 0 ? math.abs(t1 - entry) / ref : na
+    float r2 = ref > 0 ? math.abs(t2 - entry) / ref : na
+    float r3 = ref > 0 ? math.abs(t3 - entry) / ref : na
+    bool labelsOk = not na(r1) and math.abs(r1 - pTp) < 0.0001 and (not ladder2 or math.abs(r2 - pTp * 2.0) < 0.0001) and (not ladder3 or math.abs(r3 - pTp * 3.0) < 0.0001)
+    bool geometryOk = ordered and labelsOk and (not structuralTargets2In or structTargetsOk)
+    int clock = hour(time, tzIn) * 60 + minute(time, tzIn)
+    bool gradeSess = (clock >= 180 and clock < 360) or (clock >= 500 and clock < 690)
+    string atLevel = f_at_level(entry)
+    string g = f_grade(flag1, side == 1 ? bias == 1 : bias == -1, volume > volSma, gradeSess, atLevel != "")
+    bool topDownException = flag1 and (htfSweep or atLevel != "")
+    bool topDownOk = not topDownFilterIn or side == topDownDirection or origin == "sweep" or topDownException
+    if origin == "sweep"
+        g := htfSweep ? "A+" : "B"
+    string roomName = geometryOk and distanceOk ? f_room_name(side, entry, t1) : ""
+    bool roomHit = roomName != ""
+    if roomHit and roomModeIn == "Downgrade"
+        g := f_down(g)
+    bool extended = extOnIn and origin != "sweep" and math.abs(entry - emaSlow) > extAtrIn * atr
+    if extended
+        g := f_down(g)
+    bool take = minGradeIn == "Off" or g == "A+" or (minGradeIn == "A" and g == "A")
+    if not topDownOk
+        eng.hudReject := "PLAN REJECTED: top-down direction."
+    else if not geometryOk
+        eng.hudReject := "PLAN REJECTED: geometry."
+        log.info("plan_id " + str.tostring(eng.planSeq) + " PLAN REJECTED: geometry")
+    else if not distanceOk
+        eng.hudReject := "PLAN REJECTED: stop distance."
+        log.info("plan_id " + str.tostring(eng.planSeq) + " PLAN REJECTED: stop distance")
+    else if roomHit and roomModeIn == "Reject"
+        eng.hudReject := "PLAN REJECTED: no room (" + roomName + ")"
+        log.info("plan_id " + str.tostring(eng.planSeq) + " PLAN REJECTED: no room (" + roomName + ")")
+    else if take and not f_has(moveIdNow, origin)
+        float minDist = minStopAtrIn * armAtr
+        float dSel = (entry - sel) * side
+        if not na(dSel) and dSel < minDist
+            sel := entry - side * minDist
+        staxPlan p = staxPlan.new()
+        p.planId := eng.planSeq
+        p.moveId := moveIdNow
+        p.scenario := origin == "gap" ? "A" : origin == "sweep" ? "C" : origin == "momentum" ? "M" : "B"
+        p.origin := origin
+        p.dir := side
+        p.entry := entry
+        p.anchor := pSl == "Tight" ? tightPx : pSl == "Large" ? anchor : medPx
+        p.preset := pSl
+        p.stop := sel
+        p.liveStop := sel
+        p.tp1 := t1
+        p.tp2 := t2
+        p.tp3 := t3
+        p.refRisk := ref
+        p.grade := g
+        p.state := "ARMED"
+        p.createdBar := bar_index
+        p.expiryBar := bar_index + setupExpiryIn
+        p.shelf := shelf
+        p.inv := origin == "gap" ? tightPx : shelf
+        p.swingBar := swingBar
+        p.zoneHi := zoneHi
+        p.zoneLo := zoneLo
+        p.zoneFrom := zoneFrom
+        p.on1 := tp1OnIn
+        p.on2 := tp2OnIn
+        p.on3 := tp3OnIn
+        p.rUnit := pTp
+        p.w1 := tp1WIn
+        p.w2 := tp2WIn
+        p.w3 := tp3WIn
+        p.setupId := syminfo.ticker + ":" + str.tostring(time) + ":" + str.tostring(eng.planSeq)
+        p.qty := f_planQty(entry, sel, p.scenario)
+        [split1, split2, split3] = f_legSplit(p.qty, p.on1, p.on2, p.on3, p.w1, p.w2, p.w3)
+        p.leg1 := split1
+        p.leg2 := split2
+        p.leg3 := split3
+        float signalRange = high - low
+        p.outerClose := signalRange > 0 and (side == 1 ? close >= high - signalRange * 0.25 : close <= low + signalRange * 0.25)
+        p.runBars := f_runBars(side)
+        p.fp := f_fp()
+        p.reason := ""
+        p.level := atLevel
+        p.extended := extended
+        p.struct2 := not ladder2
+        p.struct3 := not ladder3
+        array.push(plans, p)
+        // Keep retest limits live while ARMED; the state machine still decides fills and alerts.
+        f_strategyEntry(p)
+        f_send(f_payload(p, "plan", "", ""))
+        eng.hudReject := ""
+    true
+
+if barstate.isfirst
+    for i = 0 to 4
+        array.push(engineCatalog, importedLevel.new())
+
+f_note(int at, float y, string txt) =>
+    label.new(at, y, txt, style = label.style_none, color = color.new(#7F8AA3, 100), textcolor = color.new(#E6EAF2, 0), size = size.small)
+f_price_tag(int at, float y, string txt, color ink) =>
+    label.new(at, y, txt, style = label.style_label_right, color = color.new(#0B0F19, 0), textcolor = ink, size = size.normal, text_font_family = font.family_monospace)
+f_exit_mark(int side, float y, string txt, color ink) =>
+    label.new(bar_index, y, txt, style = side == 1 ? label.style_label_down : label.style_label_up, color = ink, textcolor = color.white, size = size.tiny, text_font_family = font.family_monospace)
+f_drop_line(line l) =>
+    if not na(l)
+        line.delete(l)
+    true
+f_drop_lab(label l) =>
+    if not na(l)
+        label.delete(l)
+    true
+f_drop_box(box b) =>
+    if not na(b)
+        box.delete(b)
+    true
+f_erase(staxPlan p) =>
+    f_drop_line(p.lnEn)
+    f_drop_line(p.lnSl)
+    f_drop_line(p.ln1)
+    f_drop_line(p.ln2)
+    f_drop_line(p.ln3)
+    f_drop_lab(p.lbEn)
+    f_drop_lab(p.lbSl)
+    f_drop_lab(p.lb1)
+    f_drop_lab(p.lb2)
+    f_drop_lab(p.lb3)
+    f_drop_lab(p.lbFill)
+    f_drop_lab(p.lbExit)
+    f_drop_lab(p.lbRange)
+    f_drop_lab(p.lbBos)
+    f_drop_box(p.rangeBox)
+    p.lnEn := na
+    p.lnSl := na
+    p.ln1 := na
+    p.ln2 := na
+    p.ln3 := na
+    p.lbEn := na
+    p.lbSl := na
+    p.lb1 := na
+    p.lb2 := na
+    p.lb3 := na
+    p.lbFill := na
+    p.lbExit := na
+    p.lbRange := na
+    p.lbBos := na
+    p.rangeBox := na
+    p.erased := true
+    p
+f_grey(staxPlan p) =>
+    color ink = color.new(#7F8AA3, 55)
+    f_drop_line(p.lnSl)
+    f_drop_line(p.ln1)
+    f_drop_line(p.ln2)
+    f_drop_line(p.ln3)
+    f_drop_lab(p.lbEn)
+    f_drop_lab(p.lbSl)
+    f_drop_lab(p.lb1)
+    f_drop_lab(p.lb2)
+    f_drop_lab(p.lb3)
+    f_drop_lab(p.lbFill)
+    f_drop_lab(p.lbExit)
+    f_drop_lab(p.lbRange)
+    f_drop_lab(p.lbBos)
+    f_drop_box(p.rangeBox)
+    p.lnSl := na
+    p.ln1 := na
+    p.ln2 := na
+    p.ln3 := na
+    p.lbEn := na
+    p.lbSl := na
+    p.lb1 := na
+    p.lb2 := na
+    p.lb3 := na
+    p.lbFill := na
+    p.lbExit := na
+    p.lbBos := na
+    p.rangeBox := na
+    if not na(p.lnEn)
+        line.set_color(p.lnEn, ink)
+        line.set_width(p.lnEn, 1)
+        line.set_x2(p.lnEn, bar_index)
+    int tagAt = p.resolvedBar >= 0 ? p.resolvedBar : bar_index
+    p.lbRange := label.new(tagAt, p.entry, p.state, style = label.style_none, color = color.new(#7F8AA3, 100), textcolor = ink, size = size.small)
+    p.greyed := true
+    p
+f_review(staxPlan p) =>
+    color ink = color.new(#7F8AA3, 0)
+    f_drop_lab(p.lbEn)
+    f_drop_lab(p.lbSl)
+    f_drop_lab(p.lb1)
+    f_drop_lab(p.lb2)
+    f_drop_lab(p.lb3)
+    f_drop_lab(p.lbFill)
+    f_drop_lab(p.lbExit)
+    f_drop_lab(p.lbRange)
+    f_drop_lab(p.lbBos)
+    f_drop_box(p.rangeBox)
+    p.lbEn := na
+    p.lbSl := na
+    p.lb1 := na
+    p.lb2 := na
+    p.lb3 := na
+    p.lbFill := na
+    p.lbExit := na
+    p.lbBos := na
+    p.rangeBox := na
+    if not na(p.lnEn)
+        line.set_color(p.lnEn, ink)
+        line.set_x2(p.lnEn, bar_index)
+    if not na(p.lnSl)
+        line.set_color(p.lnSl, ink)
+        line.set_x2(p.lnSl, bar_index)
+    if not na(p.ln1)
+        line.set_color(p.ln1, ink)
+        line.set_x2(p.ln1, bar_index)
+    if not na(p.ln2)
+        line.set_color(p.ln2, ink)
+        line.set_x2(p.ln2, bar_index)
+    if not na(p.ln3)
+        line.set_color(p.ln3, ink)
+        line.set_x2(p.ln3, bar_index)
+    int tagAt = p.resolvedBar >= 0 ? p.resolvedBar : bar_index
+    string tagTxt = p.reason == "" ? p.state : p.state + " " + p.reason
+    p.lbRange := label.new(tagAt, p.entry, tagTxt, style = label.style_none, color = color.new(#7F8AA3, 100), textcolor = ink, size = size.small)
+    p.greyed := true
+    p
+f_kind(string origin) =>
+    origin == "gap" ? "gap" : origin == "sweep" ? "sweep" : origin == "momentum" ? "momentum" : "shelf"
+f_thin(staxPlan p) =>
+    f_drop_line(p.lnSl)
+    f_drop_line(p.ln1)
+    f_drop_line(p.ln2)
+    f_drop_line(p.ln3)
+    f_drop_lab(p.lbEn)
+    f_drop_lab(p.lbSl)
+    f_drop_lab(p.lb1)
+    f_drop_lab(p.lb2)
+    f_drop_lab(p.lb3)
+    f_drop_lab(p.lbFill)
+    f_drop_lab(p.lbRange)
+    f_drop_lab(p.lbBos)
+    f_drop_box(p.rangeBox)
+    p.lnSl := na
+    p.ln1 := na
+    p.ln2 := na
+    p.ln3 := na
+    p.lbEn := na
+    p.lbSl := na
+    p.lb1 := na
+    p.lb2 := na
+    p.lb3 := na
+    p.lbFill := na
+    p.lbRange := na
+    p.lbBos := na
+    p.rangeBox := na
+    color ink = color.new(#7F8AA3, 35)
+    int left = math.max(0, p.createdBar - 24)
+    if na(p.lnEn)
+        p.lnEn := line.new(left, p.entry, bar_index, p.entry, color = ink, style = line.style_dashed, width = 1)
+    else
+        line.set_color(p.lnEn, ink)
+        line.set_style(p.lnEn, line.style_dashed)
+        line.set_width(p.lnEn, 1)
+        line.set_x1(p.lnEn, left)
+        line.set_x2(p.lnEn, bar_index)
+        line.set_y1(p.lnEn, p.entry)
+        line.set_y2(p.lnEn, p.entry)
+    p
+f_draw(staxPlan p) =>
+    if not showDrawingsIn or p.erased
+        p
+    else if not f_active(p.state)
+        if resolvedIn == "Remove"
+            f_erase(p)
+        else if not p.greyed and resolvedIn == "Review"
+            f_review(p)
+        else if not p.greyed
+            f_grey(p)
+        else
+            p
+    else if f_live_n() > 0 and p.state == "ARMED"
+        f_thin(p)
+    else
+        int left = math.max(0, p.createdBar - 24)
+        int right = bar_index
+        color sideInk = p.dir == 1 ? color.new(#4C8DFF, 0) : color.new(#FF8A3D, 0)
+        string stopTxt = p.liveStop != p.stop ? "STOP (trail)  " + f_num(p.liveStop) : "STOP  " + f_num(p.liveStop)
+        if not na(p.lnEn) and na(p.lnSl)
+            line.delete(p.lnEn)
+            p.lnEn := na
+        if na(p.lnEn)
+            float top = math.max(p.zoneHi, p.zoneLo)
+            float bot = math.min(p.zoneHi, p.zoneLo)
+            int boxLeft = math.max(0, p.zoneFrom)
+            p.rangeBox := box.new(boxLeft, top, p.createdBar, bot, border_color = color.new(sideInk, 0), border_width = 2, border_style = line.style_solid, bgcolor = color.new(sideInk, 70))
+            p.lbRange := f_note(boxLeft, (top + bot) / 2.0, p.origin == "gap" ? "GAP" : "RANGE")
+            p.lbBos := f_note(p.createdBar, p.shelf, "BREAK")
+            p.lnEn := line.new(left, p.entry, right, p.entry, color = color.new(#E6EAF2, 0), style = line.style_solid, width = 2)
+            p.lnSl := line.new(left, p.liveStop, right, p.liveStop, color = p.liveStop != p.stop ? color.new(#9AA3B5, 0) : color.new(#FF5C6C, 0), style = line.style_solid, width = 3)
+            p.lbEn := f_price_tag(right, p.entry, "ENTRY  " + f_num(p.entry), color.new(#E6EAF2, 0))
+            p.lbSl := f_price_tag(right, p.liveStop, stopTxt, p.liveStop != p.stop ? color.new(#9AA3B5, 0) : color.new(#FF5C6C, 0))
+            if p.on1
+                p.ln1 := line.new(left, p.tp1, right, p.tp1, color = color.new(#3DDC97, 0), style = line.style_solid, width = 2)
+                p.lb1 := f_price_tag(right, p.tp1, "TP1  " + f_num(p.tp1) + "   " + str.tostring(p.rUnit, "0.#") + "R", color.new(#3DDC97, 0))
+            if p.on2
+                p.ln2 := line.new(left, p.tp2, right, p.tp2, color = color.new(#3DDC97, 0), style = line.style_solid, width = 3)
+                p.lb2 := f_price_tag(right, p.tp2, p.struct2 ? "TP2  " + f_num(p.tp2) : "TP2  " + f_num(p.tp2) + "   " + str.tostring(p.rUnit * 2.0, "0.#") + "R", color.new(#3DDC97, 0))
+            if p.on3
+                p.ln3 := line.new(left, p.tp3, right, p.tp3, color = color.new(#147A4E, 0), style = line.style_solid, width = 3)
+                p.lb3 := f_price_tag(right, p.tp3, p.struct3 ? "TP3  " + f_num(p.tp3) : "TP3  " + f_num(p.tp3) + "   " + str.tostring(p.rUnit * 3.0, "0.#") + "R", color.new(#147A4E, 0))
+        else
+            line.set_x1(p.lnEn, left)
+            line.set_x2(p.lnEn, right)
+            line.set_x1(p.lnSl, left)
+            line.set_x2(p.lnSl, right)
+            line.set_y1(p.lnSl, p.liveStop)
+            line.set_y2(p.lnSl, p.liveStop)
+            if p.liveStop != p.stop
+                line.set_color(p.lnSl, color.new(#9AA3B5, 0))
+            if not na(p.ln1)
+                line.set_x1(p.ln1, left)
+                line.set_x2(p.ln1, right)
+            if not na(p.ln2)
+                line.set_x1(p.ln2, left)
+                line.set_x2(p.ln2, right)
+            if not na(p.ln3)
+                line.set_x1(p.ln3, left)
+                line.set_x2(p.ln3, right)
+            label.set_x(p.lbEn, right)
+            label.set_x(p.lbSl, right)
+            label.set_y(p.lbSl, p.liveStop)
+            label.set_text(p.lbSl, stopTxt)
+            label.set_textcolor(p.lbSl, p.liveStop != p.stop ? color.new(#9AA3B5, 0) : color.new(#FF5C6C, 0))
+            if not na(p.lb1)
+                label.set_x(p.lb1, right)
+            if not na(p.lb2)
+                label.set_x(p.lb2, right)
+            if not na(p.lb3)
+                label.set_x(p.lb3, right)
+        p
+
+f_near(staxPlan p) =>
+    p.on1 ? p.tp1 : p.on2 ? p.tp2 : p.tp3
+f_done(staxPlan p) =>
+    (not p.on1 or p.hit1) and (not p.on2 or p.hit2) and (not p.on3 or p.hit3)
+f_close_trade(staxPlan p, float px, string why, string targetId) =>
+    p.state := "CLOSED"
+    p.reason := why
+    p.resolvedBar := bar_index
+    float rr = p.refRisk > 0 ? p.dir * (px - p.entry) / p.refRisk : 0.0
+    float netR = f_netR(p, rr, f_remainingWeight(p), true)
+    color ink = why == "SL" ? color.new(#FF5C6C, 0) : color.new(#3DDC97, 0)
+    if showDrawingsIn
+        if not na(p.lbExit)
+            label.delete(p.lbExit)
+        p.lbExit := f_exit_mark(p.dir, px, why + " " + f_signed(rr), ink)
+    if sendExitAlertsIn
+        string extra = ',"exit_price":' + f_num(px) + ',"reason":"' + why + '","targetId":"' + targetId + '","realizedR":' + str.tostring(rr, "0.00") + ',"r_net":' + str.tostring(netR, "0.00")
+        f_send(f_payload(p, "exit", extra, targetId + ":" + why))
+    if targetId == "RECLAIM" or targetId == "FLAT" or targetId == "FLAT_MISSING"
+        strategy.close(p.setupId, comment = why, immediately = true, disable_alert = true)
+    p
+f_mark_tp(staxPlan p, string which, float px, float rr) =>
+    float legWeight = which == "TP1" ? p.w1 : which == "TP2" ? p.w2 : p.w3
+    float netR = f_netR(p, rr, legWeight, false)
+    if showDrawingsIn
+        if not na(p.lbExit)
+            label.delete(p.lbExit)
+        p.lbExit := f_exit_mark(p.dir, px, which + " " + f_signed(rr), color.new(#3DDC97, 0))
+    if sendExitAlertsIn
+        string extra = ',"exit_price":' + f_num(px) + ',"reason":"TP","targetId":"' + which + '","realizedR":' + str.tostring(rr, "0.00") + ',"r_net":' + str.tostring(netR, "0.00")
+        f_send(f_payload(p, "exit", extra, which + ":TP"))
+    p
+
+if barstate.isrealtime and not barstate.isconfirmed and intrabarOnIn
+    if bar_index != formingBar
+        formingBar := bar_index
+        formingNow := false
+        formSide := 0
+    if not formingNow and not na(armAtr) and not na(atr)
+        float tolF = reclaimAtrIn * armAtr
+        bool bodyOk = math.abs(close - open) >= dispBodyAtrIn * atr
+        float upPen = (not na(rangeHigh) and high >= rangeHigh + tolF) ? high - rangeHigh : na
+        float dnPen = (not na(rangeLow) and low <= rangeLow - tolF) ? rangeLow - low : na
+        int pick = 0
+        if bodyOk and not na(upPen) and (na(dnPen) or upPen >= dnPen)
+            pick := 1
+        else if bodyOk and not na(dnPen)
+            pick := -1
+        if pick != 0
+            formingNow := true
+            formSide := pick
+            formEntry := pick == 1 ? rangeHigh : rangeLow
+            float medPx = pick == 1 ? low : high
+            formStop := f_stop(medPx, pick, "Medium")
+            float refF = (formEntry - formStop) * pick
+            formTp := formEntry + pick * pTp * refF
+            string fLvl = f_at_level(formEntry)
+            string fLvlJson = fLvl == "" ? "null" : '"' + fLvl + '"'
+            string fSide = pick == 1 ? "long" : "short"
+            string formMsg = '{"source":"staxbot","event":"break_forming","eventId":"break_forming:' + str.tostring(bar_index) + '","version":"2.6.0","fp":"' + f_fp() + '","provisional":true,"side":"' + fSide + '","entry":' + f_num(formEntry) + ',"stop":' + f_num(formStop) + ',"target":' + f_num(formTp) + ',"level":' + fLvlJson + ',"timestamp":"' + f_ts() + '"}'
+            alert(formMsg, alert.freq_once_per_bar)
+
+if barstate.isconfirmed
+    int ctOpenMin = hour(time, "America/Chicago") * 60 + minute(time, "America/Chicago")
+    int ctPrevMin = hour(time[1], "America/Chicago") * 60 + minute(time[1], "America/Chicago")
+    if ctOpenMin >= 17 * 60 and (na(ctPrevMin) or ctPrevMin < 17 * 60)
+        tradesToday := 0
+    array.clear(outbox)
+    bool wasForming = formingNow
+    int wasSide = formSide
+    float wasEntry = formEntry
+    float wasStop = formStop
+    float wasTp = formTp
+    formingNow := false
+
+    if barstate.isconfirmed
+        if bar_index > 0 and inAsiaSess[1] and not inAsiaSess
+            asiaHi := asiaRunHi
+            asiaLo := asiaRunLo
+            asiaRunHi := na
+            asiaRunLo := na
+        if inAsiaSess
+            asiaRunHi := na(asiaRunHi) ? high : math.max(asiaRunHi, high)
+            asiaRunLo := na(asiaRunLo) ? low : math.min(asiaRunLo, low)
+        if bar_index > 0 and inLonSess[1] and not inLonSess
+            lonHi := lonRunHi
+            lonLo := lonRunLo
+            lonRunHi := na
+            lonRunLo := na
+        if inLonSess
+            lonRunHi := na(lonRunHi) ? high : math.max(lonRunHi, high)
+            lonRunLo := na(lonRunLo) ? low : math.min(lonRunLo, low)
+        if bar_index > 0 and inOnSess[1] and not inOnSess
+            onHi := onRunHi
+            onLo := onRunLo
+            onRunHi := na
+            onRunLo := na
+        if inOnSess
+            onRunHi := na(onRunHi) ? high : math.max(onRunHi, high)
+            onRunLo := na(onRunLo) ? low : math.min(onRunLo, low)
+        if not na(dPh) and (na(seenDph) or dPh != seenDph)
+            f_keep3(dHighs, dPh)
+            seenDph := dPh
+        if not na(dPl) and (na(seenDpl) or dPl != seenDpl)
+            f_keep3(dLows, dPl)
+            seenDpl := dPl
+        if not na(h4Ph) and (na(seen4h) or h4Ph != seen4h)
+            f_keep3(h4Highs, h4Ph)
+            seen4h := h4Ph
+        if not na(h4Pl) and (na(seen4l) or h4Pl != seen4l)
+            f_keep3(h4Lows, h4Pl)
+            seen4l := h4Pl
+        if not na(h1Ph) and (na(seen1h) or h1Ph != seen1h)
+            f_keep3(h1Highs, h1Ph)
+            seen1h := h1Ph
+        if not na(h1Pl) and (na(seen1l) or h1Pl != seen1l)
+            f_keep3(h1Lows, h1Pl)
+            seen1l := h1Pl
+
+        if not na(setup15Ph) and (na(seenSetup15High) or setup15Ph != seenSetup15High)
+            f_keep3(setup15Highs, setup15Ph)
+            seenSetup15High := setup15Ph
+        if not na(setup15Pl) and (na(seenSetup15Low) or setup15Pl != seenSetup15Low)
+            f_keep3(setup15Lows, setup15Pl)
+            seenSetup15Low := setup15Pl
+        if useScaledHTFIn and chartSeconds >= 900
+            if not na(scaledSetupPh) and (na(seenScaledSetupHigh) or scaledSetupPh != seenScaledSetupHigh)
+                f_keep3(scaledSetupHighs, scaledSetupPh)
+                seenScaledSetupHigh := scaledSetupPh
+            if not na(scaledSetupPl) and (na(seenScaledSetupLow) or scaledSetupPl != seenScaledSetupLow)
+                f_keep3(scaledSetupLows, scaledSetupPl)
+                seenScaledSetupLow := scaledSetupPl
+            if not na(scaledPositionPh) and (na(seenScaledPositionHigh) or scaledPositionPh != seenScaledPositionHigh)
+                f_keep3(scaledPositionHighs, scaledPositionPh)
+                seenScaledPositionHigh := scaledPositionPh
+            if not na(scaledPositionPl) and (na(seenScaledPositionLow) or scaledPositionPl != seenScaledPositionLow)
+                f_keep3(scaledPositionLows, scaledPositionPl)
+                seenScaledPositionLow := scaledPositionPl
+            if not na(scaledRunnerPh) and (na(seenScaledRunnerHigh) or scaledRunnerPh != seenScaledRunnerHigh)
+                f_keep3(scaledRunnerHighs, scaledRunnerPh)
+                seenScaledRunnerHigh := scaledRunnerPh
+            if not na(scaledRunnerPl) and (na(seenScaledRunnerLow) or scaledRunnerPl != seenScaledRunnerLow)
+                f_keep3(scaledRunnerLows, scaledRunnerPl)
+                seenScaledRunnerLow := scaledRunnerPl
+            if not na(scaledSlowPh) and (na(seenScaledSlowHigh) or scaledSlowPh != seenScaledSlowHigh)
+                f_keep3(scaledSlowHighs, scaledSlowPh)
+                seenScaledSlowHigh := scaledSlowPh
+            if not na(scaledSlowPl) and (na(seenScaledSlowLow) or scaledSlowPl != seenScaledSlowLow)
+                f_keep3(scaledSlowLows, scaledSlowPl)
+                seenScaledSlowLow := scaledSlowPl
+
+        f_pruneSwings(setup15Highs, 1)
+        f_pruneSwings(setup15Lows, -1)
+        f_pruneSwings(scaledSetupHighs, 1)
+        f_pruneSwings(scaledSetupLows, -1)
+        f_pruneSwings(scaledPositionHighs, 1)
+        f_pruneSwings(scaledPositionLows, -1)
+        f_pruneSwings(scaledRunnerHighs, 1)
+        f_pruneSwings(scaledRunnerLows, -1)
+        f_pruneSwings(scaledSlowHighs, 1)
+        f_pruneSwings(scaledSlowLows, -1)
+
+        if useCatalogIn
+            if catalogNyNow and not catalogNyNow[1]
+                catalogNyHigh := na
+                catalogNyLow := na
+                catalogOrHigh := na
+                catalogOrLow := na
+                catalogNyCovered := false
+                catalogOrCovered := false
+            if catalogNyNow
+                catalogNyHigh := na(catalogNyHigh) ? high : math.max(catalogNyHigh, high)
+                catalogNyLow := na(catalogNyLow) ? low : math.min(catalogNyLow, low)
+                if catalogOrNow
+                    catalogOrHigh := na(catalogOrHigh) ? high : math.max(catalogOrHigh, high)
+                    catalogOrLow := na(catalogOrLow) ? low : math.min(catalogOrLow, low)
+                else if catalogNyMinute >= catalogNyStartMinute + 15
+                    catalogOrCovered := true
+            if bar_index > 0 and not catalogNyNow and catalogNyNow[1]
+                catalogNyCovered := true
+                catalogOrCovered := true
+
+            f_catalogSet(0, catalogPdc, "PDC", 0, false, false, not na(catalogPdc))
+            f_catalogSet(1, catalogNyHigh, "NYH", 1, true, catalogNyNow, catalogNyCovered)
+            f_catalogSet(2, catalogNyLow, "NYL", -1, true, catalogNyNow, catalogNyCovered)
+            f_catalogSet(3, catalogOrHigh, "ORH", 1, false, catalogOrNow, catalogOrCovered)
+            f_catalogSet(4, catalogOrLow, "ORL", -1, false, catalogOrNow, catalogOrCovered)
+
+            if not na(catalogPivotHigh)
+                int pivotBarHigh = bar_index - catalogPivotLenIn
+                if not na(lastEqualHigh) and not na(lastEqualHighBar)
+                    float equalLevelHigh = math.max(catalogPivotHigh, lastEqualHigh)
+                    float toleranceHigh = equalAtrTolIn * atr
+                    bool validHigh = not na(toleranceHigh) and math.abs(catalogPivotHigh - lastEqualHigh) <= toleranceHigh and pivotBarHigh - lastEqualHighBar <= equalLookbackIn
+                    int highAge = math.min(bar_index - lastEqualHighBar, 500)
+                    if validHigh
+                        for j = 0 to highAge
+                            if high[j] > equalLevelHigh
+                                validHigh := false
+                        if array.size(engineCatalog) > 5
+                            for j = 5 to array.size(engineCatalog) - 1
+                                importedLevel existing = array.get(engineCatalog, j)
+                                if not existing.swept and existing.side == 1 and math.abs(existing.price - equalLevelHigh) <= toleranceHigh
+                                    validHigh := false
+                    if validHigh
+                        array.push(engineCatalog, importedLevel.new(equalLevelHigh, "EQH", 1, true, true, false, true, false, false, false, bar_index))
+                        int eqHighCount = 0
+                        for j = 5 to array.size(engineCatalog) - 1
+                            importedLevel countedHigh = array.get(engineCatalog, j)
+                            if countedHigh.kind == "EQH"
+                                eqHighCount += 1
+                        if eqHighCount > equalCapIn
+                            for j = 5 to array.size(engineCatalog) - 1
+                                importedLevel oldestHigh = array.get(engineCatalog, j)
+                                if oldestHigh.kind == "EQH"
+                                    array.remove(engineCatalog, j)
+                                    break
+                lastEqualHigh := catalogPivotHigh
+                lastEqualHighBar := pivotBarHigh
+
+            if not na(catalogPivotLow)
+                int pivotBarLow = bar_index - catalogPivotLenIn
+                if not na(lastEqualLow) and not na(lastEqualLowBar)
+                    float equalLevelLow = math.min(catalogPivotLow, lastEqualLow)
+                    float toleranceLow = equalAtrTolIn * atr
+                    bool validLow = not na(toleranceLow) and math.abs(catalogPivotLow - lastEqualLow) <= toleranceLow and pivotBarLow - lastEqualLowBar <= equalLookbackIn
+                    int lowAge = math.min(bar_index - lastEqualLowBar, 500)
+                    if validLow
+                        for j = 0 to lowAge
+                            if low[j] < equalLevelLow
+                                validLow := false
+                        if array.size(engineCatalog) > 5
+                            for j = 5 to array.size(engineCatalog) - 1
+                                importedLevel existing = array.get(engineCatalog, j)
+                                if not existing.swept and existing.side == -1 and math.abs(existing.price - equalLevelLow) <= toleranceLow
+                                    validLow := false
+                    if validLow
+                        array.push(engineCatalog, importedLevel.new(equalLevelLow, "EQL", -1, true, true, false, true, false, false, false, bar_index))
+                        int eqLowCount = 0
+                        for j = 5 to array.size(engineCatalog) - 1
+                            importedLevel countedLow = array.get(engineCatalog, j)
+                            if countedLow.kind == "EQL"
+                                eqLowCount += 1
+                        if eqLowCount > equalCapIn
+                            for j = 5 to array.size(engineCatalog) - 1
+                                importedLevel oldestLow = array.get(engineCatalog, j)
+                                if oldestLow.kind == "EQL"
+                                    array.remove(engineCatalog, j)
+                                    break
+                lastEqualLow := catalogPivotLow
+                lastEqualLowBar := pivotBarLow
+
+            if array.size(engineCatalog) > 0
+                for i = 0 to array.size(engineCatalog) - 1
+                    importedLevel level = array.get(engineCatalog, i)
+                    if not na(level.price) and level.covered and not level.live and level.side != 0 and level.born < bar_index
+                        bool tradedThrough = level.side == 1 ? high > level.price : low < level.price
+                        bool bufferedReversal = f_stopBuffer("Medium") > 0 and (level.side == 1 ? high - level.price >= f_stopBuffer("Medium") and close < level.price : level.price - low >= f_stopBuffer("Medium") and close > level.price)
+                        if tradedThrough
+                            level.swept := true
+                            level.major := false
+                        if bufferedReversal
+                            level.sweepConfirmed := true
+                        if (level.side == 1 and close > level.price) or (level.side == -1 and close < level.price)
+                            level.flipped := true
+                        array.set(engineCatalog, i, level)
+
+    array.clear(rawName)
+    array.clear(rawPx)
+    if not na(pdh)
+        array.push(rawName, "PDH")
+        array.push(rawPx, pdh)
+    if not na(pdl)
+        array.push(rawName, "PDL")
+        array.push(rawPx, pdl)
+    if not na(pwh)
+        array.push(rawName, "PWH")
+        array.push(rawPx, pwh)
+    if not na(pwl)
+        array.push(rawName, "PWL")
+        array.push(rawPx, pwl)
+    if not na(asiaHi)
+        array.push(rawName, "ASIAH")
+        array.push(rawPx, asiaHi)
+    if not na(asiaLo)
+        array.push(rawName, "ASIAL")
+        array.push(rawPx, asiaLo)
+    if not na(lonHi)
+        array.push(rawName, "LONH")
+        array.push(rawPx, lonHi)
+    if not na(lonLo)
+        array.push(rawName, "LONL")
+        array.push(rawPx, lonLo)
+    if not na(onHi)
+        array.push(rawName, "ONH")
+        array.push(rawPx, onHi)
+    if not na(onLo)
+        array.push(rawName, "ONL")
+        array.push(rawPx, onLo)
+    if array.size(dHighs) > 0
+        for i = 0 to array.size(dHighs) - 1
+            array.push(rawName, "DH" + str.tostring(i + 1))
+            array.push(rawPx, array.get(dHighs, i))
+    if array.size(dLows) > 0
+        for i = 0 to array.size(dLows) - 1
+            array.push(rawName, "DL" + str.tostring(i + 1))
+            array.push(rawPx, array.get(dLows, i))
+    if array.size(h4Highs) > 0
+        for i = 0 to array.size(h4Highs) - 1
+            array.push(rawName, "H4H" + str.tostring(i + 1))
+            array.push(rawPx, array.get(h4Highs, i))
+    if array.size(h4Lows) > 0
+        for i = 0 to array.size(h4Lows) - 1
+            array.push(rawName, "H4L" + str.tostring(i + 1))
+            array.push(rawPx, array.get(h4Lows, i))
+    if array.size(h1Highs) > 0
+        for i = 0 to array.size(h1Highs) - 1
+            array.push(rawName, "H1H" + str.tostring(i + 1))
+            array.push(rawPx, array.get(h1Highs, i))
+    if array.size(h1Lows) > 0
+        for i = 0 to array.size(h1Lows) - 1
+            array.push(rawName, "H1L" + str.tostring(i + 1))
+            array.push(rawPx, array.get(h1Lows, i))
+    if useCatalogIn and catalogFeedsGradeIn and array.size(engineCatalog) > 0
+        for i = 0 to array.size(engineCatalog) - 1
+            importedLevel level = array.get(engineCatalog, i)
+            if f_catalogFeedable(level)
+                array.push(rawName, level.kind)
+                array.push(rawPx, level.price)
+    if useScaledHTFIn and chartSeconds >= 900
+        if array.size(scaledSetupHighs) > 0
+            for i = 0 to array.size(scaledSetupHighs) - 1
+                array.push(rawName, "S-SETUP-H" + str.tostring(i + 1))
+                array.push(rawPx, array.get(scaledSetupHighs, i))
+        if array.size(scaledSetupLows) > 0
+            for i = 0 to array.size(scaledSetupLows) - 1
+                array.push(rawName, "S-SETUP-L" + str.tostring(i + 1))
+                array.push(rawPx, array.get(scaledSetupLows, i))
+        if array.size(scaledPositionHighs) > 0
+            for i = 0 to array.size(scaledPositionHighs) - 1
+                array.push(rawName, "S-POS-H" + str.tostring(i + 1))
+                array.push(rawPx, array.get(scaledPositionHighs, i))
+        if array.size(scaledPositionLows) > 0
+            for i = 0 to array.size(scaledPositionLows) - 1
+                array.push(rawName, "S-POS-L" + str.tostring(i + 1))
+                array.push(rawPx, array.get(scaledPositionLows, i))
+        if array.size(scaledRunnerHighs) > 0
+            for i = 0 to array.size(scaledRunnerHighs) - 1
+                array.push(rawName, "S-RUN-H" + str.tostring(i + 1))
+                array.push(rawPx, array.get(scaledRunnerHighs, i))
+        if array.size(scaledRunnerLows) > 0
+            for i = 0 to array.size(scaledRunnerLows) - 1
+                array.push(rawName, "S-RUN-L" + str.tostring(i + 1))
+                array.push(rawPx, array.get(scaledRunnerLows, i))
+        if array.size(scaledSlowHighs) > 0
+            for i = 0 to array.size(scaledSlowHighs) - 1
+                array.push(rawName, "S-SLOW-H" + str.tostring(i + 1))
+                array.push(rawPx, array.get(scaledSlowHighs, i))
+        if array.size(scaledSlowLows) > 0
+            for i = 0 to array.size(scaledSlowLows) - 1
+                array.push(rawName, "S-SLOW-L" + str.tostring(i + 1))
+                array.push(rawPx, array.get(scaledSlowLows, i))
+    array.clear(zoneName)
+    array.clear(zonePx)
+    array.clear(zoneLo)
+    array.clear(zoneHi)
+    float halfZ = 0.1 * atr
+    int rn = array.size(rawPx)
+    if not na(halfZ) and rn > 0
+        if rn > 1
+            for pass = 1 to rn - 1
+                for b = 0 to rn - 2
+                    if array.get(rawPx, b) > array.get(rawPx, b + 1)
+                        float swapPx = array.get(rawPx, b)
+                        string swapNm = array.get(rawName, b)
+                        array.set(rawPx, b, array.get(rawPx, b + 1))
+                        array.set(rawName, b, array.get(rawName, b + 1))
+                        array.set(rawPx, b + 1, swapPx)
+                        array.set(rawName, b + 1, swapNm)
+        string cName = array.get(rawName, 0)
+        float cSum = array.get(rawPx, 0)
+        int cCount = 1
+        float cLo = cSum - halfZ
+        float cHi = cSum + halfZ
+        if rn > 1
+            for i = 1 to rn - 1
+                float px = array.get(rawPx, i)
+                float lo = px - halfZ
+                float hi = px + halfZ
+                if lo <= cHi
+                    cName := cName + "+" + array.get(rawName, i)
+                    cLo := math.min(cLo, lo)
+                    cHi := math.max(cHi, hi)
+                    cSum := cSum + px
+                    cCount += 1
+                else
+                    array.push(zoneName, cName)
+                    array.push(zonePx, cSum / cCount)
+                    array.push(zoneLo, cLo)
+                    array.push(zoneHi, cHi)
+                    cName := array.get(rawName, i)
+                    cSum := px
+                    cCount := 1
+                    cLo := lo
+                    cHi := hi
+        array.push(zoneName, cName)
+        array.push(zonePx, cSum / cCount)
+        array.push(zoneLo, cLo)
+        array.push(zoneHi, cHi)
+
+    if rangeOnIn
+        bool shelves = not na(rangeHigh) or not na(rangeLow)
+        bool compressed = not na(compHi) and not na(compLo) and not na(atr) and compHi - compLo <= rangeAtrIn * atr
+        bool broke = watchOn and not na(watchHi) and (close > watchHi or close < watchLo)
+        bool newShelf = watchOn and (rangeHigh != watchShelfHi or rangeLow != watchShelfLo)
+        if broke or not compressed
+            watchOn := false
+        else if newShelf
+            watchOn := false
+        if compressed and shelves and not watchOn
+            watchOn := true
+            watchHi := compHi
+            watchLo := compLo
+            watchShelfHi := rangeHigh
+            watchShelfLo := rangeLow
+            watchZone := f_at_level((compHi + compLo) / 2.0)
+            float longStop = na(rangeLow) ? na : rangeLow - f_stopBuffer("Medium")
+            float shortStop = na(rangeHigh) ? na : rangeHigh + f_stopBuffer("Medium")
+            string lvl = watchZone == "" ? "null" : '"' + watchZone + '"'
+            string watchMsg = '{"source":"staxbot","event":"watch","eventId":"watch:' + str.tostring(bar_index) + '","version":"2.6.0","fp":"' + f_fp() + '","provisional":false,"level":' + lvl + ',"range_high":' + f_num(compHi) + ',"range_low":' + f_num(compLo) + ',"break_high":' + f_num(rangeHigh) + ',"break_low":' + f_num(rangeLow) + ',"long_stop":' + f_num(longStop) + ',"short_stop":' + f_num(shortStop) + ',"timestamp":"' + f_ts() + '"}'
+            f_send(watchMsg)
+
+    bool sideOkBull = longsOk and (topDownFilterIn ? topDownDirection == 1 : not biasFilterIn or bias == 1)
+    bool sideOkBear = shortsOk and (topDownFilterIn ? topDownDirection == -1 : not biasFilterIn or bias == -1)
+    bool canArm = inSession and not inPause and not newsBlocked and targetsOk and volOk
+
+    if bullThrough or bearThrough
+        winSide := bullThrough ? 1 : -1
+        winFrom := bar_index
+        winLevel := bullThrough ? rangeHigh : rangeLow
+        winSwing := bullThrough ? rangeHighBar : rangeLowBar
+        winZoneHi := rangeHigh
+        winZoneLo := rangeLow
+        winZoneFrom := winSwing
+    bool winOpen = winSide != 0 and winFrom >= 0 and bar_index - winFrom < breakWinIn
+    bool winBeyond = winSide == 1 ? close > winLevel : winSide == -1 ? close < winLevel : false
+    bool winDisp = winSide == 1 ? bullDisp : winSide == -1 ? bearDisp : false
+    bool winSideOk = (winSide == 1 and sideOkBull) or (winSide == -1 and sideOkBear)
+    if canArm and shelfOk and winOpen and winBeyond and winDisp and winSideOk
+        int side = winSide
+        moveSeq += 1
+        moveIdNow := moveSeq
+        moveDir := side
+        moveBar := bar_index
+        moveAnchor := side == 1 ? legLowNow : legHighNow
+        moveShelf := winLevel
+        moveSwing := winSwing
+        moveZoneHi := winZoneHi
+        moveZoneLo := winZoneLo
+        moveZoneFrom := winZoneFrom
+        moveFlag1 := strongDisp
+        f_replace_older(side, moveIdNow)
+        float tightCandle = side == 1 ? low : high
+        if shelfOnIn
+            f_try_arm("shelf", side, moveShelf, tightCandle, tightCandle, moveAnchor, moveShelf, moveSwing, moveZoneHi, moveZoneLo, moveZoneFrom, moveFlag1, false)
+        if momentumOnIn and not na(winZoneLo) and not na(winZoneHi)
+            float oppEdge = side == 1 ? winZoneLo : winZoneHi
+            f_try_arm("momentum", side, close, tightCandle, oppEdge, moveAnchor, moveShelf, moveSwing, moveZoneHi, moveZoneLo, moveZoneFrom, moveFlag1, false)
+            if array.size(plans) > 0
+                for i = 0 to array.size(plans) - 1
+                    staxPlan mom = array.get(plans, i)
+                    if mom.origin == "momentum" and mom.state == "ARMED" and mom.createdBar == bar_index and tradesToday < pMaxTrades and f_live_n() < maxLiveIn
+                        mom.state := "TRIGGERED"
+                        mom.fillBar := bar_index
+                        mom.ready := false
+                        bool momentumConflict = f_stop_hit(mom.dir, mom.liveStop) or (mom.on1 and f_tp_hit(mom.dir, mom.tp1)) or (mom.on2 and f_tp_hit(mom.dir, mom.tp2)) or (mom.on3 and f_tp_hit(mom.dir, mom.tp3))
+                        mom.entryCertainty := not intrabarCheckIn ? "proven" : not f_ltfAvailable() ? "unproven" : momentumConflict ? f_ltfWalk(mom.dir, true, mom.entry, mom.liveStop, mom.tp1, mom.tp2, mom.tp3, false, false, false) : "proven"
+                        tradesToday += 1
+                        f_send(f_payload(mom, "entry", "", ""))
+                        array.set(plans, i, mom)
+                        for j = 0 to array.size(plans) - 1
+                            staxPlan sib = array.get(plans, j)
+                            if j != i and sib.moveId == mom.moveId and sib.state == "ARMED"
+                                sib.state := "CANCELLED"
+                                sib.ready := false
+                                sib.reason := "sibling filled"
+                                sib.resolvedBar := bar_index
+                                f_send(f_payload(sib, "plan_cancel", ',"reason":"sibling filled"', ""))
+                                array.set(plans, j, sib)
+        winSide := 0
+        winFrom := -1
+
+    bool gapNow = moveDir == 1 ? bullFvg : bearFvg
+    float gapTop = moveDir == 1 ? low : low[2]
+    float gapBot = moveDir == 1 ? high[2] : high
+    float gapHeight = math.abs(gapTop - gapBot)
+    bool gapHeightOk = minGapAtrIn <= 0 or gapHeight >= minGapAtrIn * atr
+    bool inGapWindow = moveBar >= 0 and bar_index - moveBar <= fvgWindowIn
+    if gapOnIn and canArm and inGapWindow and gapNow and gapHeightOk and ((moveDir == 1 and sideOkBull) or (moveDir == -1 and sideOkBear))
+        float nearEdge = moveDir == 1 ? gapTop : gapBot
+        float farEdge = moveDir == 1 ? gapBot : gapTop
+        float midEdge = (gapTop + gapBot) / 2.0
+        float gapEntry = entryLevelIn == "FVG Midpoint (CE)" ? midEdge : entryLevelIn == "FVG Far Edge (Deep)" ? farEdge : nearEdge
+        float gapMed = moveDir == 1 ? low[1] : high[1]
+        f_try_arm("gap", moveDir, gapEntry, farEdge, gapMed, moveAnchor, moveShelf, moveSwing, gapTop, gapBot, math.max(0, bar_index - 2), moveFlag1, false)
+
+    if enableCIn
+        bool sweepOpen = sweepSide != 0 and sweepFrom >= 0 and bar_index - sweepFrom < sweepWinIn
+        if sweepSide != 0 and not sweepOpen
+            sweepSide := 0
+            sweepFrom := -1
+        if sweepSide != 0
+            sweepExtreme := sweepSide == 1 ? (na(sweepExtreme) ? high : math.max(sweepExtreme, high)) : (na(sweepExtreme) ? low : math.min(sweepExtreme, low))
+            float tolC = reclaimAtrIn * armAtr
+            bool backIn = bar_index > sweepFrom and not na(tolC) and (sweepSide == 1 ? sweepLvl - close >= tolC : close - sweepLvl >= tolC)
+            if backIn
+                int rev = -sweepSide
+                bool revOk = rev == 1 ? longsOk and (topDownFilterIn or not biasFilterIn or bias == 1) : shortsOk and (topDownFilterIn or not biasFilterIn or bias == -1)
+                bool exists = false
+                if array.size(plans) > 0
+                    for i = 0 to array.size(plans) - 1
+                        staxPlan q = array.get(plans, i)
+                        if q.origin == "sweep" and f_active(q.state) and math.abs(q.entry - sweepLvl) <= tick
+                            exists := true
+                if canArm and revOk and not exists
+                    int savedMove = moveIdNow
+                    int beforeN = array.size(plans)
+                    moveSeq += 1
+                    moveIdNow := moveSeq
+                    float largePx = rev == 1 ? legLowNow : legHighNow
+                    bool htfGrade = sweepKind == "htf" or f_at_level(sweepLvl) != ""
+                    f_try_arm("sweep", rev, sweepLvl, sweepExtreme, sweepExtreme, largePx, sweepLvl, bar_index, math.max(sweepLvl, sweepExtreme), math.min(sweepLvl, sweepExtreme), math.max(0, sweepFrom), strongDisp, htfGrade)
+                    moveIdNow := savedMove
+                    if array.size(plans) > beforeN
+                        f_cancel_failed(sweepSide)
+                sweepSide := 0
+                sweepFrom := -1
+        if sweepSide == 0
+            float lvl = na
+            int sdir = 0
+            string skind = ""
+            if not na(rangeHigh) and close > rangeHigh and (na(close[1]) or close[1] <= rangeHigh)
+                lvl := rangeHigh
+                sdir := 1
+                skind := "chart"
+            else if not na(rangeLow) and close < rangeLow and (na(close[1]) or close[1] >= rangeLow)
+                lvl := rangeLow
+                sdir := -1
+                skind := "chart"
+            else if array.size(zoneHi) > 0
+                for i = 0 to array.size(zoneHi) - 1
+                    if na(lvl)
+                        float zHi = array.get(zoneHi, i)
+                        float zLo = array.get(zoneLo, i)
+                        if close > zHi and (na(close[1]) or close[1] <= zHi)
+                            lvl := zHi
+                            sdir := 1
+                            skind := "htf"
+                        else if close < zLo and (na(close[1]) or close[1] >= zLo)
+                            lvl := zLo
+                            sdir := -1
+                            skind := "htf"
+            if na(lvl) and array.size(plans) > 0
+                for i = 0 to array.size(plans) - 1
+                    if na(lvl)
+                        staxPlan q = array.get(plans, i)
+                        if q.state == "ARMED" and close > q.shelf and (na(close[1]) or close[1] <= q.shelf)
+                            lvl := q.shelf
+                            sdir := 1
+                            skind := "chart"
+                        else if q.state == "ARMED" and close < q.shelf and (na(close[1]) or close[1] >= q.shelf)
+                            lvl := q.shelf
+                            sdir := -1
+                            skind := "chart"
+            if not na(lvl)
+                sweepSide := sdir
+                sweepFrom := bar_index
+                sweepLvl := lvl
+                sweepExtreme := sdir == 1 ? high : low
+                sweepKind := skind
+
+    if array.size(plans) > 0
+        for i = 0 to array.size(plans) - 1
+            staxPlan p = array.get(plans, i)
+            p.ready := false
+            if p.state == "TRIGGERED" and bar_index > p.fillBar
+                p.state := "LIVE"
+            if p.state == "LIVE" and bar_index > p.fillBar
+                bool stopped = f_stop_hit(p.dir, p.liveStop)
+                bool targetTouched = (p.on1 and not p.hit1 and f_tp_hit(p.dir, p.tp1)) or (p.on2 and not p.hit2 and f_tp_hit(p.dir, p.tp2)) or (p.on3 and not p.hit3 and f_tp_hit(p.dir, p.tp3))
+                p.exitCertainty := not intrabarCheckIn ? "proven" : not f_ltfAvailable() ? "unproven" : stopped and targetTouched ? f_ltfWalk(p.dir, false, p.entry, p.liveStop, p.tp1, p.tp2, p.tp3, p.hit1, p.hit2, p.hit3) : "proven"
+                if stopped
+                    bool moved = p.liveStop != p.stop
+                    float rr = p.refRisk > 0 ? p.dir * (p.liveStop - p.entry) / p.refRisk : 0.0
+                    string why = not moved ? "SL" : math.abs(rr) < 0.05 ? "BE" : "TRAILED"
+                    float exitPx = p.dir == 1 ? math.min(open, p.liveStop) : math.max(open, p.liveStop)
+                    p := f_close_trade(p, exitPx, why, "STOP")
+                else
+                    if p.on1 and not p.hit1 and f_tp_hit(p.dir, p.tp1) and p.state == "LIVE"
+                        p.hit1 := true
+                        if f_done(p)
+                            p.state := "CLOSED"
+                            p.reason := "targets"
+                            p.resolvedBar := bar_index
+                        p := f_mark_tp(p, "TP1", p.tp1, p.rUnit)
+                    if p.on2 and not p.hit2 and f_tp_hit(p.dir, p.tp2) and p.state == "LIVE"
+                        p.hit2 := true
+                        if f_done(p)
+                            p.state := "CLOSED"
+                            p.reason := "targets"
+                            p.resolvedBar := bar_index
+                        p := f_mark_tp(p, "TP2", p.tp2, p.rUnit * 2.0)
+                    if p.on3 and not p.hit3 and f_tp_hit(p.dir, p.tp3) and p.state == "LIVE"
+                        p.hit3 := true
+                        if f_done(p)
+                            p.state := "CLOSED"
+                            p.reason := "targets"
+                            p.resolvedBar := bar_index
+                        p := f_mark_tp(p, "TP3", p.tp3, p.rUnit * 3.0)
+                    else if p.state == "LIVE" and reclaimExitIn and f_wrong(p.dir, p.inv)
+                        p := f_close_trade(p, close, "RECLAIM", "RECLAIM")
+                    else if p.state == "LIVE" and sessionEnded and flatAtSessEndIn
+                        p := f_close_trade(p, close, "FLAT", "FLAT")
+                    else if p.state == "LIVE" and flatAtSessEndIn and not na(time_tradingday[1]) and time_tradingday != time_tradingday[1] and not sessionEnded[1] and not na(close[1])
+                        p.exitCertainty := "proven"
+                        p := f_close_trade(p, close[1], "session_end_missing_bar", "FLAT_MISSING")
+                    else if p.state == "LIVE"
+                        float favR = p.dir == 1 ? (high - p.entry) / p.refRisk : (p.entry - low) / p.refRisk
+                        float offR = na
+                        if trailOn
+                            offR := favR >= trailT3 ? trailO3 : favR >= trailT2 ? trailO2 : favR >= trailT1 ? trailO1 : favR >= trailBe ? 0.0 : na
+                        else if beOn
+                            offR := favR >= beR ? 0.0 : na
+                        if not na(offR)
+                            float buffer = offR == 0 and beTickIn ? p.dir * tick : 0.0
+                            float cand = p.entry + p.dir * offR * p.refRisk + buffer
+                            float newStop = p.dir == 1 ? math.max(p.liveStop, cand) : math.min(p.liveStop, cand)
+                            if newStop != p.liveStop
+                                p.liveStop := newStop
+                                if sendStopUpdIn
+                                    float lockedR = p.refRisk > 0 ? p.dir * (p.liveStop - p.entry) / p.refRisk : 0.0
+                                    f_send(f_payload(p, "stop_update", ',"reason":"trail","realizedR":' + str.tostring(offR, "0.00") + ',"locked_r":' + str.tostring(lockedR, "0.00"), ""))
+            if p.state == "ARMED" and bar_index > p.createdBar
+                bool staleBars = bar_index > p.expiryBar
+                bool entryTouch = f_entry_hit(p)
+                if confirmBeforeFillIn and p.scenario != "M"
+                    if entryTouch and not p.inEntryZone
+                        p.zoneTouches += 1
+                        if p.firstTouchBar < 0
+                            p.firstTouchBar := bar_index
+                            p.pullbackBase := p.dir == 1 ? rangeHigh : rangeLow
+                    p.inEntryZone := entryTouch
+                    int pullbackBarNow = bar_index - confirmPivotLenIn
+                    if p.firstTouchBar >= 0 and not p.structureConfirmed and pullbackBarNow >= p.firstTouchBar
+                        bool lowerHigh = p.dir == 1 and not na(confirmPullbackPh) and not na(p.pullbackBase) and confirmPullbackPh < p.pullbackBase
+                        bool higherLow = p.dir == -1 and not na(confirmPullbackPl) and not na(p.pullbackBase) and confirmPullbackPl > p.pullbackBase
+                        if lowerHigh or higherLow
+                            p.pullbackSwing := p.dir == 1 ? confirmPullbackPh : confirmPullbackPl
+                            p.pullbackBar := pullbackBarNow
+                    bool confirmedShift = p.pullbackBar >= 0 and bar_index > p.pullbackBar and (p.dir == 1 ? close > p.pullbackSwing and close > p.entry : close < p.pullbackSwing and close < p.entry)
+                    if confirmedShift and not p.structureConfirmed
+                        p.structureConfirmed := true
+                        p.confirmBar := bar_index
+                        p.confirmExtreme := p.dir == 1 ? low : high
+                        p.confirmClose := close
+                        p.confirmPositionOk := f_positionOk(p.dir, p.confirmExtreme, p.confirmClose)
+                bool churned = confirmBeforeFillIn and p.scenario != "M" and p.zoneTouches > 2
+                bool confirmationReady = not confirmBeforeFillIn or p.scenario == "M" or (p.structureConfirmed and bar_index > p.confirmBar)
+                bool positionReady = not topDownFilterIn or p.origin == "sweep" or (confirmBeforeFillIn and p.scenario != "M" ? p.confirmPositionOk : f_positionOk(p.dir, p.dir == 1 ? low : high, close))
+                if churned
+                    p.state := "INVALIDATED"
+                    p.reason := "zone churn"
+                    p.resolvedBar := bar_index
+                    f_send(f_payload(p, "plan_cancel", ',"reason":"zone churn"', ""))
+                else if sessionEnded
+                    p.state := "EXPIRED"
+                    p.reason := "session"
+                    p.resolvedBar := bar_index
+                    f_send(f_payload(p, "plan_cancel", ',"reason":"session"', ""))
+                else if f_wrong(p.dir, p.inv)
+                    p.state := "INVALIDATED"
+                    p.reason := "reclaim close"
+                    p.resolvedBar := bar_index
+                    f_send(f_payload(p, "plan_cancel", ',"reason":"reclaim close"', ""))
+                else if entryTouch and f_hit(p.stop)
+                    p.ready := false
+                else if not inPause and not newsBlocked and inSession and tradesToday < pMaxTrades and f_live_n() < maxLiveIn and entryTouch and confirmationReady and positionReady and not f_wrong(p.dir, p.inv)
+                    p.ready := true
+                else if f_tp_hit(p.dir, f_near(p)) and not entryTouch
+                    p.state := "EXPIRED"
+                    p.scenario := "D"
+                    p.reason := "ran without retest"
+                    p.resolvedBar := bar_index
+                    f_send(f_payload(p, "plan_cancel", ',"reason":"ran without retest"', ""))
+                else if staleBars
+                    p.state := "EXPIRED"
+                    p.reason := "expired"
+                    p.resolvedBar := bar_index
+                    f_send(f_payload(p, "plan_cancel", ',"reason":"expired"', ""))
+            array.set(plans, i, p)
+
+    int guard = 0
+    int room = maxLiveIn - f_live_n()
+    while room > 0 and tradesToday < pMaxTrades and guard < 12
+        guard += 1
+        int best = -1
+        float bestPx = na
+        bool down = close <= open
+        if array.size(plans) > 0
+            for i = 0 to array.size(plans) - 1
+                staxPlan p = array.get(plans, i)
+                if p.ready and (best == -1 or (down and p.entry > bestPx) or (not down and p.entry < bestPx))
+                    best := i
+                    bestPx := p.entry
+        if best == -1
+            room := 0
+        else
+            staxPlan chosen = array.get(plans, best)
+            chosen.state := "TRIGGERED"
+            chosen.ready := false
+            chosen.fillBar := bar_index
+            chosen.liveStop := chosen.stop
+            bool entryConflict = f_entry_hit(chosen) and (f_stop_hit(chosen.dir, chosen.liveStop) or (chosen.on1 and f_tp_hit(chosen.dir, chosen.tp1)) or (chosen.on2 and f_tp_hit(chosen.dir, chosen.tp2)) or (chosen.on3 and f_tp_hit(chosen.dir, chosen.tp3)))
+            chosen.entryCertainty := not intrabarCheckIn ? "proven" : not f_ltfAvailable() ? "unproven" : entryConflict ? f_ltfWalk(chosen.dir, true, chosen.entry, chosen.liveStop, chosen.tp1, chosen.tp2, chosen.tp3, false, false, false) : "proven"
+            tradesToday += 1
+            if showDrawingsIn
+                if not na(chosen.lbFill)
+                    label.delete(chosen.lbFill)
+                chosen.lbFill := label.new(bar_index, chosen.dir == 1 ? low : high, chosen.dir == 1 ? "LONG" : "SHORT", style = chosen.dir == 1 ? label.style_label_up : label.style_label_down, color = chosen.dir == 1 ? color.new(#4C8DFF, 0) : color.new(#FF8A3D, 0), textcolor = color.white, size = size.small, text_font_family = font.family_monospace)
+            f_send(f_payload(chosen, "entry", "", ""))
+            array.set(plans, best, chosen)
+            if array.size(plans) > 0
+                for i = 0 to array.size(plans) - 1
+                    staxPlan sib = array.get(plans, i)
+                    if i != best and sib.moveId == chosen.moveId and sib.state == "ARMED"
+                        sib.state := "CANCELLED"
+                        sib.ready := false
+                        sib.reason := "sibling filled"
+                        sib.resolvedBar := bar_index
+                        f_send(f_payload(sib, "plan_cancel", ',"reason":"sibling filled"', ""))
+                        array.set(plans, i, sib)
+            room := maxLiveIn - f_live_n()
+
+    bool armedBreak = false
+    if array.size(plans) > 0
+        for i = 0 to array.size(plans) - 1
+            staxPlan made = array.get(plans, i)
+            if made.createdBar == bar_index and (made.origin == "shelf" or made.origin == "gap" or made.origin == "momentum" or made.origin == "sweep")
+                armedBreak := true
+    if wasForming and not armedBreak
+        string cSide = wasSide == 1 ? "long" : "short"
+        string cLvl = f_at_level(wasEntry)
+        string cLvlJson = cLvl == "" ? "null" : '"' + cLvl + '"'
+        string cancelMsg = '{"source":"staxbot","event":"break_cancelled","eventId":"break_cancelled:' + str.tostring(bar_index) + '","version":"2.6.0","fp":"' + f_fp() + '","provisional":false,"side":"' + cSide + '","entry":' + f_num(wasEntry) + ',"stop":' + f_num(wasStop) + ',"target":' + f_num(wasTp) + ',"level":' + cLvlJson + ',"timestamp":"' + f_ts() + '"}'
+        f_send(cancelMsg)
+
+    if array.size(plans) > 0
+        for i = 0 to array.size(plans) - 1
+            staxPlan p = array.get(plans, i)
+            p := f_draw(p)
+            array.set(plans, i, p)
+
+    if array.size(htfLn) > 0
+        for i = array.size(htfLn) - 1 to 0
+            line.delete(array.get(htfLn, i))
+            array.remove(htfLn, i)
+    if array.size(htfLb) > 0
+        for i = array.size(htfLb) - 1 to 0
+            label.delete(array.get(htfLb, i))
+            array.remove(htfLb, i)
+    if showHtfIn and showDrawingsIn and array.size(zonePx) > 0
+        for i = 0 to array.size(zonePx) - 1
+            float y = array.get(zonePx, i)
+            int zLeft = math.max(0, bar_index - 30)
+            array.push(htfLn, line.new(zLeft, y, bar_index, y, color = color.new(#7F8AA3, 75), style = line.style_dotted, width = 1))
+            array.push(htfLb, label.new(zLeft, y, array.get(zoneName, i), style = label.style_none, color = color.new(#7F8AA3, 100), textcolor = color.new(#7F8AA3, 40), size = size.tiny))
+
+    int cold = 0
+    if array.size(plans) > 0
+        for i = array.size(plans) - 1 to 0
+            staxPlan p = array.get(plans, i)
+            if not f_active(p.state)
+                cold += 1
+                int keepN = resolvedIn == "Review" ? 5 : 3
+                if cold > keepN
+                    f_erase(p)
+                    array.remove(plans, i)
+
+f_focus() =>
+    int idx = -1
+    if array.size(plans) > 0
+        for i = 0 to array.size(plans) - 1
+            staxPlan p = array.get(plans, i)
+            if idx == -1 and p.state == "TRIGGERED"
+                idx := i
+        if idx == -1
+            for i = 0 to array.size(plans) - 1
+                staxPlan p = array.get(plans, i)
+                if idx == -1 and p.state == "LIVE"
+                    idx := i
+        if idx == -1
+            for i = 0 to array.size(plans) - 1
+                staxPlan p = array.get(plans, i)
+                if idx == -1 and p.state == "ARMED"
+                    idx := i
+    idx
+f_move_line() =>
+    string s = ""
+    int idx = -1
+    if array.size(plans) > 0
+        for i = 0 to array.size(plans) - 1
+            staxPlan p = array.get(plans, i)
+            if idx == -1 and p.state == "TRIGGERED"
+                idx := i
+        if idx == -1
+            for i = 0 to array.size(plans) - 1
+                staxPlan p = array.get(plans, i)
+                if idx == -1 and p.state == "LIVE"
+                    idx := i
+    if idx >= 0
+        staxPlan live = array.get(plans, idx)
+        s := "Move " + str.tostring(live.moveId) + ": " + f_kind(live.origin) + " plan " + f_num(live.entry)
+    else
+        int id = -1
+        if array.size(plans) > 0
+            for i = 0 to array.size(plans) - 1
+                staxPlan p = array.get(plans, i)
+                if f_active(p.state)
+                    id := math.max(id, p.moveId)
+        if id >= 0
+            s := "Move " + str.tostring(id) + ":"
+            int n = 0
+            for i = 0 to array.size(plans) - 1
+                staxPlan p = array.get(plans, i)
+                if p.moveId == id and f_active(p.state)
+                    n += 1
+                    s := s + (n > 1 ? " and " : " ") + f_kind(p.origin) + " plan " + f_num(p.entry)
+    s
+f_also_armed() =>
+    string s = ""
+    bool live = false
+    if array.size(plans) > 0
+        for i = 0 to array.size(plans) - 1
+            staxPlan p = array.get(plans, i)
+            if p.state == "LIVE" or p.state == "TRIGGERED"
+                live := true
+        if live
+            for i = 0 to array.size(plans) - 1
+                staxPlan p = array.get(plans, i)
+                if p.state == "ARMED"
+                    string side = p.dir == 1 ? "long" : "short"
+                    string bit = side + " " + f_num(p.entry) + " (" + f_kind(p.origin) + ")"
+                    s := s == "" ? bit : s + ", " + bit
+    s == "" ? "" : "Also armed: " + s
+
+f_resolved_line() =>
+    string s = ""
+    if array.size(plans) > 0
+        for i = 0 to array.size(plans) - 1
+            staxPlan p = array.get(plans, i)
+            if p.resolvedBar == bar_index
+                s := p.state + (p.reason == "" ? "" : ": " + p.reason)
+    s
+if barstate.isconfirmed and array.size(plans) > 0
+    for i = 0 to array.size(plans) - 1
+        staxPlan orderPlan = array.get(plans, i)
+        f_strategySync(orderPlan)
+int focus = f_focus()
+bool have = focus >= 0
+staxPlan view = have ? array.get(plans, focus) : staxPlan.new()
+string resolvedLine = f_resolved_line()
+bool hudStale = have and view.fp != f_fp()
+string moveLine = f_move_line()
+string alsoLine = f_also_armed()
+string shownMove = alsoLine == "" ? moveLine : moveLine == "" ? alsoLine : moveLine + " | " + alsoLine
+bool noSize = have and view.qty == 0
+string noteBody = hudStale ? "INPUTS CHANGED. Recreate the alert." : noSize ? "NO SIZE. Risk budget is below one contract." : eng.hudReject != "" ? eng.hudReject : not targetsOk ? "Enable TP1, TP2, or TP3." : inPause ? "Pause. No new plans and no fills." : formingNow ? "BREAK FORMING" : shownMove != "" ? shownMove : watchOn ? "RANGE WATCH" + (watchZone == "" ? "" : " " + watchZone) : "Waiting for the retest."
+string note = noteBody
+string baseWord = have and view.state == "TRIGGERED" ? "TRIGGERED" : have and view.state == "LIVE" ? "LIVE" : have and view.state == "ARMED" ? "ARMED" : resolvedLine != "" ? resolvedLine : watchOn ? "RANGE WATCH" : inPause ? "PAUSE" : "WATCH"
+bool liveOwn = have and (view.state == "LIVE" or view.state == "TRIGGERED")
+string stateWord = formingNow and not liveOwn ? "BREAK FORMING" : baseWord
+string sideWord = have ? (view.dir == 1 ? "LONG" : "SHORT") : ""
+string stateTxt = have ? stateWord + "  ·  " + sideWord : stateWord
+float openR = have and view.refRisk > 0 ? view.dir * (close - view.entry) / view.refRisk : 0.0
+float stopR = have and view.refRisk > 0 ? view.dir * (view.liveStop - view.entry) / view.refRisk : 0.0
+float netOpenR = have ? f_netR(view, openR, f_remainingWeight(view), false) : 0.0
+string certaintyTag = have and (view.entryCertainty == "unproven" or view.exitCertainty == "unproven") ? " ?" : ""
+string extTag = have and view.extended ? " extended" : ""
+string lvlTag = have and view.level != "" ? " " + view.level : ""
+string qualityTag = have ? " · O" + (view.outerClose ? "1" : "0") + "/R" + str.tostring(view.runBars) : ""
+string gradeTxt = have and (view.state == "LIVE" or view.state == "TRIGGERED") ? (noSize ? "NO SIZE · " : "") + view.grade + extTag + lvlTag + "   G " + f_signed(openR) + " N " + f_signed(netOpenR) + (view.liveStop != view.stop ? "  Locked " + f_signed(stopR) : "") + certaintyTag : have ? (noSize ? "NO SIZE · " : "Grade ") + view.grade + extTag + lvlTag + qualityTag + certaintyTag : str.tostring(tradesToday) + " / " + str.tostring(pMaxTrades)
+string foot = hudStale ? "INPUTS CHANGED" : have ? str.tostring(view.rUnit, "0.#") + "R · " + view.preset + " · " + (trailOn ? "Trail" : beOn ? "BE" : "BE off") + " · " + sessShort + "  ·  " + pDir + qualityTag : str.tostring(pTp, "0.#") + "R  ·  " + pSl + "  ·  " + sessShort + "  ·  " + pDir
+string tpName = have ? (view.on1 and not view.hit1 ? "TP1" : view.on2 and not view.hit2 ? "TP2" : view.on3 and not view.hit3 ? "TP3" : "TP") : "Trades"
+float tpShow = have ? (view.on1 and not view.hit1 ? view.tp1 : view.on2 and not view.hit2 ? view.tp2 : view.on3 and not view.hit3 ? view.tp3 : f_near(view)) : na
+bool hudNote = noSize or not targetsOk or hudStale or eng.hudReject != "" or inPause or (have and view.state == "ARMED") or moveLine != ""
+int hudTg = have ? (view.on1 ? 1 : 0) + (view.on2 ? 1 : 0) + (view.on3 ? 1 : 0) : 0
+int hudLevels = have ? hudTg + 3 : 2
+int hudBody = hudSizeIn == "Compact" ? 4 : 3 + (hudNote ? 1 : 0) + hudLevels + 1
+bool hudTop = hudPosIn == "Top right" or hudPosIn == "Top left"
+int hudPad = hudTop ? 1 : 0
+string tpKey = have ? (view.on1 ? "1" : "0") + (view.on2 ? "1" : "0") + (view.on3 ? "1" : "0") : "flat"
+
+var table infoTbl = na
+var string hudKey = ""
+f_cell(table t, int col, int row, string txt, color ink, color bg, string align) =>
+    table.cell(t, col, row, txt, text_color = ink, bgcolor = bg, text_halign = align == "r" ? text.align_right : text.align_left, text_valign = text.align_center, text_size = size.small, text_font_family = font.family_monospace)
+f_lab_ink(string lab) =>
+    str.startswith(lab, "TP3") ? color.new(#147A4E, 0) : str.startswith(lab, "TP") ? color.new(#3DDC97, 0) : str.startswith(lab, "STOP") ? color.new(#FF5C6C, 0) : str.startswith(lab, "ENTRY") ? color.new(#E6EAF2, 0) : color.new(#7F8AA3, 0)
+f_val_ink(string lab) =>
+    str.startswith(lab, "STOP") ? color.new(#FF5C6C, 0) : str.startswith(lab, "TP") ? color.new(#3DDC97, 0) : color.white
+string wantKey = (showTableIn ? "1" : "0") + hudSizeIn + hudPosIn + str.tostring(hudPad) + ":" + str.tostring(hudBody) + (hudNote ? "N" : "") + tpKey
+if not showTableIn and not na(infoTbl)
+    table.delete(infoTbl)
+    infoTbl := na
+    hudKey := ""
+if showTableIn and wantKey != hudKey
+    if not na(infoTbl)
+        table.delete(infoTbl)
+    int cols = hudSizeIn == "Compact" ? 3 : 2
+    infoTbl := table.new(hudPosIn == "Top left" ? position.top_left : hudPosIn == "Bottom right" ? position.bottom_right : hudPosIn == "Bottom left" ? position.bottom_left : position.top_right, cols, hudBody + hudPad, bgcolor = color.new(#0B0F19, 100), border_width = 0, frame_width = 0)
+    if hudPad == 1
+        table.merge_cells(infoTbl, 0, 0, cols - 1, 0)
+    if hudSizeIn == "Full"
+        if hudNote
+            table.merge_cells(infoTbl, 0, 3 + hudPad, 1, 3 + hudPad)
+        table.merge_cells(infoTbl, 0, hudBody - 1 + hudPad, 1, hudBody - 1 + hudPad)
+    hudKey := wantKey
+
+if showTableIn and not na(infoTbl)
+    color headBg = color.new(#121A2B, 0)
+    color ink = color.white
+    color muted = color.new(#7F8AA3, 0)
+    color liveGreen = color.new(#3DDC97, 0)
+    color rowBg = color.new(#0B0F19, 0)
+    color keyBg = color.new(#121A2B, 0)
+    color sideInk = not have ? ink : view.dir == 1 ? color.new(#4C8DFF, 0) : color.new(#FF8A3D, 0)
+    color stateInk = stateWord == "TRIGGERED" or stateWord == "LIVE" ? liveGreen : stateWord == "ARMED" ? color.new(#e6b35a, 0) : ink
+    int bulls = (hD == 1 ? 1 : 0) + (h4 == 1 ? 1 : 0) + (h1 == 1 ? 1 : 0) + (h15 == 1 ? 1 : 0) + (h5 == 1 ? 1 : 0)
+    int bears = (hD == -1 ? 1 : 0) + (h4 == -1 ? 1 : 0) + (h1 == -1 ? 1 : 0) + (h15 == -1 ? 1 : 0) + (h5 == -1 ? 1 : 0)
+    string cloud = bulls > bears ? "BULL " + str.tostring(bulls) + "/5" : bears > bulls ? "BEAR " + str.tostring(bears) + "/5" : "MIX"
+    color biasInk = bulls > bears ? color.new(#4C8DFF, 0) : bears > bulls ? color.new(#FF8A3D, 0) : ink
+    int p = hudPad
+    if p == 1
+        table.cell(infoTbl, 0, 0, "", bgcolor = color.new(#0B0F19, 100), height = 6)
+    if hudSizeIn == "Compact"
+        f_cell(infoTbl, 0, p, "STAXBOT 2.6.0", ink, headBg, "l")
+        f_cell(infoTbl, 1, p, cloud, biasInk, headBg, "l")
+        f_cell(infoTbl, 2, p, stateWord, stateInk, headBg, "r")
+        f_cell(infoTbl, 0, p + 1, stateTxt, sideInk, keyBg, "l")
+        f_cell(infoTbl, 1, p + 1, have ? f_num(view.entry) : sessShort, ink, rowBg, "r")
+        f_cell(infoTbl, 2, p + 1, liveOwn ? (noSize ? "NO SIZE" : "N " + f_signed(netOpenR)) + certaintyTag : gradeTxt, liveOwn ? liveGreen : muted, rowBg, "r")
+        f_cell(infoTbl, 0, p + 2, tpName, have ? liveGreen : muted, keyBg, "l")
+        f_cell(infoTbl, 1, p + 2, have ? f_num(tpShow) : str.tostring(tradesToday) + " / " + str.tostring(pMaxTrades), ink, rowBg, "r")
+        f_cell(infoTbl, 2, p + 2, have ? str.tostring(view.rUnit, "0.#") + "R" : "", muted, rowBg, "r")
+        f_cell(infoTbl, 0, p + 3, hudStale ? "INPUTS CHANGED" : have and view.liveStop != view.stop ? "STOP (trail)" : "STOP", hudStale ? color.new(#e6b35a, 0) : have and view.liveStop != view.stop ? color.new(#9AA3B5, 0) : color.new(#FF5C6C, 0), keyBg, "l")
+        f_cell(infoTbl, 1, p + 3, have ? f_num(view.liveStop) : pSl, have and view.liveStop != view.stop ? color.new(#9AA3B5, 0) : have ? color.new(#FF5C6C, 0) : ink, rowBg, "r")
+        f_cell(infoTbl, 2, p + 3, have and view.liveStop != view.stop ? "Locked " + f_signed(stopR) : have ? f_signed(stopR) : "", muted, rowBg, "r")
+    else
+        f_cell(infoTbl, 0, p, "STAXBOT 2.6.0", ink, headBg, "l")
+        f_cell(infoTbl, 1, p, stateWord, stateInk, headBg, "r")
+        f_cell(infoTbl, 0, p + 1, cloud, biasInk, keyBg, "l")
+        f_cell(infoTbl, 1, p + 1, sessShort, ink, rowBg, "r")
+        f_cell(infoTbl, 0, p + 2, stateTxt, sideInk, keyBg, "l")
+        f_cell(infoTbl, 1, p + 2, gradeTxt, have ? ink : muted, rowBg, "r")
+        int at = p + 3
+        if hudNote
+            f_cell(infoTbl, 0, at, note, hudStale or eng.hudReject != "" ? color.new(#e6b35a, 0) : muted, rowBg, "l")
+            at += 1
+        string[] hudLab = array.new_string(0)
+        string[] hudVal = array.new_string(0)
+        if have
+            if view.on3
+                array.push(hudLab, "TP3   " + (view.struct3 ? "level" : str.tostring(view.rUnit * 3.0, "0.#") + "R") + "   w" + str.tostring(view.w3))
+                array.push(hudVal, f_num(view.tp3))
+            if view.on2
+                array.push(hudLab, "TP2   " + (view.struct2 ? "level" : str.tostring(view.rUnit * 2.0, "0.#") + "R") + "   w" + str.tostring(view.w2))
+                array.push(hudVal, f_num(view.tp2))
+            if view.on1
+                array.push(hudLab, "TP1   " + str.tostring(view.rUnit, "0.#") + "R   w" + str.tostring(view.w1))
+                array.push(hudVal, f_num(view.tp1))
+            array.push(hudLab, "DISPLACEMENT")
+            array.push(hudVal, (view.outerClose ? "outer quarter" : "inside quarter") + " / run " + str.tostring(view.runBars))
+            array.push(hudLab, "ENTRY")
+            array.push(hudVal, f_num(view.entry))
+            array.push(hudLab, view.liveStop != view.stop ? "STOP (trail)" : "STOP")
+            array.push(hudVal, f_num(view.liveStop) + (view.liveStop != view.stop ? "  Locked " + f_signed(stopR) : ""))
+        else
+            array.push(hudLab, "Trades")
+            array.push(hudVal, str.tostring(tradesToday) + " / " + str.tostring(pMaxTrades))
+            array.push(hudLab, "Watching")
+            array.push(hudVal, "break")
+        if array.size(hudLab) > 0
+            for i = 0 to array.size(hudLab) - 1
+                string lab = array.get(hudLab, i)
+                f_cell(infoTbl, 0, at, lab, f_lab_ink(lab), keyBg, "l")
+                f_cell(infoTbl, 1, at, array.get(hudVal, i), f_val_ink(lab), rowBg, "r")
+                at += 1
+        f_cell(infoTbl, 0, p + hudBody - 1, foot, hudStale ? color.new(#e6b35a, 0) : muted, keyBg, "l")
+
+if barstate.islast
+    int catalogCount = useCatalogIn and showDrawingsIn ? array.size(engineCatalog) : 0
+    while array.size(catalogLn) < catalogCount
+        array.push(catalogLn, line.new(bar_index, close, bar_index + 1, close, extend = extend.right))
+        array.push(catalogLb, label.new(bar_index + 1, close, "", style = label.style_label_left))
+    if array.size(catalogLn) > 0
+        for i = 0 to array.size(catalogLn) - 1
+            line catalogLine = array.get(catalogLn, i)
+            label catalogLabel = array.get(catalogLb, i)
+            if i < catalogCount
+                importedLevel level = array.get(engineCatalog, i)
+                if not na(level.price)
+                    color levelColor = level.flipped ? color.new(#3DDC97, 0) : level.swept ? color.new(#7F8AA3, 50) : level.kind == "PDC" ? color.new(#B28DFF, 0) : level.side == 1 ? color.new(#FF8A3D, 0) : level.side == -1 ? color.new(#4C8DFF, 0) : color.new(#B28DFF, 0)
+                    line.set_xy1(catalogLine, math.max(0, level.born), level.price)
+                    line.set_xy2(catalogLine, bar_index + 1, level.price)
+                    line.set_extend(catalogLine, extend.right)
+                    line.set_color(catalogLine, levelColor)
+                    line.set_style(catalogLine, level.live ? line.style_dotted : line.style_solid)
+                    line.set_width(catalogLine, level.originMajor ? 2 : 1)
+                    label.set_xy(catalogLabel, bar_index + 1, level.price)
+                    label.set_text(catalogLabel, level.kind)
+                    label.set_textcolor(catalogLabel, levelColor)
+                    label.set_color(catalogLabel, color.new(#0B0F19, 100))
+                else
+                    line.set_color(catalogLine, color.new(#0B0F19, 100))
+                    label.set_text(catalogLabel, "")
+                    label.set_color(catalogLabel, color.new(#0B0F19, 100))
+                    label.set_textcolor(catalogLabel, color.new(#0B0F19, 100))
+            else
+                line.set_color(catalogLine, color.new(#0B0F19, 100))
+                label.set_text(catalogLabel, "")
+                label.set_color(catalogLabel, color.new(#0B0F19, 100))
+                label.set_textcolor(catalogLabel, color.new(#0B0F19, 100))
+
+pF = plot(emaFast, "EMA Fast", color = color.new(cloudColorIn, 0), linewidth = 2)
+pS = plot(emaSlow, "EMA Slow", color = color.new(cloudColorIn, 35), linewidth = 2)
+fill(pF, pS, color = color.new(cloudColorIn, 85), title = "EMA Cloud")
+bgcolor(showSessBgIn and ((sessionFilterOn and inSession) or inPause) ? color.new(inPause ? #e6b35a : cloudColorIn, 92) : na, title = "Session")
+
+if barstate.isconfirmed and array.size(outbox) == 1
+    alert(array.get(outbox, 0), alert.freq_once_per_bar_close)
+else if barstate.isconfirmed and array.size(outbox) > 1
+    string joined = ""
+    for i = 0 to array.size(outbox) - 1
+        joined := joined + (i == 0 ? "" : ",") + array.get(outbox, i)
+    alert("[" + joined + "]", alert.freq_once_per_bar_close)
