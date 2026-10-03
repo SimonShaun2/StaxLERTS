@@ -101,3 +101,4 @@ Additional owner choices:
 - Does production enable `Flatten Open Trade At Session End` with no session filter? The revised guard leaves the 24/5 no-filter setup unchanged.
 - Should `r_net` remain the weighted share of position costs used by the current implementation, or should each leg absorb the full per-contract cost?
 - Where should the strategy file land when the proposed `production/` and `development/` folders are introduced?
+- TradingView models a net strategy position; an opposite-direction entry can reverse it even while StaxBot keeps separate plans. Should opposite-direction setups be excluded from A1's tester mirror, or should they remain an acknowledged mirror limitation?
