@@ -976,28 +976,67 @@ f_live_n() =>
             if p.state == "LIVE" or p.state == "TRIGGERED"
                 n += 1
     n
+f_oppositeMarketTriggeredThisBar(int side) =>
+    bool found = false
+    if array.size(plans) > 0
+        for i = 0 to array.size(plans) - 1
+            staxPlan p = array.get(plans, i)
+            if p.orderType == "market" and p.state == "TRIGGERED" and p.fillBar == bar_index and p.dir != side
+                found := true
+    found
 f_triggerNow(int idx) =>
     bool didTrigger = false
     if idx >= 0 and idx < array.size(plans)
         staxPlan p = array.get(plans, idx)
-        if p.orderType == "market" and p.state == "ARMED" and p.createdBar == bar_index and tradesToday < pMaxTrades and f_live_n() < maxLiveIn
-            p.state := "TRIGGERED"
-            p.fillBar := bar_index
-            p.ready := false
-            bool entryConflict = f_stop_hit(p.dir, p.liveStop) or (p.on1 and f_tp_hit(p.dir, p.tp1)) or (p.on2 and f_tp_hit(p.dir, p.tp2)) or (p.on3 and f_tp_hit(p.dir, p.tp3))
-            p.entryCertainty := not intrabarCheckIn ? "proven" : entryConflict ? f_ltfWalk(p.dir, true, p.entry, p.liveStop, p.tp1, p.tp2, p.tp3, false, false, false) : "proven"
-            didTrigger := true
-            f_send(f_payload(p, "entry", "", ""))
-            array.set(plans, idx, p)
+        if p.orderType == "market" and p.state == "ARMED" and p.createdBar == bar_index
+            bool siblingFilled = false
             for j = 0 to array.size(plans) - 1
                 staxPlan sib = array.get(plans, j)
-                if j != idx and sib.moveId == p.moveId and sib.state == "ARMED"
-                    sib.state := "CANCELLED"
-                    sib.ready := false
-                    sib.reason := "sibling filled"
-                    sib.resolvedBar := bar_index
-                    f_send(f_payload(sib, "plan_cancel", ',"reason":"sibling filled"', ""))
-                    array.set(plans, j, sib)
+                if j != idx and sib.moveId == p.moveId and (sib.state == "TRIGGERED" or sib.state == "LIVE")
+                    siblingFilled := true
+            bool oppositeTesterPosition = (strategy.position_size != 0 and (p.dir == 1 ? strategy.position_size < 0 : strategy.position_size > 0)) or f_oppositeMarketTriggeredThisBar(p.dir)
+            bool marketBlockedByCap = tradesToday >= pMaxTrades or f_live_n() >= maxLiveIn
+            bool keepMomentumFallback = p.origin == "momentum" and otMomIn == "Market"
+            if oppositeTesterPosition
+                p.state := "CANCELLED"
+                p.ready := false
+                p.reason := "market: opposite tester position"
+                p.resolvedBar := bar_index
+                f_send(f_payload(p, "plan_cancel", ',"reason":"market: opposite tester position"', ""))
+                array.set(plans, idx, p)
+            else if siblingFilled
+                p.state := "CANCELLED"
+                p.ready := false
+                p.reason := "sibling filled"
+                p.resolvedBar := bar_index
+                f_send(f_payload(p, "plan_cancel", ',"reason":"sibling filled"', ""))
+                array.set(plans, idx, p)
+            else if marketBlockedByCap
+                if not keepMomentumFallback
+                    p.state := "CANCELLED"
+                    p.ready := false
+                    p.reason := "market blocked by cap"
+                    p.resolvedBar := bar_index
+                    f_send(f_payload(p, "plan_cancel", ',"reason":"market blocked by cap"', ""))
+                    array.set(plans, idx, p)
+            else
+                p.state := "TRIGGERED"
+                p.fillBar := bar_index
+                p.ready := false
+                bool entryConflict = f_stop_hit(p.dir, p.liveStop) or (p.on1 and f_tp_hit(p.dir, p.tp1)) or (p.on2 and f_tp_hit(p.dir, p.tp2)) or (p.on3 and f_tp_hit(p.dir, p.tp3))
+                p.entryCertainty := not intrabarCheckIn ? "proven" : entryConflict ? f_ltfWalk(p.dir, true, p.entry, p.liveStop, p.tp1, p.tp2, p.tp3, false, false, false) : "proven"
+                didTrigger := true
+                f_send(f_payload(p, "entry", "", ""))
+                array.set(plans, idx, p)
+                for j = 0 to array.size(plans) - 1
+                    staxPlan sib = array.get(plans, j)
+                    if j != idx and sib.moveId == p.moveId and sib.state == "ARMED"
+                        sib.state := "CANCELLED"
+                        sib.ready := false
+                        sib.reason := "sibling filled"
+                        sib.resolvedBar := bar_index
+                        f_send(f_payload(sib, "plan_cancel", ',"reason":"sibling filled"', ""))
+                        array.set(plans, j, sib)
     didTrigger
 f_has(int id, string origin) =>
     bool found = false
@@ -1196,7 +1235,15 @@ f_cancel_failed(int side) =>
                 f_send(f_payload(p, "plan_cancel", ',"reason":"failed breakout"', ""))
                 array.set(plans, i, p)
     true
-f_try_arm(string origin, int side, float entry, float tightPx, float medPx, float anchor, float shelf, int swingBar, float zoneHi, float zoneLo, int zoneFrom, bool flag1, bool htfSweep) =>
+f_try_arm(string origin, int side, float limitEntry, float tightPx, float medPx, float anchor, float shelf, int swingBar, float zoneHi, float zoneLo, int zoneFrom, bool flag1, bool htfSweep) =>
+    string scenario = origin == "gap" ? "A" : origin == "sweep" ? "C" : origin == "momentum" ? "M" : "B"
+    string ownOrderType = scenario == "A" ? otGapIn : scenario == "B" ? otShelfIn : scenario == "C" ? otSweepIn : scenario == "M" ? otMomIn : "Limit"
+    string resolvedOrderType = f_orderType(ownOrderType == "Market" ? "market" : "limit")
+    float entry = resolvedOrderType == "market" ? close : limitEntry
+    float structuralLimitEntry = origin == "momentum" ? shelf : limitEntry
+    // Owner chose default Stax Momentum parity over applying the new chase cap to its legacy path.
+    bool legacyMomentumDefaults = origin == "momentum" and otGlobalIn == "Per strategy" and otMomIn == "Market" and otChaseAtrIn == 1.0
+    bool chaseOk = resolvedOrderType != "market" or legacyMomentumDefaults or na(armAtr) or math.abs(entry - structuralLimitEntry) <= otChaseAtrIn * armAtr
     eng.planSeq += 1
     float med = f_stop(medPx, side, "Medium")
     float rawTight = f_stop(tightPx, side, "Tight")
@@ -1267,7 +1314,10 @@ f_try_arm(string origin, int side, float entry, float tightPx, float medPx, floa
     if extended
         g := f_down(g)
     bool take = minGradeIn == "Off" or g == "A+" or (minGradeIn == "A" and g == "A")
-    if not topDownOk
+    if not chaseOk
+        eng.hudReject := "PLAN REJECTED: chase"
+        log.info("plan_id " + str.tostring(eng.planSeq) + " PLAN REJECTED: chase")
+    else if not topDownOk
         eng.hudReject := "PLAN REJECTED: top-down direction."
     else if not geometryOk
         eng.hudReject := "PLAN REJECTED: geometry."
@@ -1286,7 +1336,7 @@ f_try_arm(string origin, int side, float entry, float tightPx, float medPx, floa
         staxPlan p = staxPlan.new()
         p.planId := eng.planSeq
         p.moveId := moveIdNow
-        p.scenario := origin == "gap" ? "A" : origin == "sweep" ? "C" : origin == "momentum" ? "M" : "B"
+        p.scenario := scenario
         p.origin := origin
         p.dir := side
         p.entry := entry
@@ -1316,8 +1366,7 @@ f_try_arm(string origin, int side, float entry, float tightPx, float medPx, floa
         p.w2 := tp2WIn
         p.w3 := tp3WIn
         p.setupId := syminfo.ticker + ":" + str.tostring(time) + ":" + str.tostring(eng.planSeq)
-        string ownOrderType = p.scenario == "A" ? otGapIn : p.scenario == "B" ? otShelfIn : p.scenario == "C" ? otSweepIn : p.scenario == "M" ? otMomIn : "Limit"
-        p.orderType := f_orderType(ownOrderType == "Market" ? "market" : "limit")
+        p.orderType := resolvedOrderType
         p.qty := f_planQty(entry, sel, p.orderType)
         [split1, split2, split3] = f_legSplit(p.qty, p.on1, p.on2, p.on3, p.w1, p.w2, p.w3)
         p.leg1 := split1
@@ -2048,15 +2097,16 @@ if barstate.isconfirmed
         moveFlag1 := strongDisp
         f_replace_older(side, moveIdNow)
         float tightCandle = side == 1 ? low : high
+        int breakPlanStart = array.size(plans)
         if shelfOnIn
             f_try_arm("shelf", side, moveShelf, tightCandle, tightCandle, moveAnchor, moveShelf, moveSwing, moveZoneHi, moveZoneLo, moveZoneFrom, moveFlag1, false)
         if momentumOnIn and not na(winZoneLo) and not na(winZoneHi)
             float oppEdge = side == 1 ? winZoneLo : winZoneHi
             f_try_arm("momentum", side, close, tightCandle, oppEdge, moveAnchor, moveShelf, moveSwing, moveZoneHi, moveZoneLo, moveZoneFrom, moveFlag1, false)
-            if array.size(plans) > 0
-                for i = 0 to array.size(plans) - 1
-                    if f_triggerNow(i)
-                        tradesToday += 1
+        if array.size(plans) > breakPlanStart
+            for i = breakPlanStart to array.size(plans) - 1
+                if f_triggerNow(i)
+                    tradesToday += 1
         winSide := 0
         winFrom := -1
 
@@ -2072,7 +2122,10 @@ if barstate.isconfirmed
         float midEdge = (gapTop + gapBot) / 2.0
         float gapEntry = entryLevelIn == "FVG Midpoint (CE)" ? midEdge : entryLevelIn == "FVG Far Edge (Deep)" ? farEdge : nearEdge
         float gapMed = moveDir == 1 ? low[1] : high[1]
+        int gapPlanBefore = array.size(plans)
         f_try_arm("gap", moveDir, gapEntry, farEdge, gapMed, moveAnchor, moveShelf, moveSwing, gapTop, gapBot, math.max(0, bar_index - 2), moveFlag1, false)
+        if array.size(plans) > gapPlanBefore and f_triggerNow(gapPlanBefore)
+            tradesToday += 1
 
     if enableCIn
         bool sweepOpen = sweepSide != 0 and sweepFrom >= 0 and bar_index - sweepFrom < sweepWinIn
@@ -2103,6 +2156,8 @@ if barstate.isconfirmed
                     moveIdNow := savedMove
                     if array.size(plans) > beforeN
                         f_cancel_failed(sweepSide)
+                        if f_triggerNow(beforeN)
+                            tradesToday += 1
                 sweepSide := 0
                 sweepFrom := -1
         if sweepSide == 0
@@ -2244,6 +2299,8 @@ if barstate.isconfirmed
                 bool churned = confirmBeforeFillIn and p.orderType == "limit" and p.zoneTouches > 2
                 bool confirmationReady = not confirmBeforeFillIn or p.orderType == "market" or (p.structureConfirmed and bar_index > p.confirmBar)
                 bool positionReady = not topDownFilterIn or p.origin == "sweep" or (confirmBeforeFillIn and p.orderType == "limit" ? p.confirmPositionOk : f_positionOk(p.dir, p.dir == 1 ? low : high, close))
+                bool retestReady = not inPause and not newsBlocked and inSession and tradesToday < pMaxTrades and f_live_n() < maxLiveIn and entryTouch and confirmationReady and positionReady and not f_wrong(p.dir, p.inv)
+                bool oppositeTesterPosition = p.orderType == "market" and ((strategy.position_size != 0 and (p.dir == 1 ? strategy.position_size < 0 : strategy.position_size > 0)) or f_oppositeMarketTriggeredThisBar(p.dir))
                 if churned
                     p.state := "INVALIDATED"
                     p.reason := "zone churn"
@@ -2261,7 +2318,13 @@ if barstate.isconfirmed
                     f_send(f_payload(p, "plan_cancel", ',"reason":"reclaim close"', ""))
                 else if entryTouch and f_hit(p.stop)
                     p.ready := false
-                else if not inPause and not newsBlocked and inSession and tradesToday < pMaxTrades and f_live_n() < maxLiveIn and entryTouch and confirmationReady and positionReady and not f_wrong(p.dir, p.inv)
+                else if retestReady and oppositeTesterPosition
+                    p.state := "CANCELLED"
+                    p.ready := false
+                    p.reason := "market: opposite tester position"
+                    p.resolvedBar := bar_index
+                    f_send(f_payload(p, "plan_cancel", ',"reason":"market: opposite tester position"', ""))
+                else if retestReady
                     p.ready := true
                 else if f_tp_hit(p.dir, f_near(p)) and not entryTouch
                     p.state := "EXPIRED"
@@ -2286,36 +2349,45 @@ if barstate.isconfirmed
         if array.size(plans) > 0
             for i = 0 to array.size(plans) - 1
                 staxPlan p = array.get(plans, i)
-                if p.ready and (best == -1 or (down and p.entry > bestPx) or (not down and p.entry < bestPx))
+                if p.state == "ARMED" and p.ready and (best == -1 or (down and p.entry > bestPx) or (not down and p.entry < bestPx))
                     best := i
                     bestPx := p.entry
         if best == -1
             room := 0
         else
             staxPlan chosen = array.get(plans, best)
-            chosen.state := "TRIGGERED"
-            chosen.ready := false
-            chosen.fillBar := bar_index
-            chosen.liveStop := chosen.stop
-            bool entryConflict = f_entry_hit(chosen) and (f_stop_hit(chosen.dir, chosen.liveStop) or (chosen.on1 and f_tp_hit(chosen.dir, chosen.tp1)) or (chosen.on2 and f_tp_hit(chosen.dir, chosen.tp2)) or (chosen.on3 and f_tp_hit(chosen.dir, chosen.tp3)))
-            chosen.entryCertainty := not intrabarCheckIn ? "proven" : entryConflict ? f_ltfWalk(chosen.dir, true, chosen.entry, chosen.liveStop, chosen.tp1, chosen.tp2, chosen.tp3, false, false, false) : "proven"
-            tradesToday += 1
-            if showDrawingsIn
-                if not na(chosen.lbFill)
-                    label.delete(chosen.lbFill)
-                chosen.lbFill := label.new(bar_index, chosen.dir == 1 ? low : high, chosen.dir == 1 ? "LONG" : "SHORT", style = chosen.dir == 1 ? label.style_label_up : label.style_label_down, color = chosen.dir == 1 ? color.new(#4C8DFF, 0) : color.new(#FF8A3D, 0), textcolor = color.white, size = size.small, text_font_family = font.family_monospace)
-            f_send(f_payload(chosen, "entry", "", ""))
-            array.set(plans, best, chosen)
-            if array.size(plans) > 0
-                for i = 0 to array.size(plans) - 1
-                    staxPlan sib = array.get(plans, i)
-                    if i != best and sib.moveId == chosen.moveId and sib.state == "ARMED"
-                        sib.state := "CANCELLED"
-                        sib.ready := false
-                        sib.reason := "sibling filled"
-                        sib.resolvedBar := bar_index
-                        f_send(f_payload(sib, "plan_cancel", ',"reason":"sibling filled"', ""))
-                        array.set(plans, i, sib)
+            bool chosenOppositeTesterPosition = chosen.orderType == "market" and ((strategy.position_size != 0 and (chosen.dir == 1 ? strategy.position_size < 0 : strategy.position_size > 0)) or f_oppositeMarketTriggeredThisBar(chosen.dir))
+            if chosenOppositeTesterPosition
+                chosen.state := "CANCELLED"
+                chosen.ready := false
+                chosen.reason := "market: opposite tester position"
+                chosen.resolvedBar := bar_index
+                f_send(f_payload(chosen, "plan_cancel", ',"reason":"market: opposite tester position"', ""))
+                array.set(plans, best, chosen)
+            else
+                chosen.state := "TRIGGERED"
+                chosen.ready := false
+                chosen.fillBar := bar_index
+                chosen.liveStop := chosen.stop
+                bool entryConflict = f_entry_hit(chosen) and (f_stop_hit(chosen.dir, chosen.liveStop) or (chosen.on1 and f_tp_hit(chosen.dir, chosen.tp1)) or (chosen.on2 and f_tp_hit(chosen.dir, chosen.tp2)) or (chosen.on3 and f_tp_hit(chosen.dir, chosen.tp3)))
+                chosen.entryCertainty := not intrabarCheckIn ? "proven" : entryConflict ? f_ltfWalk(chosen.dir, true, chosen.entry, chosen.liveStop, chosen.tp1, chosen.tp2, chosen.tp3, false, false, false) : "proven"
+                tradesToday += 1
+                if showDrawingsIn
+                    if not na(chosen.lbFill)
+                        label.delete(chosen.lbFill)
+                    chosen.lbFill := label.new(bar_index, chosen.dir == 1 ? low : high, chosen.dir == 1 ? "LONG" : "SHORT", style = chosen.dir == 1 ? label.style_label_up : label.style_label_down, color = chosen.dir == 1 ? color.new(#4C8DFF, 0) : color.new(#FF8A3D, 0), textcolor = color.white, size = size.small, text_font_family = font.family_monospace)
+                f_send(f_payload(chosen, "entry", "", ""))
+                array.set(plans, best, chosen)
+                if array.size(plans) > 0
+                    for i = 0 to array.size(plans) - 1
+                        staxPlan sib = array.get(plans, i)
+                        if i != best and sib.moveId == chosen.moveId and sib.state == "ARMED"
+                            sib.state := "CANCELLED"
+                            sib.ready := false
+                            sib.reason := "sibling filled"
+                            sib.resolvedBar := bar_index
+                            f_send(f_payload(sib, "plan_cancel", ',"reason":"sibling filled"', ""))
+                            array.set(plans, i, sib)
             room := maxLiveIn - f_live_n()
 
     bool armedBreak = false
