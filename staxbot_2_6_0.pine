@@ -569,6 +569,12 @@ type staxPlan
     float confirmExtreme = na
     float confirmClose = na
     bool confirmPositionOk = false
+    string orderType = "limit"
+    float signalPx = na
+    float fillPx = na
+    float signalRisk = na
+    float fillRisk = na
+    float slipTicks = na
 
 type Engine
     int planSeq = 0
@@ -833,15 +839,15 @@ f_netR(staxPlan p, float grossR, float weightShare, bool marketExit) =>
     float totalWeight = f_totalWeight(p)
     float share = totalWeight > 0 ? weightShare / totalWeight : 1.0
     float slipPts = slippageTicksIn * tick
-    float entrySlip = p.scenario == "M" ? slipPts : 0.0
+    float entrySlip = p.orderType == "market" ? slipPts : 0.0
     float exitSlip = marketExit ? slipPts : 0.0
     float commissionPts = syminfo.pointvalue > 0 ? commissionRTIn / syminfo.pointvalue : 0.0
     float costPts = (entrySlip + exitSlip + commissionPts) * share
     selectedRisk > 0 ? grossR - costPts / selectedRisk : grossR
-f_planQty(float entry, float selectedStop, string scenario) =>
+f_planQty(float entry, float selectedStop, string orderType) =>
     int result = 1
     if riskDollarsIn > 0 and not staxMode
-        float marketFills = scenario == "M" ? 2.0 : 1.0
+        float marketFills = orderType == "market" ? 2.0 : 1.0
         float riskPts = math.abs(entry - selectedStop) + slippageTicksIn * tick * marketFills
         float perContract = riskPts * syminfo.pointvalue + commissionRTIn
         result := perContract > 0 ? int(math.floor(riskDollarsIn / perContract)) : 0
@@ -869,7 +875,7 @@ f_legSplit(int qty, bool on1, bool on2, bool on3, int w1, int w2, int w3) =>
             q3 += 1
     [q1, q2, q3]
 f_strategyEntry(staxPlan p) =>
-    if p.qty > 0 and p.origin != "momentum" and not confirmBeforeFillIn
+    if p.qty > 0 and p.orderType == "limit" and not confirmBeforeFillIn
         strategy.entry(p.setupId, p.dir == 1 ? strategy.long : strategy.short, qty = p.qty,
              limit = p.entry, disable_alert = true)
     true
@@ -891,15 +897,15 @@ f_strategyCleanup(staxPlan p) =>
     true
 f_strategySync(staxPlan p) =>
     if p.state == "ARMED"
-        if confirmBeforeFillIn and p.scenario != "M" and p.structureConfirmed and bar_index > p.confirmBar and p.ready and p.qty > 0
+        if confirmBeforeFillIn and p.orderType == "limit" and p.structureConfirmed and bar_index > p.confirmBar and p.ready and p.qty > 0
             strategy.entry(p.setupId, p.dir == 1 ? strategy.long : strategy.short, qty = p.qty, limit = p.entry, disable_alert = true)
-        bool entryStaged = p.origin != "momentum" and (not confirmBeforeFillIn or p.ready)
+        bool entryStaged = p.orderType == "limit" and (not confirmBeforeFillIn or p.ready)
         if entryStaged
             f_strategyExitLeg(p, "TP1", p.tp1, p.on1, p.hit1, p.leg1, p.w1)
             f_strategyExitLeg(p, "TP2", p.tp2, p.on2, p.hit2, p.leg2, p.w2)
             f_strategyExitLeg(p, "TP3", p.tp3, p.on3, p.hit3, p.leg3, p.w3)
     else if p.state == "TRIGGERED"
-        if p.origin == "momentum" and p.qty > 0
+        if p.orderType == "market" and p.qty > 0
             strategy.entry(p.setupId, p.dir == 1 ? strategy.long : strategy.short, qty = p.qty, disable_alert = true)
         f_strategyExitLeg(p, "TP1", p.tp1, p.on1, p.hit1, p.leg1, p.w1)
         f_strategyExitLeg(p, "TP2", p.tp2, p.on2, p.hit2, p.leg2, p.w2)
@@ -952,6 +958,29 @@ f_live_n() =>
             if p.state == "LIVE" or p.state == "TRIGGERED"
                 n += 1
     n
+f_triggerNow(int idx) =>
+    bool didTrigger = false
+    if idx >= 0 and idx < array.size(plans)
+        staxPlan p = array.get(plans, idx)
+        if p.orderType == "market" and p.state == "ARMED" and p.createdBar == bar_index and tradesToday < pMaxTrades and f_live_n() < maxLiveIn
+            p.state := "TRIGGERED"
+            p.fillBar := bar_index
+            p.ready := false
+            bool entryConflict = f_stop_hit(p.dir, p.liveStop) or (p.on1 and f_tp_hit(p.dir, p.tp1)) or (p.on2 and f_tp_hit(p.dir, p.tp2)) or (p.on3 and f_tp_hit(p.dir, p.tp3))
+            p.entryCertainty := not intrabarCheckIn ? "proven" : entryConflict ? f_ltfWalk(p.dir, true, p.entry, p.liveStop, p.tp1, p.tp2, p.tp3, false, false, false) : "proven"
+            didTrigger := true
+            f_send(f_payload(p, "entry", "", ""))
+            array.set(plans, idx, p)
+            for j = 0 to array.size(plans) - 1
+                staxPlan sib = array.get(plans, j)
+                if j != idx and sib.moveId == p.moveId and sib.state == "ARMED"
+                    sib.state := "CANCELLED"
+                    sib.ready := false
+                    sib.reason := "sibling filled"
+                    sib.resolvedBar := bar_index
+                    f_send(f_payload(sib, "plan_cancel", ',"reason":"sibling filled"', ""))
+                    array.set(plans, j, sib)
+    didTrigger
 f_has(int id, string origin) =>
     bool found = false
     if array.size(plans) > 0
@@ -1269,7 +1298,8 @@ f_try_arm(string origin, int side, float entry, float tightPx, float medPx, floa
         p.w2 := tp2WIn
         p.w3 := tp3WIn
         p.setupId := syminfo.ticker + ":" + str.tostring(time) + ":" + str.tostring(eng.planSeq)
-        p.qty := f_planQty(entry, sel, p.scenario)
+        p.orderType := p.scenario == "M" ? "market" : "limit"
+        p.qty := f_planQty(entry, sel, p.orderType)
         [split1, split2, split3] = f_legSplit(p.qty, p.on1, p.on2, p.on3, p.w1, p.w2, p.w3)
         p.leg1 := split1
         p.leg2 := split2
@@ -2006,25 +2036,8 @@ if barstate.isconfirmed
             f_try_arm("momentum", side, close, tightCandle, oppEdge, moveAnchor, moveShelf, moveSwing, moveZoneHi, moveZoneLo, moveZoneFrom, moveFlag1, false)
             if array.size(plans) > 0
                 for i = 0 to array.size(plans) - 1
-                    staxPlan mom = array.get(plans, i)
-                    if mom.origin == "momentum" and mom.state == "ARMED" and mom.createdBar == bar_index and tradesToday < pMaxTrades and f_live_n() < maxLiveIn
-                        mom.state := "TRIGGERED"
-                        mom.fillBar := bar_index
-                        mom.ready := false
-                        bool momentumConflict = f_stop_hit(mom.dir, mom.liveStop) or (mom.on1 and f_tp_hit(mom.dir, mom.tp1)) or (mom.on2 and f_tp_hit(mom.dir, mom.tp2)) or (mom.on3 and f_tp_hit(mom.dir, mom.tp3))
-                        mom.entryCertainty := not intrabarCheckIn ? "proven" : momentumConflict ? f_ltfWalk(mom.dir, true, mom.entry, mom.liveStop, mom.tp1, mom.tp2, mom.tp3, false, false, false) : "proven"
+                    if f_triggerNow(i)
                         tradesToday += 1
-                        f_send(f_payload(mom, "entry", "", ""))
-                        array.set(plans, i, mom)
-                        for j = 0 to array.size(plans) - 1
-                            staxPlan sib = array.get(plans, j)
-                            if j != i and sib.moveId == mom.moveId and sib.state == "ARMED"
-                                sib.state := "CANCELLED"
-                                sib.ready := false
-                                sib.reason := "sibling filled"
-                                sib.resolvedBar := bar_index
-                                f_send(f_payload(sib, "plan_cancel", ',"reason":"sibling filled"', ""))
-                                array.set(plans, j, sib)
         winSide := 0
         winFrom := -1
 
@@ -2182,7 +2195,7 @@ if barstate.isconfirmed
             if p.state == "ARMED" and bar_index > p.createdBar
                 bool staleBars = bar_index > p.expiryBar
                 bool entryTouch = f_entry_hit(p)
-                if confirmBeforeFillIn and p.scenario != "M"
+                if confirmBeforeFillIn and p.orderType == "limit"
                     if entryTouch and not p.inEntryZone
                         p.zoneTouches += 1
                         if p.firstTouchBar < 0
@@ -2209,9 +2222,9 @@ if barstate.isconfirmed
                         p.confirmExtreme := p.retestBest
                         p.confirmClose := close
                         p.confirmPositionOk := f_positionOk(p.dir, p.confirmExtreme, p.confirmClose)
-                bool churned = confirmBeforeFillIn and p.scenario != "M" and p.zoneTouches > 2
-                bool confirmationReady = not confirmBeforeFillIn or p.scenario == "M" or (p.structureConfirmed and bar_index > p.confirmBar)
-                bool positionReady = not topDownFilterIn or p.origin == "sweep" or (confirmBeforeFillIn and p.scenario != "M" ? p.confirmPositionOk : f_positionOk(p.dir, p.dir == 1 ? low : high, close))
+                bool churned = confirmBeforeFillIn and p.orderType == "limit" and p.zoneTouches > 2
+                bool confirmationReady = not confirmBeforeFillIn or p.orderType == "market" or (p.structureConfirmed and bar_index > p.confirmBar)
+                bool positionReady = not topDownFilterIn or p.origin == "sweep" or (confirmBeforeFillIn and p.orderType == "limit" ? p.confirmPositionOk : f_positionOk(p.dir, p.dir == 1 ? low : high, close))
                 if churned
                     p.state := "INVALIDATED"
                     p.reason := "zone churn"
