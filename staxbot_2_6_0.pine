@@ -896,7 +896,7 @@ f_strategySync(staxPlan p) =>
         bool entryStaged = p.origin != "momentum" and (not confirmBeforeFillIn or p.ready)
         if entryStaged
             f_strategyExitLeg(p, "TP1", p.tp1, p.on1, p.hit1, p.leg1, p.w1)
-            f_strategyExitLeg(p, "TP2", p.tp2, p.on2, p.leg2, p.w2)
+            f_strategyExitLeg(p, "TP2", p.tp2, p.on2, p.hit2, p.leg2, p.w2)
             f_strategyExitLeg(p, "TP3", p.tp3, p.on3, p.hit3, p.leg3, p.w3)
     else if p.state == "TRIGGERED"
         if p.origin == "momentum" and p.qty > 0
