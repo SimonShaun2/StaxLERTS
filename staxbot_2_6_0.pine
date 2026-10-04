@@ -30,6 +30,7 @@ G_STAX    = "Stax Alerts"
 G_DISPLAY = "Display"
 G_SESSION = "Session Pause"
 G_ENGINE = "Engine imports"
+G_ORDER = "Entry order type"
 
 presetIn = input.string("Manual", "Strategy Preset", group = G_PRESET,
      options = ["Manual", "NY AM Scalper", "NY AM Standard", "London Breakout", "Overnight Conservative"],
@@ -213,6 +214,14 @@ confirmBeforeFillIn = input.bool(false, "B6c - Confirm before fill", group = G_E
      tooltip = "Changes which plans arm/fill/grade. Default OFF.")
 confirmPivotLenIn = input.int(2, "B6c - Pullback pivot length", minval = 1, maxval = 10, group = G_ENGINE,
      tooltip = "Changes which plans arm/fill/grade. Default OFF. Used when confirm-before-fill is enabled.")
+
+otGlobalIn = input.string("Per strategy", "Entry order type (global override)", options = ["Per strategy", "All Market", "All Limit"], group = G_ORDER)
+otGapIn = input.string("Limit", "Scenario A: Gap - order type", options = ["Limit", "Market"], group = G_ORDER)
+otShelfIn = input.string("Limit", "Scenario B: Shelf - order type", options = ["Limit", "Market"], group = G_ORDER)
+otSweepIn = input.string("Limit", "Scenario C: Sweep & Reclaim - order type", options = ["Limit", "Market"], group = G_ORDER)
+otMomIn = input.string("Market", "Stax Momentum - order type", options = ["Market", "Limit"], group = G_ORDER)
+otChaseAtrIn = input.float(1.0, "Market chase cap (ATR x)", minval = 0.0, step = 0.1, group = G_ORDER)
+otFillModelIn = input.string("Signal close", "Market fill model", options = ["Signal close", "Next bar open"], group = G_ORDER)
 
 pDir = switch presetIn
     "NY AM Scalper"          => "Both"
@@ -718,6 +727,8 @@ f_strike(int side) =>
 f_grade(bool dispOk, bool biasOk, bool volFlag, bool sessOk, bool fifth) =>
     int score = (dispOk ? 1 : 0) + (biasOk ? 1 : 0) + (volFlag ? 1 : 0) + (sessOk ? 1 : 0) + (fifth ? 1 : 0)
     score == 5 ? "A+" : score == 4 and (dispOk or sessOk) ? "A" : "B"
+f_orderType(string own) =>
+    otGlobalIn == "All Market" ? "market" : otGlobalIn == "All Limit" ? "limit" : own
 f_fp() =>
     string base = str.tostring(pTp, "0.00") + "|" + pSl + "|" + str.tostring(tightAtrIn, "0.00") + "|" + str.tostring(medAtrIn, "0.00") + "|" + str.tostring(largeAtrIn, "0.00") + "|" + minGradeIn + "|" + entryLevelIn + "|" + pBe + "|" + pTrail + "|" + pDir + "|" + sessShort + "|" + dispModeIn + "|" + str.tostring(dispBodyAtrIn, "0.0") + "|" + str.tostring(maxLiveIn) + "|" + (reclaimExitIn ? "1" : "0") + "|" + (pauseOnIn ? "1" : "0") + "|" + (enableCIn ? "1" : "0") + "|" + str.tostring(breakWinIn) + "|" + str.tostring(strongAtrIn, "0.0") + "|" + str.tostring(reclaimAtrIn, "0.00") + "|" + str.tostring(minStopAtrIn, "0.0") + "|" + str.tostring(maxStopAtrIn, "0.0") + "|" + (shelfOnIn ? "1" : "0") + "|" + (gapOnIn ? "1" : "0") + "|" + roomModeIn + "|" + (extOnIn ? "1" : "0") + "|" + str.tostring(extAtrIn, "0.0") + "|" + (structOnIn ? "1" : "0") + "|" + (showHtfIn ? "1" : "0") + "|" + (momentumOnIn ? "1" : "0") + "|" + str.tostring(sweepWinIn) + "|" + (rangeOnIn ? "1" : "0") + "|" + str.tostring(rangeBarsIn) + "|" + str.tostring(rangeAtrIn, "0.0") + "|" + (intrabarOnIn ? "1" : "0")
     string extra = ""
@@ -755,6 +766,13 @@ f_fp() =>
     extra += tp2MinRIn != 1.0 ? "|B6b.minR=" + str.tostring(tp2MinRIn, "0.0") : ""
     extra += confirmBeforeFillIn ? "|B6c.confirm=1" : ""
     extra += confirmPivotLenIn != 2 ? "|B6c.pivot=" + str.tostring(confirmPivotLenIn) : ""
+    extra += otGlobalIn != "Per strategy" ? "|OT.g=" + otGlobalIn : ""
+    extra += otGapIn != "Limit" ? "|OT.A=" + otGapIn : ""
+    extra += otShelfIn != "Limit" ? "|OT.B=" + otShelfIn : ""
+    extra += otSweepIn != "Limit" ? "|OT.C=" + otSweepIn : ""
+    extra += otMomIn != "Market" ? "|OT.M=" + otMomIn : ""
+    extra += otChaseAtrIn != 1.0 ? "|OT.chase=" + str.tostring(otChaseAtrIn, "0.0") : ""
+    extra += otFillModelIn != "Signal close" ? "|OT.fill=" + otFillModelIn : ""
     base + extra
 f_signed(float r) =>
     (r >= 0 ? "+" : "") + str.tostring(r, "0.0") + "R"
@@ -1298,7 +1316,8 @@ f_try_arm(string origin, int side, float entry, float tightPx, float medPx, floa
         p.w2 := tp2WIn
         p.w3 := tp3WIn
         p.setupId := syminfo.ticker + ":" + str.tostring(time) + ":" + str.tostring(eng.planSeq)
-        p.orderType := p.scenario == "M" ? "market" : "limit"
+        string ownOrderType = p.scenario == "A" ? otGapIn : p.scenario == "B" ? otShelfIn : p.scenario == "C" ? otSweepIn : p.scenario == "M" ? otMomIn : "Limit"
+        p.orderType := f_orderType(ownOrderType == "Market" ? "market" : "limit")
         p.qty := f_planQty(entry, sel, p.orderType)
         [split1, split2, split3] = f_legSplit(p.qty, p.on1, p.on2, p.on3, p.w1, p.w2, p.w3)
         p.leg1 := split1
